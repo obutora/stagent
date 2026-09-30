@@ -1,12 +1,48 @@
-# stagent releases
+# stagent
 
-Prebuilt binaries of **stagent**, the server-side companion of the
-[SSH Term](https://apps.apple.com/app/id6759213045) app's Agent Mode.
+Server-side companion of the [SSH Term](https://apps.apple.com/app/id6759213045)
+app. This repository holds its source code and its release binaries, so you
+can read exactly what the app installs on your server and check that the
+binaries were built from this code.
 
-This repository only hosts release assets. SSH Term downloads the binary for
-your server's OS/arch from the Releases page and verifies it against the
-SHA-256 pinned inside the app before installing it to
-`~/.ssh-term/agent/bin/`.
+## What it does
+
+SSH Term's **chat view** shows the conversation of the coding agent (Claude
+Code, Codex, Oh My Pi) running in a terminal tab, also when it runs inside
+tmux, zellij, screen or herdr. For that the app runs `stagent follow` over an
+SSH exec channel on the terminal's own connection. It:
+
+- finds the tab's shell through the per-connection SSH server process (or the
+  shell's `SSH_CONNECTION`), and the pane a multiplexer client in it shows,
+- finds the agent process in that shell or pane and the conversation file it
+  writes (`~/.claude`, `~/.codex`, `~/.omp`),
+- streams new messages of that file as JSON lines until the app closes the
+  channel.
+
+It only reads the process list and those conversation files. It opens no
+network port, starts no background process and changes no configuration.
+Input typed in the chat view goes to the terminal itself, not through
+stagent. The wire format is documented in [PROTOCOL.md](PROTOCOL.md)
+("stagent follow").
+
+The same binary also contains commands for an upcoming Agent Mode (`run`,
+`daemon`, `bridge`, `hook`, `integrate`); the chat view does not use them.
+
+## Installation and removal
+
+The app installs the binary to `~/.ssh-term/agent/bin/stagent` the first time
+the chat view is opened: the server downloads the asset for its OS/arch from
+this repository's Releases page (or the app downloads and uploads it over
+SFTP) and it is verified against the SHA-256 pinned inside the app.
+
+Remove it from the chat view's menu (**Remove stagent from the server**), or
+on the server:
+
+```sh
+~/.ssh-term/agent/bin/stagent uninstall --level purge
+```
+
+## Release assets
 
 | asset | platform |
 |---|---|
@@ -16,5 +52,22 @@ SHA-256 pinned inside the app before installing it to
 
 Each release also contains `SHA256SUMS`.
 
-Uninstall from the app (Agent Mode → Setup → Cleanup) or on the server with
-`~/.ssh-term/agent/bin/stagent uninstall --level purge`.
+## Building and verifying a release
+
+Builds are reproducible (v0.2.0 and later; earlier releases predate the
+published source): `CGO_ENABLED=0`, `-trimpath`, no VCS stamp and an
+empty build id, so the same source and Go toolchain always produce the same
+bytes. To check a release, build the tag's source with the Go version named
+in its release notes and compare:
+
+```sh
+scripts/release.sh          # writes dist/ and dist/SHA256SUMS
+diff dist/SHA256SUMS <(curl -sL https://github.com/obutora/stagent/releases/download/v0.2.0/SHA256SUMS)
+```
+
+Tests: `go test ./...` (the e2e tests use tmux, zellij and herdr when they are
+on `PATH`).
+
+## License
+
+[MIT](LICENSE)

@@ -1,0 +1,200 @@
+package install
+
+import (
+	"bytes"
+	"io/fs"
+	"os"
+)
+
+// Change is one entry of `integrate` output (and of the removals unhook
+// performs).
+type Change struct {
+	ID      string `json:"id"`
+	Target  string `json:"target"`
+	Action  string `json:"action"` // create | modify | delete
+	Summary string `json:"summary"`
+	Diff    string `json:"diff"`
+	Error   string `json:"error,omitempty"`
+
+	apply func() error
+}
+
+// target is one integration point: a file stagent adds elements to (or
+// owns entirely), with the operations to add, remove and detect them.
+type target struct {
+	id       string
+	path     string
+	owned    bool // the whole file is ours
+	identify string
+	mode     fs.FileMode
+
+	// add returns the file content with our elements in place.
+	add func(cur []byte) (addResult, error)
+	// remove returns the content without our elements (element-wise; nil
+	// deletes the file). rec is the manifest record, if any.
+	remove func(cur []byte, rec *ConfigEntry) ([]byte, error)
+	// present describes our elements in cur ("" = none).
+	present func(cur []byte) string
+	// afterRemove runs after a successful removal write (e.g. reload a
+	// service manager); nil if not needed.
+	afterRemove func() error
+}
+
+type addResult struct {
+	after      []byte
+	containers []string
+	edits      []TOMLEdit
+	summary    string
+}
+
+// addChange plans adding t's elements. nil when the file already has them.
+func (e *env) addChange(t *target) (*Change, error) {
+	cur, err := readOptional(t.path)
+	if err != nil {
+		return nil, err
+	}
+	res, err := t.add(cur)
+	if err != nil {
+		return nil, err
+	}
+	if cur != nil && bytes.Equal(res.after, cur) {
+		return nil, nil
+	}
+	c := &Change{ID: t.id, Target: t.path, Action: "modify", Summary: res.summary, Diff: unifiedDiff(t.path, cur, res.after)}
+	if cur == nil {
+		c.Action = "create"
+	}
+	c.apply = func() error { return e.writeAdd(t, cur, res) }
+	return c, nil
+}
+
+func (e *env) writeAdd(t *target, before []byte, res addResult) error {
+	now := e.now()
+	rec := e.m.config(t.id, t.path)
+	if rec == nil {
+		rec = &ConfigEntry{ID: t.id, Path: t.path, Owned: t.owned, Created: before == nil, Identify: t.identify}
+		if before != nil {
+			rec.SHA256Before = sha256Hex(before)
+			if !t.owned {
+				b := backupName(resolveTarget(t.path), now)
+				if err := os.WriteFile(b, before, 0o600); err != nil {
+					return err
+				}
+				rec.Backup = b
+				e.m.Backups = addUnique(e.m.Backups, b)
+			}
+		}
+		e.m.Configs = append(e.m.Configs, rec)
+	} else if before == nil {
+		// Deleted by someone since our last edit: we create it anew.
+		rec.Created, rec.Backup, rec.SHA256Before = true, "", ""
+	} else if sha256Hex(before) != rec.SHA256After {
+		// Edited by someone since our last write: the backup no longer
+		// restores a state that contains those edits.
+		rec.Backup = ""
+	}
+	if err := atomicWrite(t.path, res.after, t.mode); err != nil {
+		return err
+	}
+	rec.SHA256After = sha256Hex(res.after)
+	rec.CreatedContainers = addUnique(rec.CreatedContainers, res.containers...)
+	for _, ed := range res.edits {
+		known := false
+		for _, x := range rec.TOMLEdits {
+			if x.Kind == ed.Kind {
+				known = true
+			}
+		}
+		if !known {
+			rec.TOMLEdits = append(rec.TOMLEdits, ed)
+		}
+	}
+	rec.ModifiedAt = now.UnixMilli()
+	e.dirty = true
+	return nil
+}
+
+// removeChange plans taking t's elements out. When the file is exactly what
+// we last wrote, it is restored from the backup (or deleted if we created
+// it); otherwise our elements are removed one by one. nil when there is
+// nothing of ours in the file.
+func (e *env) removeChange(t *target) (*Change, error) {
+	cur, err := readOptional(t.path)
+	if err != nil {
+		return nil, err
+	}
+	if cur == nil {
+		return nil, nil
+	}
+	rec := e.m.config(t.id, t.path)
+	var after []byte
+	summary, decided := "", false
+	if rec != nil && sha256Hex(cur) == rec.SHA256After {
+		switch {
+		case rec.Created || rec.Owned:
+			after, summary, decided = nil, "delete the file stagent created", true
+		case rec.Backup != "" && fileSHA256(rec.Backup) == rec.SHA256Before:
+			b, err := os.ReadFile(rec.Backup)
+			if err == nil {
+				after, summary, decided = b, "restore the pre-stagent content from "+rec.Backup, true
+			}
+		}
+	}
+	if !decided {
+		if t.present(cur) == "" {
+			return nil, nil
+		}
+		after, err = t.remove(cur, rec)
+		if err != nil {
+			return nil, err
+		}
+		summary = "remove stagent's elements (" + t.identify + ")"
+		if after == nil {
+			summary = "delete the file (managed by stagent)"
+		}
+	}
+	if after != nil && bytes.Equal(after, cur) {
+		return nil, nil
+	}
+	c := &Change{ID: t.id, Target: t.path, Action: "modify", Summary: summary, Diff: unifiedDiff(t.path, cur, after)}
+	if after == nil {
+		c.Action = "delete"
+	}
+	c.apply = func() error {
+		if after == nil {
+			if err := os.Remove(resolveTarget(t.path)); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		} else if err := atomicWrite(t.path, after, t.mode); err != nil {
+			return err
+		}
+		if rec != nil {
+			e.m.dropConfig(rec)
+			e.dirty = true
+		}
+		if t.afterRemove != nil {
+			return t.afterRemove()
+		}
+		return nil
+	}
+	return c, nil
+}
+
+// dropStaleRecords forgets manifest records of targets that no longer hold
+// any element of ours (removed by hand, or reverted).
+func (e *env) dropStaleRecords(ts []*target) {
+	for _, t := range ts {
+		rec := e.m.config(t.id, t.path)
+		if rec == nil {
+			continue
+		}
+		cur, err := readOptional(t.path)
+		if err != nil {
+			continue
+		}
+		if cur == nil || t.present(cur) == "" {
+			e.m.dropConfig(rec)
+			e.dirty = true
+		}
+	}
+}

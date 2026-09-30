@@ -1,0 +1,554 @@
+// Package holder implements `stagent run`: it starts a program on a PTY and
+// owns everything derived from its output — the VT screen, the on-disk
+// scrollback and the output-based state — while serving attach/input
+// requests from the bridge on its own local IPC endpoint and reporting state
+// changes (never output) to the daemon.
+//
+// Passthrough mode (default) mirrors the program on the local terminal like
+// script(1); detached mode has no local terminal and the app owns the size.
+package holder
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"net"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/detect"
+	"github.com/obutora/stagent/internal/ipc"
+	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pty"
+	"github.com/obutora/stagent/internal/screen"
+	"github.com/obutora/stagent/internal/scrollback"
+	"github.com/obutora/stagent/internal/wire"
+)
+
+// Options configures one session.
+type Options struct {
+	Command  []string
+	Detached bool
+	// ID is the session id (16 lowercase hex chars); empty = random.
+	ID string
+	// Cols/Rows size a detached session; passthrough follows the local
+	// terminal.
+	Cols, Rows int
+	// Dir is the program's working directory; empty = current directory.
+	Dir string
+	// Env is the program's environment before STAGENT_SESSION_ID (and, when
+	// detached, TERM/COLORTERM defaults) are added; nil = os.Environ().
+	Env    []string
+	Layout *paths.Layout
+	// DialDaemon connects to the daemon; nil = daemonclient.DialOrStart.
+	DialDaemon func() (net.Conn, error)
+	// Logf receives diagnostics; nil = stderr when detached, the holder log
+	// file in passthrough (stderr is the user's terminal there).
+	Logf func(format string, args ...any)
+}
+
+// Exit codes of Run for failures before the program ran.
+const (
+	ExitUsage    = 2
+	ExitNotFound = 127
+	ExitFailure  = 1
+)
+
+const (
+	daemonDialWait = 5 * time.Second
+	attachDrain    = 2 * time.Second // wait for attached clients to get `closed`
+	linkDrain      = 3 * time.Second // wait for holder.ended to reach the daemon
+)
+
+// Holder is one running session.
+type Holder struct {
+	o      Options
+	layout *paths.Layout
+	id     string
+	logf   func(string, ...any)
+
+	pty   pty.PTY
+	scr   *screen.Screen
+	sb    *scrollback.Store // nil when the data directory is unusable
+	det   *detect.Detector
+	in    *inputQueue
+	link  *daemonLink
+	local *localTerm // nil when detached
+
+	sbWarned         bool
+	lastActivityWake int64 // pump goroutine only
+
+	// mu guards sess, atts and ended. It is held while output goes into
+	// the screen and the raw attachment queues, so a snapshot taken under
+	// it lines up exactly with the byte stream that follows.
+	mu    sync.Mutex
+	sess  wire.Session
+	atts  map[*attachment]struct{}
+	ended bool
+}
+
+// Run runs a session until its program exits and returns the program's
+// exit code. Errors before the program started come with ExitUsage,
+// ExitNotFound or ExitFailure.
+func Run(ctx context.Context, o Options) (int, error) {
+	if len(o.Command) == 0 {
+		return ExitUsage, errors.New("no command given")
+	}
+	l := o.Layout
+	if l == nil {
+		var err error
+		if l, err = paths.Resolve(); err != nil {
+			return ExitFailure, err
+		}
+	}
+	id := o.ID
+	if id == "" {
+		id = wire.NewSessionID()
+	} else if !validID(id) {
+		return ExitUsage, fmt.Errorf("invalid session id %q (want 16 lowercase hex characters)", id)
+	}
+	h := &Holder{o: o, layout: l, id: id, atts: map[*attachment]struct{}{}}
+
+	if !o.Detached {
+		lt, err := openLocal()
+		if err != nil {
+			return ExitUsage, err
+		}
+		h.local = lt
+	}
+	dir := o.Dir
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return ExitFailure, fmt.Errorf("working directory %s is not a directory", dir)
+	}
+	cols, rows := o.Cols, o.Rows
+	if h.local != nil {
+		if c, r, ok := h.local.size(); ok {
+			cols, rows = c, r
+		}
+	}
+	cols, rows = screen.ClampSize(cols, rows)
+
+	// Infrastructure problems degrade the session (no attach, no
+	// scrollback) rather than keep the program from running.
+	infraErr := l.EnsureDirs()
+	h.logf = o.Logf
+	if h.logf == nil {
+		h.logf = defaultLogger(l, o.Detached)
+	}
+	if infraErr != nil {
+		h.logf("stagent run: %v", infraErr)
+	}
+	cfg := loadConfig(l)
+
+	env := o.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	p, err := pty.Start(o.Command, dir, buildEnv(env, id, o.Detached), cols, rows)
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+			return ExitNotFound, err
+		}
+		return ExitFailure, err
+	}
+	h.pty = p
+	now := time.Now().UnixMilli()
+	mode := wire.ModePassthrough
+	if o.Detached {
+		mode = wire.ModeDetached
+	}
+	h.sess = wire.Session{
+		ID: id, Harness: wire.DetectHarness(o.Command), Command: o.Command, Cwd: dir,
+		PID: p.Pid(), HolderPID: os.Getpid(), Mode: mode,
+		State: wire.StateWorking, StateSource: wire.SourceActivity,
+		Cols: cols, Rows: rows, StartedAt: now, LastActivityAt: now,
+	}
+
+	if infraErr == nil {
+		sb, err := scrollback.Open(l.SessionDataDir(id), cfg.Retention.ScrollbackSessionMiB)
+		if err != nil {
+			h.logf("stagent run: scrollback disabled: %v", err)
+		} else {
+			h.sb = sb
+		}
+	}
+	h.in = newInputQueue(p)
+	dial, dialExisting := o.DialDaemon, o.DialDaemon
+	if dial == nil {
+		dial = func() (net.Conn, error) { return daemonclient.DialOrStart(l, daemonDialWait) }
+		dialExisting = func() (net.Conn, error) { return daemonclient.Dial(l, daemonDialWait) }
+	}
+	h.link = newDaemonLink(h, dial, dialExisting)
+	var respond func([]byte)
+	if o.Detached {
+		// No real terminal answers the program's queries (DA, CPR, ...).
+		respond = h.in.tryPush
+	}
+	h.scr = screen.New(cols, rows, respond)
+	// vt.NewEmulator allocates a 4 MiB parser buffer and 10,000-line
+	// scrollbacks that screen.New immediately shrinks; hand those pages back
+	// now instead of carrying them in RSS for the life of the session.
+	debug.FreeOSMemory()
+	h.det = detect.New(detect.Config{
+		IdleAfter: time.Duration(cfg.IdleAfterMs) * time.Millisecond,
+		OnState:   h.onState,
+		OnNotify:  h.onNotify,
+	})
+
+	var ln net.Listener
+	if infraErr == nil {
+		ln, err = ipc.Listen(l.HolderAddr(id))
+		if err != nil {
+			if o.Detached {
+				// Nobody could ever reach a detached session.
+				p.Signal(wire.SignalKill)
+				p.Wait()
+				p.Close()
+				h.det.Stop()
+				h.scr.Close()
+				if h.sb != nil {
+					h.sb.Close()
+				}
+				return ExitFailure, fmt.Errorf("listen %s: %w", l.HolderAddr(id), err)
+			}
+			h.logf("stagent run: not attachable: %v", err)
+			ln = nil
+		}
+	}
+
+	return h.run(ctx, ln)
+}
+
+func (h *Holder) run(ctx context.Context, ln net.Listener) (int, error) {
+	srvCtx, stopServer := context.WithCancel(context.Background())
+	defer stopServer()
+
+	if h.local != nil {
+		if err := h.local.makeRaw(); err != nil {
+			h.logf("stagent run: raw mode: %v", err)
+		}
+		defer h.local.restore()
+	}
+
+	pumpDone := make(chan struct{})
+	go h.pump(pumpDone)
+	go h.in.run()
+	if ln != nil {
+		go h.serve(srvCtx, ln)
+	}
+	go h.link.run()
+
+	if h.local != nil {
+		go h.local.copyInput(srvCtx, h.in, h.det)
+		go h.local.watchSize(srvCtx, h.followLocalSize)
+	}
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, termSignals...)
+	defer signal.Stop(sigs)
+	waited := make(chan struct{})
+	var code int
+	go func() {
+		code, _ = h.pty.Wait()
+		close(waited)
+	}()
+
+wait:
+	for {
+		select {
+		case <-waited:
+			break wait
+		case s := <-sigs:
+			h.forwardSignal(s)
+		case <-ctx.Done():
+			h.pty.Signal(wire.SignalKill)
+			ctx = context.Background()
+		}
+	}
+
+	// Let buffered output drain before closing the terminal (ConPTY only
+	// reports EOF after Close; on Unix a grandchild may hold it open).
+	settle := time.Second
+	if runtime.GOOS == "windows" {
+		settle = 250 * time.Millisecond
+	}
+	select {
+	case <-pumpDone:
+	case <-time.After(settle):
+	}
+	h.pty.Close()
+	select {
+	case <-pumpDone:
+	case <-time.After(time.Second):
+	}
+
+	h.finish(code)
+	stopServer()
+	if ln != nil {
+		ln.Close()
+	}
+	h.in.close()
+	h.scr.Close()
+	if h.sb != nil {
+		h.sb.Close()
+	}
+	return code, nil
+}
+
+// finish reports the exit to attached clients and the daemon and waits
+// (bounded) for both.
+func (h *Holder) finish(code int) {
+	h.det.Exited()
+	h.mu.Lock()
+	h.ended = true
+	h.sess.ExitCode = &code
+	atts := make([]*attachment, 0, len(h.atts))
+	for a := range h.atts {
+		atts = append(atts, a)
+	}
+	h.mu.Unlock()
+
+	for _, a := range atts {
+		a.closeWith(code)
+	}
+	h.link.end(code)
+	deadline := time.After(attachDrain)
+	for _, a := range atts {
+		select {
+		case <-a.done:
+		case <-deadline:
+		}
+	}
+	select {
+	case <-h.link.done:
+	case <-time.After(linkDrain):
+	}
+}
+
+func (h *Holder) pump(done chan struct{}) {
+	defer close(done)
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := h.pty.Read(buf)
+		if n > 0 {
+			h.output(buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// output fans one chunk of program output out. It never waits on clients
+// or the daemon; only the local terminal (passthrough) may apply
+// backpressure, as with any terminal.
+func (h *Holder) output(b []byte) {
+	if h.local != nil {
+		h.local.write(b)
+	}
+	if h.sb != nil {
+		if _, err := h.sb.Write(b); err != nil && !h.sbWarned {
+			h.sbWarned = true
+			h.logf("stagent run: scrollback write: %v", err)
+		}
+	}
+	h.det.Feed(b)
+
+	now := time.Now().UnixMilli()
+	h.mu.Lock()
+	h.scr.Write(b)
+	h.sess.LastActivityAt = now
+	var shared []byte
+	for a := range h.atts {
+		if a.raw {
+			if shared == nil {
+				shared = bytes.Clone(b)
+			}
+			a.pushOutput(shared)
+		} else {
+			a.markDirty()
+		}
+	}
+	titleChanged := false
+	if t := h.scr.Title(); t != h.sess.Title {
+		h.sess.Title = t
+		titleChanged = true
+	}
+	h.mu.Unlock()
+
+	// Activity timestamps reach the daemon at most once per second.
+	if titleChanged || now-h.lastActivityWake >= 1000 {
+		h.lastActivityWake = now
+		h.link.wake()
+	}
+}
+
+func (h *Holder) onState(state, source string) {
+	h.mu.Lock()
+	h.sess.State, h.sess.StateSource = state, source
+	h.mu.Unlock()
+	h.link.wake()
+}
+
+func (h *Holder) onNotify(n detect.Notification) {
+	h.link.notify(wire.HolderNotifyParams{ID: h.id, Title: n.Title, Body: n.Body, Bell: n.Bell})
+}
+
+func (h *Holder) session() wire.Session {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.sess
+}
+
+func (h *Holder) isEnded() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.ended
+}
+
+// applySize resizes the PTY and screen and tells attached clients.
+func (h *Holder) applySize(cols, rows int) {
+	cols, rows = screen.ClampSize(cols, rows)
+	h.mu.Lock()
+	if h.ended || (cols == h.sess.Cols && rows == h.sess.Rows) {
+		h.mu.Unlock()
+		return
+	}
+	if err := h.pty.Resize(cols, rows); err != nil {
+		h.logf("stagent run: resize: %v", err)
+	}
+	h.scr.Resize(cols, rows)
+	h.sess.Cols, h.sess.Rows = cols, rows
+	rp := &wire.ResizeParams{ID: h.id, Cols: cols, Rows: rows}
+	for a := range h.atts {
+		a.pushResize(rp)
+	}
+	h.mu.Unlock()
+	h.link.wake()
+}
+
+// followLocalSize applies the local terminal's new size (passthrough: the
+// local terminal owns the size, even after an app forced another one).
+func (h *Holder) followLocalSize(cols, rows int) {
+	h.applySize(cols, rows)
+}
+
+func (h *Holder) forwardSignal(s os.Signal) {
+	switch name := signalName(s); name {
+	case pty.SignalHangup:
+		// The local terminal is gone: stop writing to it and hang up the
+		// program the way a closing terminal would.
+		if h.local != nil {
+			h.local.disable()
+		}
+		h.pty.Signal(pty.SignalHangup)
+	case wire.SignalInterrupt:
+		h.in.tryPush([]byte{0x03})
+	case wire.SignalTerminate:
+		h.pty.Signal(wire.SignalTerminate)
+	}
+}
+
+func validID(id string) bool {
+	if len(id) != 16 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// buildEnv adds the session id (replacing one inherited from an enclosing
+// session) and, for detached sessions that have no terminal of their own,
+// terminal type defaults matching the emulator.
+func buildEnv(base []string, id string, detached bool) []string {
+	env := setEnv(base, wire.EnvSessionID, id)
+	if detached && runtime.GOOS != "windows" {
+		if v, _ := lookupEnv(env, "TERM"); v == "" || v == "dumb" {
+			env = setEnv(env, "TERM", "xterm-256color")
+		}
+		if _, ok := lookupEnv(env, "COLORTERM"); !ok {
+			env = setEnv(env, "COLORTERM", "truecolor")
+		}
+	}
+	return env
+}
+
+func envKeyEqual(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func lookupEnv(env []string, key string) (string, bool) {
+	for i := len(env) - 1; i >= 0; i-- {
+		if k, v, ok := strings.Cut(env[i], "="); ok && envKeyEqual(k, key) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+func setEnv(env []string, key, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && envKeyEqual(k, key) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, key+"="+value)
+}
+
+// loadConfig reads the daemon's config.json for the values a holder needs
+// before it can ask the daemon (scrollback cap, idle threshold).
+func loadConfig(l *paths.Layout) wire.Config {
+	var c wire.Config
+	if b, err := os.ReadFile(l.Config); err == nil {
+		json.Unmarshal(b, &c)
+	}
+	return c.WithDefaults()
+}
+
+// maxHolderLog bounds the shared passthrough log; it is truncated when
+// larger at open.
+const maxHolderLog = 1 << 20
+
+func defaultLogger(l *paths.Layout, detached bool) func(string, ...any) {
+	var w io.Writer = os.Stderr
+	if !detached {
+		w = io.Discard
+		path := filepath.Join(l.LogDir, "holder.log")
+		flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+		if st, err := os.Stat(path); err == nil && st.Size() > maxHolderLog {
+			flags |= os.O_TRUNC
+		}
+		if f, err := os.OpenFile(path, flags, 0o600); err == nil {
+			w = f // closed by process exit
+		}
+	}
+	lg := log.New(w, "", log.LstdFlags)
+	return func(format string, args ...any) { lg.Printf(format, args...) }
+}
