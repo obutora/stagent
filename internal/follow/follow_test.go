@@ -26,6 +26,7 @@ type frame struct {
 	Arch           string         `json:"arch"`
 	Mux            string         `json:"mux"`
 	Reason         string         `json:"reason"`
+	Diag           string         `json:"diag"`
 	Agents         []agentInfo    `json:"agents"`
 	Selected       *string        `json:"selected"`
 	Key            string         `json:"key"`
@@ -284,6 +285,7 @@ func TestFollowReasons(t *testing.T) {
 	}{
 		{"no_terminal", noSSH, &fakeMux{}, reasonNoTerminal},
 		{"no_agent", sshTree(), &fakeMux{}, reasonNoAgent},
+		{"terminal_ambiguous", macTailscale(), &fakeMux{}, reasonTerminalAmbiguous},
 		{"mux_ambiguous", zellijTree(), &fakeMux{zellij: map[string][]zellijClient{"work": {
 			{id: "1", pane: "terminal_1"}, {id: "2", pane: "terminal_0"},
 		}}}, reasonAmbiguous},
@@ -291,9 +293,43 @@ func TestFollowReasons(t *testing.T) {
 		x := newFixture(t, c.tr)
 		*x.mux = *c.mux
 		x.do(x.f.scan())
-		if fs := x.frames(); fs[0].Reason != c.reason {
+		if fs := x.frames(); fs[0].Reason != c.reason || (fs[0].Diag != "") != (c.reason == reasonNoTerminal) {
 			t.Errorf("%s: target %+v", c.name, fs[0])
 		}
+	}
+}
+
+// Of terminals that cannot be told apart, the agents are labelled with
+// their terminal and the newest session's is followed.
+func TestFollowTerminalAmbiguous(t *testing.T) {
+	x := newFixture(t, macTailscale())
+	x.do(x.f.scan())
+	fs := x.frames()
+	if len(fs) != 1 || fs[0].Selected == nil || *fs[0].Selected != "codex:72" || len(fs[0].Agents) != 2 ||
+		fs[0].Agents[0].TTY != "ttys003" || fs[0].Agents[1].TTY != "ttys004" {
+		t.Fatalf("frames %+v", fs)
+	}
+}
+
+// The diag's counts move with every scan; that alone sends no new frame.
+func TestFollowDiagAloneIsNoChange(t *testing.T) {
+	tr := newTree()
+	tr.add(40, 1, "teleport", "teleport")
+	tr.add(selfPID, 40, "stagent", "stagent", "follow")
+	x := newFixture(t, tr)
+	x.f.loc.sshConn = tsConn
+	x.do(x.f.scan())
+	fs := x.frames()
+	if len(fs) != 1 || fs[0].Reason != reasonNoTerminal || !strings.Contains(fs[0].Diag, " procs=2 ") {
+		t.Fatalf("frames %+v", fs)
+	}
+	tr.add(50, 1, "cron", "cron")
+	x.do(x.f.scan())
+	if !strings.Contains(x.f.last.diag, " procs=3 ") {
+		t.Fatalf("diag %q", x.f.last.diag)
+	}
+	if fs := x.frames(); len(fs) != 0 {
+		t.Fatalf("frames %+v", fs)
 	}
 }
 
@@ -351,5 +387,24 @@ func TestFollowFallbackSkipsOtherAgentsTranscripts(t *testing.T) {
 		if a.Key == "codex:102" && a.TranscriptPath != own {
 			t.Fatalf("fresh agent after its first write: %q, want %q", a.TranscriptPath, own)
 		}
+	}
+}
+
+// Another user's process cannot take a conversation from the user's agent
+// by naming it on its command line or holding it open.
+func TestFollowFallbackIgnoresOtherUsersClaims(t *testing.T) {
+	x := newFixture(t, sshTree())
+	codexHome := filepath.Join(x.home, ".codex")
+	start := x.tr.base.Add(102 * time.Second) // of pid 102
+	path := codexRollout(t, codexHome, "/work", "codex-tui", start.Add(time.Minute), start.Add(2*time.Minute), 1)
+	id := filepath.Base(path)[len("rollout-2006-01-02T15-04-05-") : len(filepath.Base(path))-len(".jsonl")]
+	fresh := x.tr.add(102, 101, "codex", "codex").fg()
+	fresh.cwd, fresh.files = "/work", []string{}
+	x.tr.add(98, 96, "codex", "codex", "resume", id).as(bobUser).files = []string{path}
+
+	x.do(x.f.scan())
+	fs := x.frames()
+	if len(fs) == 0 || len(fs[0].Agents) != 1 || fs[0].Agents[0].TranscriptPath != path {
+		t.Fatalf("frames %+v, want codex:102 following %s", fs, path)
 	}
 }

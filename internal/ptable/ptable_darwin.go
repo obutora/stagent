@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -24,14 +27,19 @@ func list() ([]Proc, error) {
 		if n := bytes.IndexByte(name, 0); n >= 0 {
 			name = name[:n]
 		}
-		out = append(out, Proc{
+		p := Proc{
 			PID:   int(k.Proc.P_pid),
 			PPID:  int(k.Eproc.Ppid),
 			Name:  string(name),
 			Pgrp:  int(k.Eproc.Pgid),
 			Tpgid: int(k.Eproc.Tpgid),
 			Start: time.Unix(k.Proc.P_starttime.Sec, int64(k.Proc.P_starttime.Usec)*1000),
-		})
+		}
+		// NODEV (-1) without a controlling terminal.
+		if k.Eproc.Tdev != -1 {
+			p.TTY = uint64(uint32(k.Eproc.Tdev))
+		}
+		out = append(out, p)
 	}
 	return out, nil
 }
@@ -39,7 +47,8 @@ func list() ([]Proc, error) {
 type osSource struct{}
 
 // procArgs reads kern.procargs2: executable path, argv and environment.
-// The kernel only returns it for processes of the same user.
+// The kernel only returns it for processes of the same user (any for
+// root), and leaves the environment out for restricted processes.
 func procArgs(pid int) (procArgs2, error) {
 	b, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
@@ -60,7 +69,10 @@ func (osSource) Exe(pid int) (string, error) {
 
 func (osSource) Env(pid int) ([]string, error) {
 	a, err := procArgs(pid)
-	return a.env, err
+	if err != nil {
+		return nil, err
+	}
+	return a.environ()
 }
 
 // lsofTimeout bounds one working-directory lookup.
@@ -82,3 +94,74 @@ func (osSource) Cwd(pid int) (string, error) {
 }
 
 func (osSource) OpenFiles(int) ([]string, error) { return nil, errors.ErrUnsupported }
+
+// Owner reads the process's credentials from its kinfo_proc: the real uid
+// (p_ruid) and the effective one (cr_uid).
+func (osSource) Owner(pid int) (string, error) {
+	k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return "", err
+	}
+	e := &k.Eproc
+	if e.Pcred.P_ruid != e.Ucred.Uid {
+		return "", errMixedUIDs
+	}
+	return strconv.FormatUint(uint64(e.Ucred.Uid), 10), nil
+}
+
+// ttyGuess names a pseudo-terminal from its device number: /dev/ttys<nnn>
+// has minor nnn.
+func ttyGuess(dev uint64) string {
+	return fmt.Sprintf("ttys%03d", unix.Minor(dev))
+}
+
+// rdev returns the device number of the device file at path, 0 when it
+// cannot be read.
+func rdev(path string) uint64 {
+	var st unix.Stat_t
+	if unix.Stat(path, &st) != nil {
+		return 0
+	}
+	return uint64(uint32(st.Rdev))
+}
+
+// utmpxPath holds macOS's current logins (see parseUtmpx).
+const utmpxPath = "/var/run/utmpx"
+
+// ttyHosts caches TTYHosts until utmpx changes.
+var ttyHosts struct {
+	sync.Mutex
+	mod   time.Time
+	size  int64
+	hosts map[uint64]string
+}
+
+// TTYHosts returns the remote host of each terminal's login by the
+// terminal's device number: `login -h HOST` records it in utmpx, which
+// everyone may read. nil when utmpx cannot be read.
+func TTYHosts() map[uint64]string {
+	fi, err := os.Stat(utmpxPath)
+	if err != nil {
+		return nil
+	}
+	ttyHosts.Lock()
+	defer ttyHosts.Unlock()
+	if ttyHosts.hosts != nil && fi.ModTime().Equal(ttyHosts.mod) && fi.Size() == ttyHosts.size {
+		return ttyHosts.hosts
+	}
+	b, err := os.ReadFile(utmpxPath)
+	if err != nil {
+		return nil
+	}
+	hosts := map[uint64]string{}
+	for _, l := range parseUtmpx(b) {
+		if l.line == "" || l.host == "" || strings.Contains(l.line, "..") {
+			continue
+		}
+		if dev := rdev("/dev/" + l.line); dev != 0 {
+			hosts[dev] = l.host
+		}
+	}
+	ttyHosts.mod, ttyHosts.size, ttyHosts.hosts = fi.ModTime(), fi.Size(), hosts
+	return hosts
+}

@@ -1,7 +1,10 @@
 package follow
 
 import (
+	"os/exec"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +78,36 @@ func TestDecodeHerdr(t *testing.T) {
 	failed := `{"id":"cli:pane:list","error":{"code":"server_not_running","message":"no herdr server is running at /home/u/.config/herdr/sessions/x/herdr.sock"}}`
 	if err := decodeHerdr([]byte(failed), &panes); err == nil || err.Error() != "herdr: server_not_running: no herdr server is running at /home/u/.config/herdr/sessions/x/herdr.sock" {
 		t.Fatalf("error envelope: %v", err)
+	}
+}
+
+// The CLI runs with the client's environment (or stagent's), never with the
+// dynamic loader's variables, which would load code into it.
+func TestRunDropsLoaderVariables(t *testing.T) {
+	env, err := exec.LookPath("env")
+	if err != nil {
+		t.Skip("no env(1)")
+	}
+	environ := func(inv invocation) []string {
+		t.Helper()
+		out, err := execMux{}.run(inv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Split(strings.TrimSpace(string(out)), "\n")
+	}
+	got := environ(invocation{bin: env, env: []string{
+		"TMUX_TMPDIR=/tmp/t", "LD_PRELOAD=/nonexistent/stagent-test.so", "LD_LIBRARY_PATH=/nonexistent",
+		"DYLD_INSERT_LIBRARIES=/nonexistent/x.dylib", "HOME=/home/u",
+	}})
+	if want := []string{"TMUX_TMPDIR=/tmp/t", "HOME=/home/u"}; !slices.Equal(got, want) {
+		t.Fatalf("client environment passed as %q, want %q", got, want)
+	}
+
+	t.Setenv("LD_PRELOAD", "/nonexistent/stagent-test.so")
+	t.Setenv("STAGENT_TEST_MARK", "1")
+	got = environ(invocation{bin: env})
+	if !slices.Contains(got, "STAGENT_TEST_MARK=1") || slices.ContainsFunc(got, func(kv string) bool { return strings.HasPrefix(kv, "LD_PRELOAD=") }) {
+		t.Fatalf("stagent's environment passed as %q", got)
 	}
 }

@@ -483,15 +483,19 @@ func (t *transcripts) newest(a agentFacts, fresh bool) string {
 type claims struct {
 	t       *transcripts
 	s       *ptable.Snapshot
+	owns    func(pid int) bool // see locator.owns
 	rootsOf func(pid int) transcript.Roots
-	// held maps transcripts to the Codex and omp processes that have them
-	// open or name them on their command line (collected on first use).
+	// held maps transcripts to the Codex and omp processes of stagent's
+	// user that have them open or name them on their command line
+	// (collected on first use). Another user's process is not asked: its
+	// environment, command line and directory would point stagent at
+	// paths of that user's choosing.
 	held     map[string][]int
 	assigned map[string]bool // what earlier agents of the scan resolved to
 }
 
-func (t *transcripts) newClaims(s *ptable.Snapshot, rootsOf func(pid int) transcript.Roots) *claims {
-	return &claims{t: t, s: s, rootsOf: rootsOf, assigned: map[string]bool{}}
+func (t *transcripts) newClaims(s *ptable.Snapshot, owns func(pid int) bool, rootsOf func(pid int) transcript.Roots) *claims {
+	return &claims{t: t, s: s, owns: owns, rootsOf: rootsOf, assigned: map[string]bool{}}
 }
 
 // claimedBy returns the claimed func of the agent made of the processes
@@ -530,7 +534,7 @@ func (c *claims) collect() map[string][]int {
 			continue
 		}
 		h := harnessOf(p.Name, s.Argv(pid))
-		if h != wire.HarnessCodex && h != wire.HarnessOmp {
+		if h != wire.HarnessCodex && h != wire.HarnessOmp || !c.owns(pid) {
 			continue
 		}
 		a := agentFacts{

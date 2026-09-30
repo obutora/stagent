@@ -81,6 +81,9 @@ func parseStat(pid int, b []byte, boot time.Time) (Proc, bool) {
 		Pgrp:  num(2),
 		Tpgid: num(5),
 	}
+	if tty := num(4); tty > 0 {
+		p.TTY = uint64(tty)
+	}
 	if ticks, err := strconv.ParseInt(f[19], 10, 64); err == nil {
 		p.Start = boot.Add(time.Duration(ticks) * time.Second / clockTicks)
 	}
@@ -154,6 +157,42 @@ func (osSource) OpenFiles(pid int) ([]string, error) {
 	return out, nil
 }
 
+// Owner reads the Uid line of /proc/<pid>/status. The owner of /proc/<pid>
+// would be cheaper but reads as root for every non-dumpable process — a
+// set-user-ID program, and any process that asks for it with
+// prctl(PR_SET_DUMPABLE, 0) — so another user's process could pass for
+// root's.
+func (osSource) Owner(pid int) (string, error) {
+	b, err := os.ReadFile(procPath(pid, "status"))
+	if err != nil {
+		return "", err
+	}
+	return statusOwner(b)
+}
+
+// statusOwner returns the uid of a /proc/<pid>/status whose real and
+// effective uids ("Uid:\t<real>\t<effective>\t<saved>\t<fs>") are one.
+func statusOwner(b []byte) (string, error) {
+	for line := range bytes.SplitSeq(b, []byte("\n")) {
+		v, ok := bytes.CutPrefix(line, []byte("Uid:"))
+		if !ok {
+			continue
+		}
+		f := strings.Fields(string(v))
+		if len(f) < 2 {
+			break
+		}
+		if _, err := strconv.ParseUint(f[0], 10, 32); err != nil {
+			break
+		}
+		if f[1] != f[0] {
+			return "", errMixedUIDs
+		}
+		return f[0], nil
+	}
+	return "", errors.New("ptable: no uids in /proc status")
+}
+
 // splitNul splits NUL-separated strings (cmdline, environ), ignoring the
 // terminating NULs.
 func splitNul(b []byte) []string {
@@ -163,3 +202,27 @@ func splitNul(b []byte) []string {
 	}
 	return strings.Split(s, "\x00")
 }
+
+// ttyGuess names a pseudo-terminal from its device number: /dev/pts/<n> is
+// major 136, minor n.
+func ttyGuess(dev uint64) string {
+	major, minor := (dev>>8)&0xfff, (dev&0xff)|((dev>>12)&0xfff00)
+	if major != 136 {
+		return ""
+	}
+	return "pts/" + strconv.FormatUint(minor, 10)
+}
+
+// rdev returns the device number of the device file at path, 0 when it
+// cannot be read.
+func rdev(path string) uint64 {
+	var st syscall.Stat_t
+	if syscall.Stat(path, &st) != nil {
+		return 0
+	}
+	return uint64(st.Rdev)
+}
+
+// TTYHosts returns nil: Linux does not need it, the command lines of the
+// login processes that name the remote host are readable to everyone.
+func TTYHosts() map[uint64]string { return nil }

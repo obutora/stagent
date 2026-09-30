@@ -54,6 +54,7 @@ type targetFrame struct {
 	Mux       string      `json:"mux"`
 	MuxDetail string      `json:"mux_detail,omitempty"`
 	Reason    string      `json:"reason,omitempty"`
+	Diag      string      `json:"diag,omitempty"`
 	Agents    []agentInfo `json:"agents"`
 	Selected  *string     `json:"selected"`
 }
@@ -64,6 +65,7 @@ type agentInfo struct {
 	PID            int    `json:"pid"`
 	Cwd            string `json:"cwd"`
 	Pane           string `json:"pane,omitempty"`
+	TTY            string `json:"tty,omitempty"`
 	Title          string `json:"title,omitempty"`
 	TranscriptPath string `json:"transcript_path,omitempty"`
 	Foreground     bool   `json:"foreground"`
@@ -109,7 +111,12 @@ func Main(args []string) int {
 		fmt.Fprintln(os.Stderr, "stagent follow:", err)
 		return 1
 	}
-	f := newFollower(os.Stdout, home, ptable.Take, newLocator(execMux{}), os.Getenv)
+	owner, err := ptable.CurrentOwner()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stagent follow:", err)
+		return 1
+	}
+	f := newFollower(os.Stdout, home, ptable.Take, newLocator(execMux{}, owner), os.Getenv)
 	if err := f.run(os.Stdin); err != nil {
 		fmt.Fprintln(os.Stderr, "stagent follow:", err)
 		return 1
@@ -119,17 +126,18 @@ func Main(args []string) int {
 
 // agent is one agent of the current target.
 type agent struct {
-	info  agentInfo
-	id    instance
-	mtime time.Time // of its transcript
+	info    agentInfo
+	id      instance
+	mtime   time.Time // of its transcript
+	session int64     // start of its terminal session (see candidate)
 }
 
 // selection is a picked agent.
 type selection struct {
-	key     string
-	id      instance
-	harness string
-	pane    string
+	key       string
+	id        instance
+	harness   string
+	pane, tty string
 }
 
 // followed is the transcript being streamed.
@@ -250,19 +258,20 @@ func (f *follower) report(errs []string) error {
 }
 
 // describe turns the located candidates into agents. An agent the app
-// picked stays listed while its process lives, even when the terminal no
-// longer shows it.
+// picked stays listed while its process lives (and runs as stagent's user),
+// even when the terminal no longer shows it.
 func (f *follower) describe(s *ptable.Snapshot) []agent {
 	cwds := map[instance]string{}
-	cl := f.tr.newClaims(s, func(pid int) transcript.Roots { return f.roots(s, pid) })
+	owns := func(pid int) bool { return f.loc.owns(s, pid) }
+	cl := f.tr.newClaims(s, owns, func(pid int) transcript.Roots { return f.roots(s, pid) })
 	out := make([]agent, 0, len(f.last.agents))
 	for _, c := range f.last.agents {
 		out = append(out, f.agent(s, c, cwds, cl))
 	}
 	if st := f.sticky; st != nil && find(out, st.key) == nil {
-		if p := s.Get(st.id.pid); p != nil && p.Start.UnixNano() == st.id.start && harnessOf(p.Name, s.Argv(p.PID)) == st.harness {
-			c := candidate{harness: st.harness, pane: st.pane}
-			c.pids = sameHarness(s, p.PID, st.harness, nil)
+		if p := s.Get(st.id.pid); p != nil && p.Start.UnixNano() == st.id.start && owns(p.PID) && harnessOf(p.Name, s.Argv(p.PID)) == st.harness {
+			c := candidate{harness: st.harness, pane: st.pane, tty: st.tty}
+			c.pids = sameHarness(s, p.PID, st.harness, owns, nil)
 			out = append(out, f.agent(s, c, cwds, cl))
 		}
 	}
@@ -281,12 +290,13 @@ func (f *follower) roots(s *ptable.Snapshot, pid int) transcript.Roots {
 	return transcript.DefaultRoots(f.home, getenv)
 }
 
-// sameHarness returns pid and the processes of the same harness below it.
-func sameHarness(s *ptable.Snapshot, pid int, harness string, acc []int) []int {
+// sameHarness returns pid and the processes of the same harness below it
+// that run as stagent's user.
+func sameHarness(s *ptable.Snapshot, pid int, harness string, owns func(int) bool, acc []int) []int {
 	acc = append(acc, pid)
 	for _, c := range s.Children(pid) {
-		if harnessOf(s.Get(c).Name, s.Argv(c)) == harness {
-			acc = sameHarness(s, c, harness, acc)
+		if owns(c) && harnessOf(s.Get(c).Name, s.Argv(c)) == harness {
+			acc = sameHarness(s, c, harness, owns, acc)
 		}
 	}
 	return acc
@@ -319,12 +329,13 @@ func (f *follower) agent(s *ptable.Snapshot, c candidate, cwds map[instance]stri
 	if cwd != "" {
 		cwds[id] = cwd
 	}
-	a := agent{id: id, info: agentInfo{
+	a := agent{id: id, session: c.session, info: agentInfo{
 		Key:            c.harness + ":" + strconv.Itoa(pid),
 		Harness:        c.harness,
 		PID:            pid,
 		Cwd:            cwd,
 		Pane:           c.pane,
+		TTY:            c.tty,
 		TranscriptPath: path,
 		Foreground:     c.foreground,
 	}}
@@ -376,9 +387,13 @@ func (f *follower) choose() *agent {
 	return best
 }
 
-// better ranks agents for the automatic pick: in the foreground (of the
+// better ranks agents for the automatic pick: of the newest terminal
+// session when several may be the tab's, then in the foreground (of the
 // shown pane), then newest transcript, then newest process.
 func better(a, b *agent) bool {
+	if a.session != b.session {
+		return a.session > b.session
+	}
 	if a.info.Foreground != b.info.Foreground {
 		return a.info.Foreground
 	}
@@ -389,7 +404,8 @@ func better(a, b *agent) bool {
 }
 
 // publish writes the target frame if it changed and starts following the
-// chosen agent's transcript.
+// chosen agent's transcript. A change of the diag alone — its counts move
+// with every scan — does not count.
 func (f *follower) publish() error {
 	sel := f.choose()
 	frame := targetFrame{
@@ -406,6 +422,8 @@ func (f *follower) publish() error {
 		frame.Reason = reasonNoTerminal
 	case len(f.agents) == 0:
 		frame.Reason = reasonNoAgent
+	case f.last.terminalAmbiguous:
+		frame.Reason = reasonTerminalAmbiguous
 	case f.last.ambiguous:
 		frame.Reason = reasonAmbiguous
 	}
@@ -417,10 +435,15 @@ func (f *follower) publish() error {
 		return err
 	}
 	if !bytes.Equal(b, f.sent) {
+		f.sent = b
+		if frame.Diag = f.last.diag; frame.Diag != "" {
+			if b, err = json.Marshal(frame); err != nil {
+				return err
+			}
+		}
 		if err := f.out.Encode(json.RawMessage(b)); err != nil {
 			return err
 		}
-		f.sent = b
 	}
 	return f.follow(sel)
 }
@@ -504,7 +527,7 @@ func (f *follower) selectAgent(key *string) error {
 	if a == nil {
 		return f.sendError("unknown agent " + strconv.Quote(*key))
 	}
-	f.sticky = &selection{key: a.info.Key, id: a.id, harness: a.info.Harness, pane: a.info.Pane}
+	f.sticky = &selection{key: a.info.Key, id: a.id, harness: a.info.Harness, pane: a.info.Pane, tty: a.info.TTY}
 	return f.publish()
 }
 

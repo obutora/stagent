@@ -12,18 +12,25 @@ Code, Codex, Oh My Pi) running in a terminal tab, also when it runs inside
 tmux, zellij, screen or herdr. For that the app runs `stagent follow` over an
 SSH exec channel on the terminal's own connection. It:
 
-- finds the tab's shell through the per-connection SSH server process (or the
-  shell's `SSH_CONNECTION`), and the pane a multiplexer client in it shows,
+- finds the tab's shell through the per-connection SSH server process, or
+  among the user's terminal sessions below tailscaled (Tailscale SSH), or
+  by the shell's `SSH_CONNECTION`, and the pane a multiplexer client in it
+  shows,
 - finds the agent process in that shell or pane and the conversation file it
   writes (`~/.claude`, `~/.codex`, `~/.omp`),
 - streams new messages of that file as JSON lines until the app closes the
   channel.
 
-It only reads the process list and those conversation files. It opens no
-network port, starts no background process and changes no configuration.
-Input typed in the chat view goes to the terminal itself, not through
-stagent. The wire format is documented in [PROTOCOL.md](PROTOCOL.md)
-("stagent follow").
+It only reads the process list, on macOS the login records
+(`/var/run/utmpx`), and those conversation files, and asks the
+multiplexer which pane its client shows (`tmux list-clients`, …, run as the
+client's own binary). It only considers processes of the user it runs as:
+another user's processes are never taken for the tab, an agent or a
+multiplexer, so it never runs their binaries or passes on their
+environment. It opens no network port, starts no background process and
+changes no configuration. Input typed in the chat view goes to the terminal
+itself, not through stagent. The wire format and these rules are documented
+in [PROTOCOL.md](PROTOCOL.md) ("stagent follow").
 
 The same binary also contains commands for an upcoming Agent Mode (`run`,
 `daemon`, `bridge`, `hook`, `integrate`); the chat view does not use them.
@@ -62,8 +69,13 @@ in its release notes and compare:
 
 ```sh
 scripts/release.sh          # writes dist/ and dist/SHA256SUMS
-diff dist/SHA256SUMS <(curl -sL https://github.com/obutora/stagent/releases/download/v0.2.0/SHA256SUMS)
+diff dist/SHA256SUMS <(curl -sL https://github.com/obutora/stagent/releases/download/v0.2.1/SHA256SUMS)
 ```
+
+Releases are published with `scripts/release.sh --publish`, which commits
+the exact source it built to this repository, rebuilds that commit and
+checks it gives the same bytes, and tags that commit — so a release's tag
+is always the source of its binaries.
 
 Tests: `go test ./...` (the e2e tests use tmux, zellij and herdr when they are
 on `PATH`).

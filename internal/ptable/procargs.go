@@ -50,3 +50,13 @@ func parseProcArgs2(b []byte) (procArgs2, error) {
 	}
 	return a, nil
 }
+
+// environ returns the environment. The kernel cuts the buffer after argv
+// when it withholds the environment (see ErrEnvWithheld); a process started
+// with an empty environment reads the same.
+func (a procArgs2) environ() ([]string, error) {
+	if a.env == nil {
+		return nil, ErrEnvWithheld
+	}
+	return a.env, nil
+}

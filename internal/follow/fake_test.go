@@ -2,6 +2,7 @@ package follow
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -13,33 +14,44 @@ import (
 // unreadable.
 type fakeProc struct {
 	ptable.Proc
-	argv  []string
-	env   []string
-	cwd   string
-	exe   string
-	files []string
+	argv     []string
+	env      []string
+	withheld bool // env reads as withheld by the OS (macOS, restricted)
+	cwd      string
+	exe      string
+	files    []string
+	owner    string // "" reads as unknown
 }
+
+// Users of the fake tables. The tests run stagent as testUser unless they
+// say otherwise.
+const (
+	testUser = "1000"
+	bobUser  = "1001"
+	rootUser = "0"
+)
 
 // tree builds fake process tables.
 type tree struct {
 	procs map[int]*fakeProc
 	base  time.Time
+	user  string // owner of the processes added from now on
 }
 
 func newTree() *tree {
-	t := &tree{procs: map[int]*fakeProc{}, base: time.Now().Add(-time.Hour)}
+	t := &tree{procs: map[int]*fakeProc{}, base: time.Now().Add(-time.Hour), user: testUser}
 	t.add(1, 0, "systemd", "/sbin/init")
 	return t
 }
 
-// add registers a process started pid seconds after the tree's base time
-// (so parents start before children), in its own process group with no
-// terminal.
+// add registers a process of t.user started pid seconds after the tree's
+// base time (so parents start before children), in its own process group
+// with no terminal.
 func (t *tree) add(pid, ppid int, name string, argv ...string) *fakeProc {
 	p := &fakeProc{Proc: ptable.Proc{
 		PID: pid, PPID: ppid, Name: name, Pgrp: pid,
 		Start: t.base.Add(time.Duration(pid) * time.Second),
-	}, argv: argv}
+	}, argv: argv, owner: t.user}
 	t.procs[pid] = p
 	return p
 }
@@ -58,6 +70,24 @@ func (p *fakeProc) bg() *fakeProc {
 
 func (p *fakeProc) withEnv(kv ...string) *fakeProc {
 	p.env = append(p.env, kv...)
+	return p
+}
+
+// withhold makes p's environment read as withheld (ptable.ErrEnvWithheld).
+func (p *fakeProc) withhold() *fakeProc {
+	p.withheld = true
+	return p
+}
+
+// onTTY gives p the controlling terminal dev.
+func (p *fakeProc) onTTY(dev uint64) *fakeProc {
+	p.TTY = dev
+	return p
+}
+
+// as makes p run as owner ("": unknown, or a set-user-ID program).
+func (p *fakeProc) as(owner string) *fakeProc {
+	p.owner = owner
 	return p
 }
 
@@ -100,7 +130,10 @@ func (f fakeSource) Exe(pid int) (string, error) {
 
 func (f fakeSource) Env(pid int) ([]string, error) {
 	p, err := f.get(pid)
-	if err != nil || p.env == nil {
+	switch {
+	case err == nil && p.withheld:
+		return nil, ptable.ErrEnvWithheld
+	case err != nil || p.env == nil:
 		return nil, os.ErrPermission
 	}
 	return p.env, nil
@@ -120,6 +153,14 @@ func (f fakeSource) OpenFiles(pid int) ([]string, error) {
 		return nil, err
 	}
 	return p.files, nil
+}
+
+func (f fakeSource) Owner(pid int) (string, error) {
+	p, err := f.get(pid)
+	if err != nil || p.owner == "" {
+		return "", os.ErrPermission
+	}
+	return p.owner, nil
 }
 
 // fakeMux answers multiplexer queries from tables; a missing entry is an
@@ -200,5 +241,9 @@ func sshTree() *tree {
 }
 
 func testLocator(m muxSystem) *locator {
-	return &locator{self: selfPID, sys: m, sameConn: map[instance]bool{}}
+	return &locator{
+		self: selfPID, owner: testUser, sys: m, conns: map[image]connClass{},
+		ttyHosts: func() map[uint64]string { return nil },
+		ttyName:  func(dev uint64) string { return fmt.Sprintf("ttys%03d", dev) },
+	}
 }

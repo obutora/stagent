@@ -165,6 +165,43 @@ func (osSource) Cwd(pid int) (string, error) {
 
 func (osSource) OpenFiles(int) ([]string, error) { return nil, errors.ErrUnsupported }
 
+// TTYName returns "": Windows processes have no controlling terminal.
+func TTYName(uint64) string { return "" }
+
+// TTYHosts returns nil: Windows has no terminal logins.
+func TTYHosts() map[uint64]string { return nil }
+
+// Owner is the user of the process's primary token. Opening another user's
+// token takes privileges stagent usually lacks: that process's owner is
+// then unknown.
+func (osSource) Owner(pid int) (string, error) {
+	h, err := open(pid, windows.PROCESS_QUERY_LIMITED_INFORMATION)
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(h)
+	var tok windows.Token
+	if err := windows.OpenProcessToken(h, windows.TOKEN_QUERY, &tok); err != nil {
+		return "", err
+	}
+	defer tok.Close()
+	return tokenOwner(tok)
+}
+
+// CurrentOwner returns the user this process runs as, in the form of
+// Snapshot.Owner: the SID of its token's user.
+func CurrentOwner() (string, error) {
+	return tokenOwner(windows.GetCurrentProcessToken())
+}
+
+func tokenOwner(tok windows.Token) (string, error) {
+	u, err := tok.GetTokenUser()
+	if err != nil {
+		return "", err
+	}
+	return u.User.Sid.String(), nil
+}
+
 const ptrSize = unsafe.Sizeof(uintptr(0))
 
 // userParams returns the raw RTL_USER_PROCESS_PARAMETERS of another

@@ -5,8 +5,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestTakeReadsRealProcesses(t *testing.T) {
@@ -44,6 +48,9 @@ func TestTakeReadsRealProcesses(t *testing.T) {
 	if !slices.Contains(s.OpenFiles(os.Getpid()), f.Name()) {
 		t.Fatalf("open files miss %s", f.Name())
 	}
+	if want, _ := CurrentOwner(); s.Owner(os.Getpid()) != want || want == "" {
+		t.Fatalf("owner %q, want %q", s.Owner(os.Getpid()), want)
+	}
 
 	pid := child.Process.Pid
 	if !slices.Contains(s.Children(os.Getpid()), pid) {
@@ -68,11 +75,59 @@ func TestParseStatOddComm(t *testing.T) {
 	if !ok {
 		t.Fatal("not parsed")
 	}
-	want := Proc{PID: 2749404, PPID: 2749221, Name: "a) b (c)", Pgrp: 2749404, Tpgid: 2749404, Start: boot.Add(620299850 * time.Millisecond)}
+	want := Proc{PID: 2749404, PPID: 2749221, Name: "a) b (c)", Pgrp: 2749404, Tpgid: 2749404, TTY: 34831, Start: boot.Add(620299850 * time.Millisecond)}
 	if p != want {
 		t.Fatalf("got %+v\nwant %+v", p, want)
 	}
 	if !p.Foreground() {
 		t.Fatal("pgrp == tpgid is the foreground")
+	}
+}
+
+func TestTTYName(t *testing.T) {
+	ptmx, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		t.Skip(err)
+	}
+	defer ptmx.Close()
+	n, err := unix.IoctlGetInt(int(ptmx.Fd()), unix.TIOCGPTN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "pts/" + strconv.Itoa(n)
+	dev := rdev("/dev/" + name)
+	if dev == 0 {
+		t.Fatalf("no /dev/%s", name)
+	}
+	if got := TTYName(dev); got != name {
+		t.Fatalf("got %q, want %q", got, name)
+	}
+	if got := TTYName(1<<40 | 3); got != "" {
+		t.Fatalf("unknown device named %q", got)
+	}
+}
+
+func TestStatusOwner(t *testing.T) {
+	status := func(uids string) []byte {
+		return []byte("Name:\tbash\nUmask:\t0022\nState:\tS (sleeping)\nPid:\t4242\nPPid:\t1\nTracerPid:\t0\n" +
+			uids + "\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t256\n")
+	}
+	for _, c := range []struct{ uids, want string }{
+		{"Uid:\t1000\t1000\t1000\t1000", "1000"},
+		{"Uid:\t0\t0\t0\t0", "0"},
+		// A set-user-ID root program started by uid 1000: root's
+		// privileges, 1000's arguments and environment.
+		{"Uid:\t1000\t0\t0\t0", ""},
+		// Root's process running with another effective uid for now.
+		{"Uid:\t0\t1000\t0\t1000", ""},
+		// The saved and filesystem uids give no one else control.
+		{"Uid:\t1000\t1000\t0\t1000", "1000"},
+		{"Uid:\t1000", ""},
+		{"", ""},
+	} {
+		got, err := statusOwner(status(c.uids))
+		if got != c.want || (err == nil) != (c.want != "") {
+			t.Errorf("%q: got %q, %v; want %q", c.uids, got, err, c.want)
+		}
 	}
 }

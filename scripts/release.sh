@@ -1,28 +1,47 @@
 #!/usr/bin/env bash
 # Build the six stagent release binaries, write SHA256SUMS and, inside the
 # SSH Term app tree, regenerate the app's pinned release constants
-# (lib/services/agent_bridge/stagent_release.dart).
+# (lib/services/agent_bridge/stagent_release.dart: version, download URL,
+# sha256 and size of every asset).
 #
-#   scripts/release.sh             build into dist/ (and regenerate the Dart file)
-#   scripts/release.sh --publish   additionally create the GitHub release
-#                                  v<version> in obutora/stagent (needs gh)
+#   scripts/release.sh                      build into dist/ (and regenerate the Dart file)
+#   scripts/release.sh --publish            additionally publish v<version> to
+#                                           github.com/obutora/stagent (needs gh)
+#   scripts/release.sh --publish --dry-run  every publish step except pushing
+#                                           and creating the release
+#
+# --publish makes the public repository's tag the source that was built. It
+# clones obutora/stagent, replaces its tree with this directory's git-tracked
+# files as they are on disk (dist/ excluded; untracked files are refused),
+# commits them as "stagent v<version> source" if that changes anything,
+# rebuilds the binaries from that commit and aborts unless they equal dist/
+# byte for byte, pushes main and the tag v<version> together (refusing a tag
+# that already exists on another commit), then creates the release at that
+# commit with dist/ as its assets and the Go version in its notes.
 #
 # Builds are reproducible (-trimpath, no VCS stamp, empty build id), so the
 # same source and Go toolchain always give the same sha256 sums: the app pins
-# them, and the release must be published from the exact tree that generated
-# the Dart file. Run it from a checkout of the public source repository to
-# check a release: dist/SHA256SUMS must match the release's. Set GO to use a
+# them. Run it from a checkout of the public source repository to check a
+# release: dist/SHA256SUMS must match the release's. Set GO to use a
 # specific toolchain.
 set -euo pipefail
 
 publish=0
+dry_run=0
 for arg in "$@"; do
   case "$arg" in
     --publish) publish=1 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    --dry-run) dry_run=1 ;;
+    -h|--help) awk 'NR > 1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "release.sh: unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+if [ "$dry_run" = 1 ] && [ "$publish" = 0 ]; then
+  echo "release.sh: --dry-run only applies to --publish" >&2
+  exit 2
+fi
+
+die() { echo "release.sh: $*" >&2; exit 1; }
 
 here="$(cd "$(dirname "$0")/.." && pwd)"     # stagent module root
 app="$(cd "$here/.." && pwd)"                 # Flutter app root
@@ -32,40 +51,57 @@ repo="obutora/stagent"
 go="${GO:-go}"
 
 version="$(sed -n 's/^const Version = "\(.*\)"$/\1/p' "$here/internal/version/version.go")"
-if [ -z "$version" ]; then
-  echo "release.sh: cannot read Version from internal/version/version.go" >&2
-  exit 1
-fi
-base_url="https://github.com/$repo/releases/download/v$version"
+[ -n "$version" ] || die "cannot read Version from internal/version/version.go"
+tag="v$version"
+base_url="https://github.com/$repo/releases/download/$tag"
 targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
+go_version="$("$go" env GOVERSION)"
 
 if command -v sha256sum >/dev/null 2>&1; then
   sha() { sha256sum "$1" | cut -d' ' -f1; }
 else
   sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 fi
+size() { wc -c < "$1" | tr -d ' '; }
 
 asset() { # asset <os>-<arch> → release file name
   case "$1" in windows-*) echo "stagent-$1.exe" ;; *) echo "stagent-$1" ;; esac
 }
 
+# build <module dir> <output dir>: the six binaries and their SHA256SUMS.
+build() {
+  local src="$1" out="$2" t os arch name
+  for t in $targets; do
+    os="${t%/*}" arch="${t#*/}"
+    name="$(asset "$os-$arch")"
+    echo "  build $name"
+    (cd "$src" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" "$go" build \
+      -trimpath -buildvcs=false -ldflags '-s -w -buildid=' \
+      -o "$out/$name" ./cmd/stagent)
+  done
+  : > "$out/SHA256SUMS"
+  for t in $targets; do
+    name="$(asset "${t%/*}-${t#*/}")"
+    printf '%s  %s\n' "$(sha "$out/$name")" "$name" >> "$out/SHA256SUMS"
+  done
+}
+
+# Refuse what --publish cannot publish before spending time on the build.
+if [ "$publish" = 1 ]; then
+  command -v gh >/dev/null 2>&1 || die "gh is required for --publish"
+  git -C "$here" rev-parse --git-dir >/dev/null 2>&1 || die "--publish needs $here in a git checkout"
+  untracked="$(git -C "$here" ls-files --others --exclude-standard)"
+  [ -z "$untracked" ] || die "untracked files would be built but not published (add or remove them):
+$untracked"
+  if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+    die "release $tag already exists in $repo"
+  fi
+fi
+
 rm -rf "$dist"
 mkdir -p "$dist"
 echo "stagent $version ($("$go" version))"
-for t in $targets; do
-  os="${t%/*}" arch="${t#*/}"
-  name="$(asset "$os-$arch")"
-  echo "  build $name"
-  (cd "$here" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" "$go" build \
-    -trimpath -buildvcs=false -ldflags '-s -w -buildid=' \
-    -o "$dist/$name" ./cmd/stagent)
-done
-
-: > "$dist/SHA256SUMS"
-for t in $targets; do
-  name="$(asset "${t%/*}-${t#*/}")"
-  printf '%s  %s\n' "$(sha "$dist/$name")" "$name" >> "$dist/SHA256SUMS"
-done
+build "$here" "$dist"
 
 # The public source repository has no app next to it; there SHA256SUMS is
 # the whole output.
@@ -96,6 +132,16 @@ EOF
   cat <<'EOF'
 };
 
+/// Size in bytes of each release asset, keyed `<os>-<arch>`.
+const Map<String, int> stagentSize = {
+EOF
+  for t in $targets; do
+    key="${t%/*}-${t#*/}"
+    printf "  '%s': %s,\n" "$key" "$(size "$dist/$(asset "$key")")"
+  done
+  cat <<'EOF'
+};
+
 /// File name of the release asset for [assetKey] (`<os>-<arch>`).
 String stagentAssetName(String assetKey) =>
     assetKey.startsWith('windows-') ? 'stagent-$assetKey.exe' : 'stagent-$assetKey';
@@ -112,11 +158,79 @@ echo "wrote $dist/SHA256SUMS"
 fi
 cat "$dist/SHA256SUMS"
 
-if [ "$publish" = 1 ]; then
-  command -v gh >/dev/null 2>&1 || { echo "release.sh: gh is required for --publish" >&2; exit 1; }
-  gh release create "v$version" "$dist"/* \
-    --repo "$repo" \
-    --title "stagent v$version" \
-    --notes "stagent $version — server binary for SSH Term Agent Mode. Verify downloads against SHA256SUMS."
-  echo "published $base_url"
+[ "$publish" = 1 ] || exit 0
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+clone="$work/stagent"
+gh repo clone "$repo" "$clone" -- --quiet
+branch="$(git -C "$clone" symbolic-ref --short HEAD)"
+[ "$branch" = main ] || die "$repo's default branch is $branch, not main"
+
+# The public tree becomes exactly the tracked files that were just built.
+git -C "$clone" rm -rq --ignore-unmatch -- .
+git -C "$here" ls-files -z -- . ':(exclude)dist' | tar -c -f - -C "$here" --null -T - | tar -x -f - -C "$clone"
+for f in README.md LICENSE go.mod cmd/stagent/main.go; do
+  [ -f "$clone/$f" ] || die "$f is not among the tracked files of $here"
+done
+git -C "$clone" add -A
+if git -C "$clone" diff --cached --quiet; then
+  echo "$repo main already holds this source"
+else
+  git -C "$clone" commit -q -m "stagent $tag source"
 fi
+commit="$(git -C "$clone" rev-parse HEAD)"
+[ -z "$(git -C "$clone" status --porcelain)" ] || die "the clone of $repo has changes outside the commit"
+
+# The commit must build the very binaries the app pins.
+echo "rebuilding from $repo@$commit"
+mkdir "$work/dist"
+build "$clone" "$work/dist"
+if ! cmp -s "$dist/SHA256SUMS" "$work/dist/SHA256SUMS"; then
+  diff "$dist/SHA256SUMS" "$work/dist/SHA256SUMS" >&2 || true
+  die "the binaries built from $repo@$commit differ from dist/"
+fi
+
+remote_tag=""
+if [ -n "$(git -C "$clone" ls-remote origin "refs/tags/$tag")" ]; then
+  git -C "$clone" fetch -q origin "+refs/tags/$tag:refs/tags/$tag"
+  remote_tag="$(git -C "$clone" rev-parse "refs/tags/$tag^{commit}")"
+  [ "$remote_tag" = "$commit" ] || die "$repo already has tag $tag at $remote_tag, not at $commit"
+fi
+notes="stagent $version — server binary for SSH Term. Built from this tag ($commit) with $go_version via scripts/release.sh (reproducible: CGO_ENABLED=0, -trimpath, no VCS stamp, empty build id); verify downloads against SHA256SUMS."
+
+if [ "$dry_run" = 1 ]; then
+  git -C "$clone" log -1 --stat --format='%H %s' | tail -n 20
+  if [ -z "$remote_tag" ]; then
+    echo "dry run: would push $commit to $repo main and tag it $tag,"
+  else
+    echo "dry run: would push $commit to $repo main ($tag already points at it),"
+  fi
+  echo "then create release $tag with $(ls "$dist" | tr '\n' ' ')"
+  echo "notes: $notes"
+  exit 0
+fi
+
+refs=("HEAD:refs/heads/main")
+if [ -z "$remote_tag" ]; then
+  git -C "$clone" tag "$tag" "$commit"
+  refs+=("refs/tags/$tag")
+fi
+git -C "$clone" push -q --atomic origin "${refs[@]}"
+
+gh release create "$tag" "$dist"/* \
+  --repo "$repo" \
+  --verify-tag \
+  --target "$commit" \
+  --title "stagent $tag" \
+  --notes "$notes"
+
+# The release must be the tag and the assets checked above.
+git -C "$clone" fetch -q origin "+refs/tags/$tag:refs/tags/$tag"
+published="$(git -C "$clone" rev-parse "refs/tags/$tag^{commit}")"
+[ "$published" = "$commit" ] || die "tag $tag is at $published after publishing, not at $commit"
+want_assets="$(for f in "$dist"/*; do echo "$(basename "$f") $(size "$f")"; done | sort)"
+got_assets="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[] | "\(.name) \(.size)"' | sort)"
+[ "$got_assets" = "$want_assets" ] || die "release $tag assets differ from dist/:
+$got_assets"
+echo "published $base_url ($repo@$commit)"

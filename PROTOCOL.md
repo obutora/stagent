@@ -192,27 +192,42 @@ JSON-RPC envelopes. Times are unix milliseconds.
 | frame | members |
 |---|---|
 | `hello` | `{t, version, follow_protocol, os, arch}` — first frame; `follow_protocol` is 1 |
-| `target` | `{t, mux, mux_detail?, reason?, agents[], selected}` |
+| `target` | `{t, mux, mux_detail?, reason?, diag?, agents[], selected}` |
 | `messages` | `{t, key, path, harness, reset, messages[], cursor}` |
 | `page` | `{t, key, messages[], cursor}` — reply to `older` |
 | `error` | `{t, message}` — non-fatal (bad request, failing multiplexer query, unreadable transcript) |
 
 `target` is sent after `hello` and then whenever any of its members
-changes. `mux` is `none | tmux | zellij | screen | herdr`: the multiplexer
-whose client the tab shows. `mux_detail` names the session and the shown
-pane: tmux `"<session> <pane id>"` (`main %3`), zellij `"<session>
-terminal_<n>"`, screen `"<sty> <window>"`, herdr `"<session|default> <pane
-id>"`. `reason` is `no_terminal` (the tab's processes cannot be found),
-`no_agent` (found, without an agent) or `mux_ambiguous` (the multiplexer
-cannot tell which of several clients is the tab's, so the agents of every
-pane its clients show are listed). `selected` is the followed agent's key or
-`null`.
+changes (`diag` excepted: its counts move with every scan). `mux` is `none
+| tmux | zellij | screen | herdr`: the multiplexer whose client the tab
+shows. `mux_detail` names the session and the shown pane: tmux `"<session>
+<pane id>"` (`main %3`), zellij `"<session> terminal_<n>"`, screen `"<sty>
+<window>"`, herdr `"<session|default> <pane id>"`. `reason` is `no_terminal`
+(the tab's processes cannot be found), `no_agent` (found, without an
+agent), `terminal_ambiguous` (several terminals may be the tab's — see
+below — so the agents of all of them are listed, each with its `tty`, and
+the automatic choice is a guess) or `mux_ambiguous` (the multiplexer cannot
+tell which of several clients is the tab's, so the agents of every pane its
+clients show are listed); the first that applies, in this order.
+`selected` is the followed agent's key or `null`.
+
+`diag` comes with `no_terminal`: one line, for bug reports, of how the tab
+was looked for — stagent's pid and uid, whether its `SSH_CONNECTION` is
+set, the connection root it found or what the Tailscale session search and
+the `SSH_CONNECTION` fallback counted, and its ancestors (`pid:name:uid`,
+`?` for an unknown owner, nearest first, then `|top`, `|gone:<ppid>` for a
+parent missing from the process table, `|newer:<ppid>` for a parent that
+started after its child, or `|more`). It names processes and users, never
+environment values or addresses. Its format is not stable: apps show it,
+they do not parse it.
 
 `Agent`: `key` (`<harness>:<pid>`), `harness`, `pid`, `cwd`, `pane?` (tmux
-pane id, `terminal_<n>`, screen window number, herdr pane id), `title?`
-(the conversation's title), `transcript_path?` (absent until the agent has
-written its transcript), `foreground` (in the foreground of the terminal the
-user sees; always false on Windows, which has no terminal process groups).
+pane id, `terminal_<n>`, screen window number, herdr pane id), `tty?` (the
+terminal of the agent's session below `/dev`, `ttys003`, `pts/3`; with
+`terminal_ambiguous`), `title?` (the conversation's title),
+`transcript_path?` (absent until the agent has written its transcript),
+`foreground` (in the foreground of the terminal the user sees; always false
+on Windows, which has no terminal process groups).
 
 `messages` with `reset: true` replaces the list: it follows every change of
 the selected agent or of its transcript path (`/clear`, resume, another
@@ -234,10 +249,48 @@ out so far. `Message` is the object of the Agent Mode protocol.
 Every channel of an SSH connection is a child of the connection's SSH
 server process, so stagent walks up from itself to the nearest `sshd`,
 `sshd-session` or `dropbear` (`.exe` on Windows) and takes that process's
-other children — the tab's shell — as the tab. Without such an ancestor
-(Tailscale SSH) the processes whose environment has stagent's
-`SSH_CONNECTION` stand in (Linux and macOS read other processes'
-environments; Windows too for the user's own processes).
+other children — the tab's shell — as the tab.
+
+Tailscale SSH has no such process: tailscaled runs every channel of every
+connection below itself, through root's `login` (macOS; terminals on
+Linux), `su -l` (commands on Linux) or its incubator `tailscaled be-child
+ssh` (under the daemon's name, so of adjacent `tailscaled` ancestors the
+topmost is the daemon). Below stagent's tailscaled, the terminals that may
+be the tab are the topmost processes of stagent's user in each other
+session that have a controlling terminal — reached only through root's
+processes, never through another user's, and never below a multiplexer.
+They are narrowed by what is known of each connection, strongest first:
+
+1. the same `SSH_CONNECTION`, when stagent's (its own environment, else
+   its ancestors' below tailscaled) and the terminal's (the environment of
+   its processes of stagent's user, the shell first, else of root's
+   processes that started it) can both be read;
+2. the same client address: stagent's from `SSH_CONNECTION` / `SSH_CLIENT`,
+   else its ancestors' command lines (`login … -h IP`, `tailscaled be-child
+   ssh … --remote-ip=IP`); the terminal's from the same sources, else, on
+   macOS, the host utmpx records for the terminal (`login -h` writes it;
+   `/var/run/utmpx` is readable by everyone);
+3. terminals whose connection is unknown.
+
+A terminal proven to be on another connection or address is dropped. One
+left is the tab; several give `terminal_ambiguous`, and the automatic
+choice takes the most recently started session first. Environments often
+cannot be read: macOS withholds the environment of restricted programs —
+`/bin/zsh`, `/bin/sh`, `/usr/bin/*`, programs signed with entitlements —
+from other processes while System Integrity Protection is on, root
+included; `su -l` clears `SSH_CONNECTION` from Linux's exec channels;
+command lines of root's processes are readable to everyone on Linux, to
+root only on macOS. So stagent running as the user tells two tabs from the
+same device apart only by `SSH_CONNECTION` (readable on Linux, and on macOS
+where an agent's environment is), and on Linux without a client address of
+its own it cannot tell terminals apart at all.
+
+When neither applies, or tailscaled shows no terminal session, the
+processes of stagent's user whose environment has stagent's
+`SSH_CONNECTION` stand in for the tab (Linux and macOS read other
+processes' environments, macOS not those it withholds; Windows too for the
+user's own processes). When stagent's own `SSH_CONNECTION` is unset there
+is then no tab to find: the target is `no_terminal`.
 
 In the tab's process tree, agents are recognized by process name or argv
 (`claude`, `codex`, `omp`, also `node|bun … <script>` of their npm
@@ -252,15 +305,17 @@ is followed into the pane it shows:
 | screen | `screen -S <sty> -Q number`; the window's processes are the server's children with `WINDOW=<n>` (every window, `mux_ambiguous`, when `-Q` is unsupported) |
 | herdr | `herdr [--session NAME] pane list` (the `focused` pane), then `pane process-info --pane ID` (`shell_pid`, `foreground_processes`) |
 
-The CLIs run as the client's own executable with the client's environment.
+The CLIs run as the client's own executable with the client's environment,
+minus the dynamic loader's variables (see Security below).
 Multiplexers are Linux / macOS only; nested ones are followed up to three
 levels.
 
-The automatic choice prefers an agent in the foreground (its process group
-is the terminal's foreground group; herdr also reports it), then the newest
-transcript; it only moves when its agent is gone or another agent comes to
-the foreground while it is not. The tree is walked every second and the
-followed transcript polled every 300 ms.
+The automatic choice prefers, with `terminal_ambiguous`, an agent of the
+most recently started session, then an agent in the foreground (its
+process group is the terminal's foreground group; herdr also reports it),
+then the newest transcript; it only moves when its agent is gone or another
+agent comes to the foreground while it is not. The tree is walked every
+second and the followed transcript polled every 300 ms.
 
 Transcripts: Claude Code — `${CLAUDE_CONFIG_DIR:-~/.claude}/sessions/<pid>.json`
 (`sessionId`) → `projects/*/<sessionId>.jsonl`. Codex and omp, first match
@@ -280,6 +335,35 @@ wins:
    resume / continue) prefers one created since it started.
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are read from the agent's environment.
+
+### Security
+
+`stagent follow` only uses processes of the user it runs as: the same
+effective uid, with the real uid equal to it (a set-user-ID program has its
+owner's privileges but the arguments and environment of whoever started it,
+so it counts as another user's), or on Windows the same token user SID. A
+process whose owner cannot be read counts as another user's; the owner is
+checked on every scan. Another user's process
+
+- never stands in for the tab in the `SSH_CONNECTION` fallback (anyone can
+  copy the connection's `SSH_CONNECTION` into their environment), nor is
+  one of the terminals below tailscaled, nor is looked through for one,
+- is never an agent, a multiplexer client or a multiplexer server, so its
+  executable is never run and its environment never passed on,
+- is never asked which transcript it writes: its command line, environment,
+  working directory and open files are not used.
+
+Processes below it that run as stagent's user again (`su bob`, then `su -`
+back) still belong to the tab. This matters most when stagent runs as root
+(Tailscale SSH as root, `su bob` in root's tab): running another user's
+multiplexer binary, or any binary with their environment, would run their
+code as root. Root's own processes that start Tailscale SSH sessions
+(`login`, `su`, the incubator) are only read — command line, and
+environment when readable — to compare connections.
+
+Whichever environment a multiplexer CLI gets (the client's, or stagent's own
+when the client's cannot be read), the dynamic loader's variables (`LD_*`,
+`DYLD_*`) are removed from it: they would load code into the CLI.
 
 ## Installer CLI (run by the app over plain exec, not the bridge)
 

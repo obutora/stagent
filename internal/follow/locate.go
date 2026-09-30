@@ -1,6 +1,7 @@
 package follow
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/obutora/stagent/internal/ptable"
 	"github.com/obutora/stagent/internal/wire"
@@ -24,9 +26,10 @@ const (
 
 // Reasons of the target frame.
 const (
-	reasonNoTerminal = "no_terminal"
-	reasonNoAgent    = "no_agent"
-	reasonAmbiguous  = "mux_ambiguous"
+	reasonNoTerminal        = "no_terminal"
+	reasonNoAgent           = "no_agent"
+	reasonTerminalAmbiguous = "terminal_ambiguous"
+	reasonAmbiguous         = "mux_ambiguous"
 )
 
 const (
@@ -45,27 +48,44 @@ type candidate struct {
 	pids       []int
 	pane       string
 	foreground bool
+	// tty names the terminal of the agent's session and session is when
+	// that session started (unix ns), when the terminal is ambiguous.
+	tty     string
+	session int64
 }
 
 // location is what locate found in one process-table snapshot.
 type location struct {
 	noTerminal     bool
+	diag           string // why, when noTerminal (see diagnose)
 	mux, muxDetail string
-	ambiguous      bool
-	agents         []candidate
-	errs           []string // failed multiplexer queries
+	ambiguous      bool // the multiplexer's clients
+	// terminalAmbiguous: several terminals may be the tab's, and agents
+	// holds those of all of them.
+	terminalAmbiguous bool
+	agents            []candidate
+	errs              []string // failed multiplexer queries
 }
 
 // locator finds the agents running in the terminal that shares stagent's
-// SSH connection. Its decisions depend only on the snapshot and muxSystem.
+// SSH connection. Its decisions depend only on the snapshot, muxSystem and
+// ttyHosts.
 type locator struct {
-	self    int
-	sshConn string // stagent's own SSH_CONNECTION ("" when unset)
-	sys     muxSystem
-	// sameConn caches, per process instance, whether its environment has
-	// stagent's SSH_CONNECTION: reading every environment is the costly
-	// part of the fallback, and a process's initial environment is fixed.
-	sameConn map[instance]bool
+	self      int
+	sshConn   string // stagent's own SSH_CONNECTION ("" when unset)
+	sshClient string // stagent's own SSH_CLIENT
+	// owner is the user stagent runs as (ptable.Snapshot.Owner form); see
+	// owns.
+	owner string
+	sys   muxSystem
+	// ttyHosts and ttyName are ptable.TTYHosts and ptable.TTYName.
+	ttyHosts func() map[uint64]string
+	ttyName  func(dev uint64) string
+	// conns caches what the environment of each program a process ran
+	// says about its SSH connection: reading every environment is the
+	// costly part of the fallback, and the environment a program started
+	// with is fixed.
+	conns map[image]connClass
 }
 
 // instance identifies a process across snapshots (pids are recycled).
@@ -74,24 +94,72 @@ type instance struct {
 	start int64
 }
 
-func newLocator(sys muxSystem) *locator {
+// image identifies the program a process instance runs. exec keeps the pid
+// and start time but brings another environment, and often another owner:
+// the child of root's `login` becomes the user's shell.
+type image struct {
+	instance
+	name string
+}
+
+// connClass is what a process's environment says about its SSH connection.
+type connClass uint8
+
+const (
+	connUnreadable connClass = iota
+	connWithheld             // see ptable.ErrEnvWithheld
+	connNone                 // no SSH_CONNECTION
+	connOther                // another connection's
+	connSame                 // stagent's
+)
+
+func newLocator(sys muxSystem, owner string) *locator {
 	return &locator{
-		self:     os.Getpid(),
-		sshConn:  os.Getenv("SSH_CONNECTION"),
-		sys:      sys,
-		sameConn: map[instance]bool{},
+		self:      os.Getpid(),
+		sshConn:   os.Getenv("SSH_CONNECTION"),
+		sshClient: os.Getenv("SSH_CLIENT"),
+		owner:     owner,
+		sys:       sys,
+		ttyHosts:  ptable.TTYHosts,
+		ttyName:   ptable.TTYName,
+		conns:     map[image]connClass{},
 	}
 }
 
+// owns reports whether pid runs as stagent's own user. Only such processes
+// are used: as the terminal's processes in the SSH_CONNECTION fallback and
+// below tailscaled, as agents, as multiplexer clients and servers, and as
+// the source of transcript locations. Another user's process is untrusted
+// input: stagent runs a multiplexer client's executable with the client's
+// environment, which — when stagent runs as root (Tailscale SSH as root,
+// `su bob` in root's terminal) — would run that user's code as root, and
+// anyone can copy stagent's SSH_CONNECTION into their environment.
+// Processes of an unknown owner, or whose real and effective uids differ (a
+// set-user-ID program, see ptable.Snapshot.Owner), count as another user's.
+// The owner is checked on every scan: a process keeps its pid and start
+// time across su's setuid and exec.
+func (l *locator) owns(s *ptable.Snapshot, pid int) bool {
+	return l.owner != "" && s.Owner(pid) == l.owner
+}
+
 // locate finds the agents in the terminal: in its shell's process tree, and
-// in the pane a multiplexer client in that tree shows.
+// in the pane a multiplexer client in that tree shows. When several
+// terminals may be the tab's, their agents are told apart by terminal.
 func (l *locator) locate(s *ptable.Snapshot) location {
-	roots, ok := l.scope(s)
-	if !ok || len(roots) == 0 {
-		return location{noTerminal: true, mux: muxNone}
+	roots, sr := l.scope(s)
+	if len(roots) == 0 {
+		return location{noTerminal: true, diag: l.diagnose(s, sr), mux: muxNone}
 	}
 	w := &walker{l: l, s: s, seen: map[int]bool{}, tmux: map[string]tmuxAnswer{}}
-	w.explore(roots, level{fg: (*ptable.Proc).Foreground}, 0)
+	if len(roots) > 1 && sr.sessions {
+		w.loc.terminalAmbiguous = true
+		for _, r := range roots {
+			p := s.Get(r)
+			w.explore([]int{r}, level{fg: (*ptable.Proc).Foreground, tty: l.ttyName(p.TTY), session: p.Start.UnixNano()}, 0)
+		}
+	} else {
+		w.explore(roots, level{fg: (*ptable.Proc).Foreground}, 0)
+	}
 	loc := w.loc
 	if loc.mux == "" {
 		loc.mux = muxNone
@@ -102,14 +170,55 @@ func (l *locator) locate(s *ptable.Snapshot) location {
 	return loc
 }
 
+// search records how scope looked for the terminal.
+type search struct {
+	root int      // the connection root, 0 when there is none
+	ts   *tsStats // the Tailscale session search's, nil when it did not run
+	// sessions: the roots are terminals the Tailscale session search
+	// could not tell apart, each one the tab's or not.
+	sessions bool
+	conn     *connStats // the SSH_CONNECTION fallback's, nil when it did not run
+}
+
+// connStats counts what the SSH_CONNECTION fallback saw.
+type connStats struct {
+	procs    int // processes other than stagent
+	env      int // with a readable environment
+	withheld int // whose environment the OS withholds
+	set      int // with SSH_CONNECTION
+	same     int // with stagent's SSH_CONNECTION; of these, not used:
+	self     int // stagent's ancestors and descendants
+	owner    int // another user's (or of an unknown owner)
+	nested   int // below another match or a multiplexer
+}
+
+func (st *connStats) count(c connClass) {
+	st.procs++
+	switch c {
+	case connWithheld:
+		st.withheld++
+	case connSame:
+		st.same++
+		fallthrough
+	case connOther:
+		st.set++
+		fallthrough
+	case connNone:
+		st.env++
+	}
+}
+
 // scope returns the roots of the process trees belonging to the terminal.
 //
 // Every channel of an SSH connection — the terminal's shell and this exec
 // channel — is a child of the connection's SSH server process, so the
-// terminal is that process's other children. Without such an ancestor
-// (Tailscale SSH serves connections from tailscaled itself) the processes
-// carrying stagent's SSH_CONNECTION stand in for them.
-func (l *locator) scope(s *ptable.Snapshot) ([]int, bool) {
+// terminal is that process's other children. Without such an ancestor,
+// below tailscaled (Tailscale SSH serves connections from the daemon
+// itself), the terminal is found among the user's sessions (see
+// tailscaleSessions). Else, or when those show no terminal session at all,
+// the user's processes carrying stagent's SSH_CONNECTION stand in for it;
+// without SSH_CONNECTION there is no terminal to find, rather than a guess.
+func (l *locator) scope(s *ptable.Snapshot) ([]int, search) {
 	if root := connectionRoot(s, l.self); root != 0 {
 		var roots []int
 		for _, c := range s.Children(root) {
@@ -117,12 +226,21 @@ func (l *locator) scope(s *ptable.Snapshot) ([]int, bool) {
 				roots = append(roots, c)
 			}
 		}
-		return roots, true
+		return roots, search{root: root}
+	}
+	var sr search
+	if daemon, own := tailscaleRoot(s, l.self); daemon != 0 {
+		sr.ts = &tsStats{daemon: daemon}
+		if roots := l.tailscaleSessions(s, daemon, own, sr.ts); sr.ts.cands > 0 {
+			sr.sessions = true
+			return roots, sr
+		}
 	}
 	if l.sshConn == "" {
-		return nil, false
+		return nil, sr
 	}
-	return l.sameConnection(s), true
+	sr.conn = &connStats{}
+	return l.sameConnection(s, sr.conn), sr
 }
 
 // connectionRoot is the nearest ancestor of pid that is a per-connection
@@ -144,34 +262,68 @@ func connectionRoot(s *ptable.Snapshot, pid int) int {
 	return 0
 }
 
-// sameConnection returns the topmost processes whose environment has
-// stagent's SSH_CONNECTION, except stagent's own ancestors and descendants
-// and processes in a multiplexer's panes (reached through its client).
-func (l *locator) sameConnection(s *ptable.Snapshot) []int {
-	cache := make(map[instance]bool, len(l.sameConn))
+// sameConnection returns the topmost of stagent's user's processes whose
+// environment has stagent's SSH_CONNECTION, except stagent's own ancestors
+// and descendants and processes in a multiplexer's panes (reached through
+// its client), and counts what it saw in st.
+func (l *locator) sameConnection(s *ptable.Snapshot, st *connStats) []int {
+	cache := make(map[image]connClass, len(l.conns))
 	match := map[int]bool{}
 	for _, pid := range s.PIDs() {
-		if descends(s, pid, l.self) || descends(s, l.self, pid) {
+		if pid == l.self {
 			continue
 		}
-		id := instance{pid, s.Get(pid).Start.UnixNano()}
-		m, ok := l.sameConn[id]
+		p := s.Get(pid)
+		id := image{instance{pid, p.Start.UnixNano()}, p.Name}
+		c, ok := l.conns[id]
 		if !ok {
-			m = s.Getenv(pid, "SSH_CONNECTION") == l.sshConn
+			c = l.connOf(s, pid)
 		}
-		cache[id] = m
-		if m {
+		cache[id] = c
+		st.count(c)
+		if c != connSame {
+			continue
+		}
+		switch {
+		case descends(s, pid, l.self) || descends(s, l.self, pid):
+			st.self++
+		// Checked after the (cached) environment: the owner is only read
+		// for the few processes that match.
+		case !l.owns(s, pid):
+			st.owner++
+		default:
 			match[pid] = true
 		}
 	}
-	l.sameConn = cache
+	l.conns = cache
 	var roots []int
 	for _, pid := range s.PIDs() {
-		if match[pid] && !l.nested(s, pid, match) {
+		switch {
+		case !match[pid]:
+		case l.nested(s, pid, match):
+			st.nested++
+		default:
 			roots = append(roots, pid)
 		}
 	}
 	return roots
+}
+
+// connOf reads what the environment of pid says about its SSH connection.
+func (l *locator) connOf(s *ptable.Snapshot, pid int) connClass {
+	env := s.Env(pid)
+	switch v := ptable.Lookup(env, "SSH_CONNECTION"); {
+	case env == nil && s.EnvWithheld(pid):
+		return connWithheld
+	case env == nil:
+		return connUnreadable
+	case v == "":
+		return connNone
+	case v == l.sshConn:
+		return connSame
+	default:
+		return connOther
+	}
 }
 
 // nested reports whether an ancestor of pid is in match or is a
@@ -210,6 +362,119 @@ func descends(s *ptable.Snapshot, pid, anc int) bool {
 	return false
 }
 
+// maxDiagChain bounds the ancestors a diag lists.
+const maxDiagChain = 8
+
+// diagnose explains a no_terminal result in one line for bug reports:
+// stagent's pid and user, whether its SSH_CONNECTION is set, the connection
+// root it found (via=root:<name>:<pid>, with that process's child count),
+// else what the Tailscale session search (via=tailscale:<daemon pid>) and
+// the SSH_CONNECTION fallback (via= or then=ssh_conn) counted, else
+// via=none, then its ancestors as the snapshot has them. It names
+// processes and users, never environment values or addresses.
+func (l *locator) diagnose(s *ptable.Snapshot, sr search) string {
+	var b strings.Builder
+	conn := "unset"
+	if l.sshConn != "" {
+		conn = "set"
+	}
+	fmt.Fprintf(&b, "pid=%d uid=%s ssh_conn=%s", l.self, diagOwner(l.owner), conn)
+	if sr.root != 0 {
+		fmt.Fprintf(&b, " via=root:%s:%d children=%d", diagName(s.Get(sr.root).Name), sr.root, len(s.Children(sr.root)))
+	}
+	if t := sr.ts; t != nil {
+		fmt.Fprintf(&b, " via=tailscale:%d sessions=%d foreign=%d notty=%d muxed=%d cands=%d our_conn=%s our_ip=%s withheld=%d ip_utmp=%d exact=%d same_ip=%d other=%d unknown=%d",
+			t.daemon, t.sessions, t.foreign, t.noTTY, t.muxed, t.cands, diagSource(t.ourConn), diagSource(t.ourIP),
+			t.withheld, t.ipUtmp, t.exact, t.sameIP, t.other, t.unknown)
+	}
+	if st := sr.conn; st != nil {
+		via := " via"
+		if sr.ts != nil {
+			via = " then"
+		}
+		fmt.Fprintf(&b, "%s=ssh_conn procs=%d env=%d withheld=%d has_conn=%d same=%d drop_self=%d drop_owner=%d drop_nested=%d",
+			via, st.procs, st.env, st.withheld, st.set, st.same, st.self, st.owner, st.nested)
+	}
+	if sr.root == 0 && sr.ts == nil && sr.conn == nil {
+		b.WriteString(" via=none")
+	}
+	b.WriteString(" chain=")
+	b.WriteString(diagChain(s, l.self))
+	return b.String()
+}
+
+func diagSource(src string) string {
+	if src == "" {
+		return "none"
+	}
+	return src
+}
+
+// diagChain lists the ancestors of pid, nearest first, as pid:name:owner
+// joined by ">", then why the list ends: "|top" at a process without a
+// parent, "|gone:<ppid>" when the parent is not in the snapshot,
+// "|newer:<ppid>" when the parent started after its child (a recycled pid,
+// see ptable.New), "|more" after maxDiagChain ancestors.
+func diagChain(s *ptable.Snapshot, pid int) string {
+	p := s.Get(pid)
+	if p == nil {
+		return "|gone:self"
+	}
+	var parts []string
+	var end string
+	for {
+		if d := s.Detached(p.PID); d != 0 {
+			end = "newer:" + strconv.Itoa(d)
+			break
+		}
+		if p.PPID == 0 || p.PPID == p.PID {
+			end = "top"
+			break
+		}
+		parent := s.Get(p.PPID)
+		if parent == nil {
+			end = "gone:" + strconv.Itoa(p.PPID)
+			break
+		}
+		if len(parts) == maxDiagChain {
+			end = "more"
+			break
+		}
+		p = parent
+		parts = append(parts, fmt.Sprintf("%d:%s:%s", p.PID, diagName(p.Name), diagOwner(s.Owner(p.PID))))
+	}
+	return strings.Join(parts, ">") + "|" + end
+}
+
+// diagOwner renders an owner for a diag: "?" when unknown, the last part
+// (the RID) of a Windows SID.
+func diagOwner(o string) string {
+	if o == "" {
+		return "?"
+	}
+	if strings.HasPrefix(o, "S-") {
+		return o[strings.LastIndexByte(o, '-')+1:]
+	}
+	return o
+}
+
+// diagName renders a process name as one short token of a diag.
+func diagName(n string) string {
+	if n == "" {
+		return "?"
+	}
+	r := []rune(n)
+	if len(r) > 16 {
+		r = r[:16]
+	}
+	for i, c := range r {
+		if unicode.IsSpace(c) || !unicode.IsPrint(c) || strings.ContainsRune(":>|", c) {
+			r[i] = '_'
+		}
+	}
+	return string(r)
+}
+
 // walker explores the process trees of one locate call.
 type walker struct {
 	l      *locator
@@ -231,6 +496,10 @@ type level struct {
 	// fg reports whether p is in front of the user: in the foreground of
 	// its terminal, and that terminal is the one shown.
 	fg func(p *ptable.Proc) bool
+	// tty and session label the agents of one of several terminals (see
+	// candidate).
+	tty     string
+	session int64
 }
 
 type muxProc struct {
@@ -268,7 +537,7 @@ func (w *walker) explore(roots []int, lv level, depth int) {
 		shown := lv.fg(w.s.Get(m.pid))
 		for _, ps := range r.panes {
 			fg := ps.fg
-			w.explore(ps.roots, level{pane: ps.label, fg: func(p *ptable.Proc) bool {
+			w.explore(ps.roots, level{pane: ps.label, tty: lv.tty, session: lv.session, fg: func(p *ptable.Proc) bool {
 				return shown && (p.Foreground() || fg[p.PID])
 			}}, depth+1)
 		}
@@ -287,6 +556,15 @@ func (w *walker) walk(pid int, lv level, parent *candidate, muxes *[]muxProc) {
 	if p == nil {
 		return
 	}
+	if !w.l.owns(w.s, pid) {
+		// Another user's process (`su bob`, `sudo`) is neither an agent nor
+		// a multiplexer client. The processes below it that run as
+		// stagent's user again (`su -` back) are the user's own.
+		for _, c := range w.s.Children(pid) {
+			w.walk(c, lv, nil, muxes)
+		}
+		return
+	}
 	argv := w.s.Argv(pid)
 	if kind := muxKind(p.Name, argv); kind != "" {
 		*muxes = append(*muxes, muxProc{pid, kind})
@@ -296,7 +574,7 @@ func (w *walker) walk(pid int, lv level, parent *candidate, muxes *[]muxProc) {
 		if parent != nil && parent.harness == h {
 			parent.pids = append(parent.pids, pid)
 		} else {
-			parent = &candidate{harness: h, pids: []int{pid}, pane: lv.pane, foreground: lv.fg(p)}
+			parent = &candidate{harness: h, pids: []int{pid}, pane: lv.pane, foreground: lv.fg(p), tty: lv.tty, session: lv.session}
 			w.agents = append(w.agents, parent)
 		}
 	}
@@ -345,6 +623,8 @@ var paneEnv = map[string]bool{
 	"HERDR_PANE_ID": true, "HERDR_TAB_ID": true, "HERDR_WORKSPACE_ID": true,
 }
 
+// invocation runs pid's CLI as pid runs it. pid is always one of stagent's
+// user's processes: walk collects no other multiplexer client.
 func (w *walker) invocation(pid int, name string) invocation {
 	inv := invocation{bin: name}
 	if exe := w.s.Exe(pid); filepath.IsAbs(exe) {
@@ -433,7 +713,7 @@ func (w *walker) resolveZellij(pid int) resolution {
 	if !ok {
 		return resolution{}
 	}
-	servers := zellijServers(w.s)
+	servers := w.zellijServers()
 	if session == "" {
 		session = guessZellijSession(w.s, pid, servers)
 		if session == "" {
@@ -511,15 +791,16 @@ func zellijClientSession(argv []string) (session string, client bool) {
 	return session, true
 }
 
-// zellijServers maps session names to server pids; a server runs as
-// `zellij --server <socket dir>/<session>`.
-func zellijServers(s *ptable.Snapshot) map[string]int {
+// zellijServers maps session names to the servers of stagent's user; a
+// server runs as `zellij --server <socket dir>/<session>`. Another user's
+// server of the same name is not the client's.
+func (w *walker) zellijServers() map[string]int {
 	out := map[string]int{}
-	for _, pid := range s.PIDs() {
-		if baseName(s.Get(pid).Name) != "zellij" {
+	for _, pid := range w.s.PIDs() {
+		if baseName(w.s.Get(pid).Name) != "zellij" || !w.l.owns(w.s, pid) {
 			continue
 		}
-		argv := s.Argv(pid)
+		argv := w.s.Argv(pid)
 		for i, a := range argv {
 			if a == "--server" && i+1 < len(argv) {
 				out[filepath.Base(argv[i+1])] = pid
@@ -635,13 +916,13 @@ func screenClientSession(argv []string) (name string, client bool) {
 	return name, true
 }
 
-// screenServers returns the servers a client may be attached to: the one
-// it started itself (its child), else those matching the name it gave,
-// else every server.
+// screenServers returns the servers of stagent's user a client may be
+// attached to: the one it started itself (its child), else those matching
+// the name it gave, else every server.
 func (w *walker) screenServers(client int, name string) []int {
 	var all []int
 	for _, pid := range w.s.PIDs() {
-		if baseName(w.s.Get(pid).Name) != "screen" {
+		if baseName(w.s.Get(pid).Name) != "screen" || !w.l.owns(w.s, pid) {
 			continue
 		}
 		if argv := w.s.Argv(pid); len(argv) == 0 || filepath.Base(argv[0]) != "SCREEN" {
@@ -666,9 +947,13 @@ func (w *walker) screenServers(client int, name string) []int {
 }
 
 // screenSty is the session id ("<pid>.<name>") of a server, read from the
-// STY its windows get; the pid alone also selects the session.
+// STY its windows get (the user's own: the id goes on screen's command
+// line); the pid alone also selects the session.
 func (w *walker) screenSty(server int) string {
 	for _, c := range w.s.Children(server) {
+		if !w.l.owns(w.s, c) {
+			continue
+		}
 		if sty := w.s.Getenv(c, "STY"); sty != "" {
 			return sty
 		}

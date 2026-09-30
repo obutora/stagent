@@ -1,12 +1,13 @@
 // Package ptable takes snapshots of the host's process table: pid, parent,
 // name, process group and terminal foreground group (unix) and start time of
 // every process. Details that cost a system call or more per process — argv,
-// executable path, environment, working directory, open files — are loaded
-// on first use and cached for the snapshot's lifetime, so walking a few
-// process trees stays cheap on hosts with thousands of processes.
+// executable path, environment, working directory, open files, owner — are
+// loaded on first use and cached for the snapshot's lifetime, so walking a
+// few process trees stays cheap on hosts with thousands of processes.
 package ptable
 
 import (
+	"errors"
 	"runtime"
 	"sort"
 	"strings"
@@ -23,7 +24,10 @@ type Proc struct {
 	// Pgrp is the process group and Tpgid the foreground process group of
 	// the controlling terminal (0 when unknown, and always on Windows).
 	Pgrp, Tpgid int
-	Start       time.Time // zero when unknown
+	// TTY is the device number of the controlling terminal (see TTYName),
+	// 0 without one, and always on Windows.
+	TTY   uint64
+	Start time.Time // zero when unknown
 }
 
 // Foreground reports whether p belongs to the foreground process group of
@@ -32,14 +36,25 @@ func (p *Proc) Foreground() bool { return p.Tpgid > 0 && p.Pgrp == p.Tpgid }
 
 // Source loads the per-process details a Snapshot fetches lazily. Errors
 // mean "unknown" (the process exited, belongs to another user, or the
-// platform cannot tell); errors.ErrUnsupported marks the latter.
+// platform cannot tell); errors.ErrUnsupported marks the latter, and
+// ErrEnvWithheld an environment the OS keeps back from a readable process.
 type Source interface {
 	Argv(pid int) ([]string, error)
 	Exe(pid int) (string, error)
 	Env(pid int) ([]string, error)
 	Cwd(pid int) (string, error)
 	OpenFiles(pid int) ([]string, error)
+	// Owner returns the user the process runs as, in the form of
+	// Snapshot.Owner (never "" without an error).
+	Owner(pid int) (string, error)
 }
+
+// ErrEnvWithheld is Source.Env's error for a process whose command line
+// can be read but whose environment the OS withholds: macOS omits it for
+// restricted processes (CS_RESTRICT — /bin/zsh, /bin/sh, /usr/bin/*,
+// programs signed with entitlements) while System Integrity Protection is
+// on, whoever asks, root included.
+var ErrEnvWithheld = errors.New("ptable: the OS withholds the environment")
 
 // Snapshot is the process table at one moment. It is not safe for
 // concurrent use.
@@ -48,11 +63,15 @@ type Snapshot struct {
 	children map[int][]int
 	pids     []int
 	src      Source
+	// detached holds the parent pid New dropped, per child.
+	detached map[int]int
 
-	argv map[int][]string
-	exe  map[int]string
-	env  map[int][]string
-	cwd  map[int]string
+	argv     map[int][]string
+	exe      map[int]string
+	env      map[int][]string
+	withheld map[int]bool
+	cwd      map[int]string
+	owner    map[int]string
 }
 
 // Take snapshots the processes running on this host.
@@ -74,10 +93,13 @@ func New(procs []Proc, src Source) *Snapshot {
 		procs:    make(map[int]*Proc, len(procs)),
 		children: map[int][]int{},
 		src:      src,
+		detached: map[int]int{},
 		argv:     map[int][]string{},
 		exe:      map[int]string{},
 		env:      map[int][]string{},
+		withheld: map[int]bool{},
 		cwd:      map[int]string{},
+		owner:    map[int]string{},
 	}
 	for i := range procs {
 		p := procs[i]
@@ -92,6 +114,7 @@ func New(procs []Proc, src Source) *Snapshot {
 			continue
 		}
 		if !parent.Start.IsZero() && !p.Start.IsZero() && parent.Start.After(p.Start) {
+			s.detached[pid] = p.PPID
 			p.PPID = 0
 			continue
 		}
@@ -108,6 +131,10 @@ func (s *Snapshot) PIDs() []int { return s.pids }
 
 // Children returns the child pids of pid in ascending order.
 func (s *Snapshot) Children(pid int) []int { return s.children[pid] }
+
+// Detached returns the parent pid New dropped for pid because that process
+// started after pid (the pid was recycled), 0 when pid kept its parent.
+func (s *Snapshot) Detached(pid int) int { return s.detached[pid] }
 
 // Argv returns the command line of pid (nil when unreadable).
 func (s *Snapshot) Argv(pid int) []string {
@@ -135,9 +162,19 @@ func (s *Snapshot) Env(pid int) []string {
 	if v, ok := s.env[pid]; ok {
 		return v
 	}
-	v, _ := s.src.Env(pid)
+	v, err := s.src.Env(pid)
 	s.env[pid] = v
+	if errors.Is(err, ErrEnvWithheld) {
+		s.withheld[pid] = true
+	}
 	return v
+}
+
+// EnvWithheld reports whether the OS withheld the environment of pid (see
+// ErrEnvWithheld).
+func (s *Snapshot) EnvWithheld(pid int) bool {
+	s.Env(pid)
+	return s.withheld[pid]
 }
 
 // Getenv returns the value of key in the environment of pid ("" when unset
@@ -160,6 +197,27 @@ func (s *Snapshot) Cwd(pid int) string {
 // unknown: only Linux can tell, and only for the user's own processes.
 func (s *Snapshot) OpenFiles(pid int) []string {
 	v, _ := s.src.OpenFiles(pid)
+	return v
+}
+
+// Owner returns the user pid runs as: its effective uid in decimal on unix,
+// the SID of its token's user on Windows. It is "" when that cannot be
+// read, and on unix when the process's real and effective uids differ: a
+// set-user-ID program has its owner's privileges but the arguments and
+// environment of whoever started it, so it belongs to neither.
+//
+// It is loaded on demand rather than listed with every process: Linux only
+// tells reliably in /proc/<pid>/status, which costs as much again as the
+// whole listing, and Windows needs the process's token.
+func (s *Snapshot) Owner(pid int) string {
+	if v, ok := s.owner[pid]; ok {
+		return v
+	}
+	v, err := s.src.Owner(pid)
+	if err != nil {
+		v = ""
+	}
+	s.owner[pid] = v
 	return v
 }
 

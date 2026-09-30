@@ -22,7 +22,9 @@ import (
 // the client's own binary (a different version may not speak the server's
 // protocol, and the exec channel's PATH often lacks Homebrew or ~/.local)
 // with the client's environment (TMUX_TMPDIR, XDG_RUNTIME_DIR,
-// ZELLIJ_SOCKET_DIR, … locate the server's socket).
+// ZELLIJ_SOCKET_DIR, … locate the server's socket). The client is always a
+// process of stagent's own user (locator.owns), and run drops the dynamic
+// loader's variables (muxEnv).
 type invocation struct {
 	bin string   // absolute path, or a name looked up in env's PATH
 	env []string // nil: stagent's own environment
@@ -74,7 +76,7 @@ func (execMux) run(inv invocation, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), muxTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Env = inv.env
+	cmd.Env = muxEnv(inv.env)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -86,6 +88,25 @@ func (execMux) run(inv invocation, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%s %s: %v %s", filepath.Base(bin), strings.Join(args, " "), err, msg)
 	}
 	return out, nil
+}
+
+// muxEnv is the environment a multiplexer CLI runs with: env (stagent's own
+// when nil) without the dynamic loader's variables (LD_PRELOAD,
+// LD_LIBRARY_PATH, LD_AUDIT, DYLD_INSERT_LIBRARIES, …). They are dropped
+// whoever's environment it is: they load code into the CLI that was meant
+// for the program they were set for, and the CLI must run as the client's
+// binary, not as whatever a variable injects into it.
+func muxEnv(env []string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "LD_") && !strings.HasPrefix(kv, "DYLD_") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // lookPath finds name in the PATH of env (falling back to stagent's own),
