@@ -76,7 +76,8 @@ func TestShellWrapperFishFileAndPowerShellProfile(t *testing.T) {
 }
 
 // The wrapper really runs the program under stagent only in interactive
-// shells with a terminal, outside a stagent session.
+// shells with a terminal, outside a stagent session, and asks for handoff
+// only when STAGENT_HANDOFF is exactly 1.
 func TestPosixWrapperBehaviour(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -130,6 +131,12 @@ func TestPosixWrapperBehaviour(t *testing.T) {
 	}
 	if got := run(true, true, "STAGENT_SESSION_ID=0123456789abcdef"); got != "real claude a b c" {
 		t.Errorf("nested: %q", got)
+	}
+	if got := run(true, true, "STAGENT_HANDOFF=1"); got != "stagent run --handoff -- claude a b c" {
+		t.Errorf("STAGENT_HANDOFF=1: %q", got)
+	}
+	if got := run(true, true, "STAGENT_HANDOFF=yes"); got != "stagent run -- claude a b c" {
+		t.Errorf("STAGENT_HANDOFF=yes: %q", got)
 	}
 	os.Remove(fake)
 	if got := run(true, true); got != "real claude a b c" {

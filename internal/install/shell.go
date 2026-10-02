@@ -11,7 +11,9 @@ import (
 // Opt-in shell wrappers: functions named claude / codex / omp that start the
 // real command under `stagent run --` when the shell is interactive with a
 // terminal on stdin and stdout (the passthrough holder requires one), not
-// already inside a stagent session, and the binary exists.
+// already inside a stagent session, and the binary exists. With
+// STAGENT_HANDOFF=1 they add --handoff, so that the program keeps running
+// as a detached session when the terminal goes away.
 
 const (
 	blockBegin = "# >>> ssh-term stagent >>>"
@@ -35,7 +37,11 @@ func posixBlock(bin string) string {
   esac
   # The passthrough holder needs a terminal on stdin and stdout.
   if [ -t 0 ] && [ -t 1 ] && [ -z "${STAGENT_SESSION_ID:-}" ] && [ -x "$__stagent_bin" ]; then
-    "$__stagent_bin" run -- "$@"
+    if [ "${STAGENT_HANDOFF:-}" = 1 ]; then
+      "$__stagent_bin" run --handoff -- "$@"
+    else
+      "$__stagent_bin" run -- "$@"
+    fi
   else
     command "$@"
   fi
@@ -60,7 +66,11 @@ func fishFile(bin string) string {
 	sb.WriteString(`function __stagent_wrap
     set -l bin ` + fishQuote(bin) + `
     if status is-interactive; and isatty stdin; and isatty stdout; and not set -q STAGENT_SESSION_ID; and test -x $bin
-        $bin run -- $argv
+        if test "$STAGENT_HANDOFF" = 1
+            $bin run --handoff -- $argv
+        else
+            $bin run -- $argv
+        end
     else
         command $argv
     end
@@ -83,7 +93,7 @@ func powershellBlock(bin string) string {
   $bin = ` + psQuote(bin) + `
   $interactive = [Environment]::UserInteractive -and -not ([Environment]::GetCommandLineArgs() | Where-Object { $_ -like '-NonI*' }) -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
   if ($interactive -and -not $env:STAGENT_SESSION_ID -and (Test-Path -LiteralPath $bin)) {
-    & $bin run -- $Name @Rest
+    if ($env:STAGENT_HANDOFF -eq '1') { & $bin run --handoff -- $Name @Rest } else { & $bin run -- $Name @Rest }
   } else {
     $cmd = Get-Command -Name $Name -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($cmd) { & $cmd @Rest } else { Write-Error "${Name}: command not found" }

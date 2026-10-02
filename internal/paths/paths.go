@@ -5,12 +5,14 @@
 package paths
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 // EnvHome overrides the home directory. Tests and the bench point it at a
@@ -37,8 +39,13 @@ type Layout struct {
 	// DataOnNetworkFS reports that Home is on a network file system and
 	// DataDir was moved to local disk.
 	DataOnNetworkFS bool
+	// Isolated reports that STAGENT_HOME is set.
+	Isolated bool
 
 	pipePrefix string // windows: `\\.\pipe\stagent-<sid>[-<hash>]`
+	// sharedRunDir: RunDir lies in the shared temporary directory, where
+	// another user could have created it first.
+	sharedRunDir bool
 }
 
 // Resolve computes the layout for the current user. It does not create
@@ -72,6 +79,7 @@ func resolve(home string, isolated bool) (*Layout, error) {
 		StateDir:   filepath.Join(root, "state"),
 		LogDir:     filepath.Join(root, "log"),
 		UploadsDir: filepath.Join(home, ".ssh-term", "uploads"),
+		Isolated:   isolated,
 	}
 	l.EventLog = filepath.Join(l.StateDir, "events.log")
 	l.Index = filepath.Join(l.StateDir, "index.json")
@@ -109,8 +117,18 @@ func (l *Layout) SessionDataDir(sessionID string) string {
 }
 
 // EnsureDirs creates every directory of the layout with owner-only access.
+// A RunDir in the shared temporary directory is validated instead of
+// repaired (ensurePrivateDir).
 func (l *Layout) EnsureDirs() error {
-	dirs := []string{l.Root, l.BinDir, l.StateDir, l.DataDir, l.LogDir, l.RunDir}
+	dirs := []string{l.Root, l.BinDir, l.StateDir, l.DataDir, l.LogDir}
+	// RunDir first: the holder socket directory is created inside it.
+	if l.sharedRunDir {
+		if err := ensurePrivateDir(l.RunDir); err != nil {
+			return err
+		}
+	} else {
+		dirs = append(dirs, l.RunDir)
+	}
 	if d := l.HolderSocketDir(); d != "" {
 		dirs = append(dirs, d)
 	}
@@ -126,6 +144,39 @@ func (l *Layout) EnsureDirs() error {
 		}
 	}
 	return nil
+}
+
+// KeepFreshInterval is how often KeepFresh touches its paths: well below
+// the age (days) after which tmp cleaners such as systemd-tmpfiles delete
+// unused entries of /tmp.
+const KeepFreshInterval = time.Hour
+
+// KeepFresh sets the access and modification times of every existing path
+// to now every KeepFreshInterval until ctx is done, so that a tmp cleaner
+// does not delete the run directory or a socket of a process that is still
+// serving. Missing paths and errors are ignored. It is a no-op on Windows:
+// RunDir is not in a temporary directory there, and opening a named pipe
+// path to set its times would connect to the pipe.
+func KeepFresh(ctx context.Context, paths ...string) {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	t := time.NewTicker(KeepFreshInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			touch(now, paths)
+		}
+	}
+}
+
+func touch(now time.Time, paths []string) {
+	for _, p := range paths {
+		os.Chtimes(p, now, now)
+	}
 }
 
 // homeTag is a short stable hash of the home directory, used to keep the

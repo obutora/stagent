@@ -35,6 +35,46 @@ in [PROTOCOL.md](PROTOCOL.md) ("stagent follow").
 The same binary also contains commands for an upcoming Agent Mode (`run`,
 `daemon`, `bridge`, `hook`, `integrate`); the chat view does not use them.
 
+## Persistent terminal sessions
+
+When the app's persistent sessions are enabled, a terminal tab can run its
+shell inside stagent instead of directly on the SSH connection, so the shell
+(and whatever runs in it) survives a dropped connection, a sleeping phone or
+closing the app — without tmux. On the server this runs:
+
+- `stagent bridge`, started by the app over an SSH exec channel; it ends
+  with the connection.
+- one `stagent run --detached` process per session (the *holder*): it owns
+  the session's pseudo terminal, keeps an emulated copy of the screen and
+  the session's recent output on disk
+  (`~/.ssh-term/agent/state/sessions/<id>/`, 8 MiB per session by default),
+  and serves the app over a socket only your user can open. It runs your
+  login shell (`$SHELL -l`) and exits when the shell exits.
+- `stagent daemon`, the session list, started on demand.
+
+When the app reconnects it re-attaches the tab and receives only the output
+it missed (or a redraw of the screen when that is not possible). Sessions
+can be listed, re-opened and ended from the app, and from any terminal on
+the server:
+
+- `stagent ls [--json]` lists the sessions.
+- `stagent attach [ID | --last] [--detach-key ctrl-]]` attaches your
+  terminal to a session; Ctrl-] detaches (press it twice to send it).
+- `stagent run --handoff -- <command>` runs a command in your terminal as a
+  session that survives that terminal: when the terminal closes, the
+  session continues detached and the app can pick it up. Shell wrappers
+  installed with `stagent integrate --shell-wrapper` add `--handoff` when
+  the environment has `STAGENT_HANDOFF=1`.
+
+Sessions also survive logging out. On Linux their sockets live in
+`/tmp/stagent-<uid>` (mode 0700), not in `$XDG_RUNTIME_DIR`, which is
+removed at logout. On systems where logind kills a user's processes at
+logout (`KillUserProcesses=yes`) the bridge starts holders through
+`systemd-run --user --scope` so they leave the SSH login session; they
+then still end with your last logout unless lingering is enabled
+(`loginctl enable-linger`). `stagent doctor` reports this under
+`persistence`.
+
 ## Installation and removal
 
 The app installs the binary to `~/.ssh-term/agent/bin/stagent` the first time
@@ -69,7 +109,7 @@ in its release notes and compare:
 
 ```sh
 scripts/release.sh          # writes dist/ and dist/SHA256SUMS
-diff dist/SHA256SUMS <(curl -sL https://github.com/obutora/stagent/releases/download/v0.2.1/SHA256SUMS)
+diff dist/SHA256SUMS <(curl -sL https://github.com/obutora/stagent/releases/download/v0.3.0/SHA256SUMS)
 ```
 
 Releases are published with `scripts/release.sh --publish`, which commits

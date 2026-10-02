@@ -1,21 +1,26 @@
 // Package follow is `stagent follow`: it finds the coding agent running in
 // the terminal that shares its SSH connection — in the terminal's shell, or
-// in the tmux / zellij / screen / herdr pane that terminal shows — and
-// streams the agent's transcript to the app as JSON lines on stdout until
-// stdin closes. PROTOCOL.md ("stagent follow") describes the wire format.
+// in the tmux / zellij / screen / herdr pane that terminal shows — or, with
+// --session, in a stagent session, and streams the agent's transcript to the
+// app as JSON lines on stdout until stdin closes. PROTOCOL.md ("stagent
+// follow") describes the wire format.
 package follow
 
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"runtime"
 	"slices"
 	"strconv"
 	"time"
 
+	"github.com/obutora/stagent/internal/ipc"
+	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/ptable"
 	"github.com/obutora/stagent/internal/transcript"
 	"github.com/obutora/stagent/internal/version"
@@ -100,10 +105,18 @@ type request struct {
 	Before int64   `json:"before"`
 }
 
+const followUsage = `usage: stagent follow [--session ID]
+
+Streams the coding agent running in this SSH connection's terminal — or,
+with --session, in stagent session ID — to stdout as JSON lines until
+stdin closes.
+
+`
+
 // Main runs `stagent follow` until stdin closes.
 func Main(args []string) int {
-	if len(args) > 0 {
-		fmt.Fprintln(os.Stderr, "usage: stagent follow  (streams the agent in this SSH connection's terminal on stdout)")
+	session, ok := parseArgs(args, os.Stderr)
+	if !ok {
 		return 2
 	}
 	home, err := os.UserHomeDir()
@@ -116,12 +129,50 @@ func Main(args []string) int {
 		fmt.Fprintln(os.Stderr, "stagent follow:", err)
 		return 1
 	}
-	f := newFollower(os.Stdout, home, ptable.Take, newLocator(execMux{}, owner), os.Getenv)
+	loc := newLocator(execMux{}, owner)
+	if session != "" {
+		layout, err := paths.Resolve()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "stagent follow:", err)
+			return 1
+		}
+		h := &holderSession{id: session, dial: func() (net.Conn, error) {
+			return ipc.Dial(layout.HolderAddr(session), holderTimeout)
+		}}
+		loc.session = h.root
+	}
+	f := newFollower(os.Stdout, home, ptable.Take, loc, os.Getenv)
 	if err := f.run(os.Stdin); err != nil {
 		fmt.Fprintln(os.Stderr, "stagent follow:", err)
 		return 1
 	}
 	return 0
+}
+
+// parseArgs returns the session id of --session ("" without it); it
+// reports usage errors on stderr.
+func parseArgs(args []string, stderr io.Writer) (session string, ok bool) {
+	fs := flag.NewFlagSet("stagent follow", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), followUsage)
+		fs.PrintDefaults()
+	}
+	fs.StringVar(&session, "session", "", "follow the agent in stagent session `ID` (16 lowercase hex characters)")
+	if err := fs.Parse(args); err != nil {
+		return "", false
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "stagent follow: unexpected argument %q\n", fs.Arg(0))
+		return "", false
+	}
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == "session" })
+	if set && !validSessionID(session) {
+		fmt.Fprintf(stderr, "stagent follow: invalid session id %q (want 16 lowercase hex characters)\n", session)
+		return "", false
+	}
+	return session, true
 }
 
 // agent is one agent of the current target.

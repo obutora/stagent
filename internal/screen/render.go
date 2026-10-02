@@ -15,9 +15,10 @@ type cellSource interface {
 // Snapshot returns ANSI that reproduces the current screen on a cleared
 // terminal of the same size, and leaves that terminal in the state the
 // program's next bytes expect: cursor position and visibility, current pen,
-// scroll region, autowrap. When the alternate screen is active, the main
-// screen is drawn first and the alternate screen entered on top of it, so a
-// later switch back shows the right content. Used for raw-mode resets.
+// scroll region, autowrap, and the input modes (inputModes) the program set
+// or reset. When the alternate screen is active, the main screen is drawn
+// first and the alternate screen entered on top of it, so a later switch
+// back shows the right content. Used for raw-mode resets.
 func (s *Screen) Snapshot() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -56,7 +57,38 @@ func (s *Screen) snapshot(stateful bool) []byte {
 	} else {
 		b.WriteString("\x1b[?25h")
 	}
+	if stateful {
+		s.writeInputModes(&b)
+	}
 	return b.Bytes()
+}
+
+// writeInputModes resets every input mode the program has off, then sets
+// those it has on: resetting any mouse tracking mode turns tracking off
+// altogether in xterm, so the sets must come last.
+func (s *Screen) writeInputModes(b *bytes.Buffer) {
+	for _, set := range []bool{false, true} {
+		n := 0
+		for i, m := range inputModes {
+			if (s.input&(1<<i) != 0) != set {
+				continue
+			}
+			if n == 0 {
+				b.WriteString("\x1b[?")
+			} else {
+				b.WriteByte(';')
+			}
+			b.WriteString(strconv.Itoa(int(m)))
+			n++
+		}
+		switch {
+		case n == 0:
+		case set:
+			b.WriteByte('h')
+		default:
+			b.WriteByte('l')
+		}
+	}
 }
 
 // writeRows draws the non-blank rows of src onto a cleared screen.

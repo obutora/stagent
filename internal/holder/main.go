@@ -14,12 +14,13 @@ import (
 // the user set GOMEMLIMIT.
 const memoryLimit = 64 << 20
 
-const runUsage = `usage: stagent run [--detached] [--id ID] [--cols N --rows N] [--cwd DIR] -- <cmd> [args...]
+const runUsage = `usage: stagent run [--detached | --handoff] [--id ID] [--cols N --rows N] [--cwd DIR] -- <cmd> [args...]
 
 Runs <cmd> on a PTY as an agent session the SSH Term app can view and
 control. Without --detached the session is mirrored on this terminal and
 follows its size; with --detached it runs without a terminal and the app
-owns the size.
+owns the size. With --handoff a mirrored session outlives this terminal:
+when it hangs up, the session continues detached instead of ending.
 
 `
 
@@ -31,6 +32,7 @@ func Main(args []string) int {
 		fs.PrintDefaults()
 	}
 	detached := fs.Bool("detached", false, "run without a local terminal; the app owns the size")
+	handoff := fs.Bool("handoff", false, "when this terminal hangs up, keep the session running detached")
 	id := fs.String("id", "", "session id: 16 lowercase hex characters (default: random)")
 	cols := fs.Int("cols", 0, "columns of a detached session (default 80)")
 	rows := fs.Int("rows", 0, "rows of a detached session (default 24)")
@@ -41,6 +43,10 @@ func Main(args []string) int {
 	command := fs.Args()
 	if len(command) == 0 {
 		fs.Usage()
+		return ExitUsage
+	}
+	if *handoff && *detached {
+		fmt.Fprintln(os.Stderr, "stagent run: --handoff applies to passthrough sessions only (not with --detached)")
 		return ExitUsage
 	}
 	if os.Getenv("GOMEMLIMIT") == "" {
@@ -54,6 +60,7 @@ func Main(args []string) int {
 	code, err := Run(context.Background(), Options{
 		Command:  command,
 		Detached: *detached,
+		Handoff:  *handoff,
 		ID:       *id,
 		Cols:     *cols,
 		Rows:     *rows,

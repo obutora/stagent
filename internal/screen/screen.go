@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -51,11 +52,12 @@ type Screen struct {
 	cols, rows int
 
 	// State tracked through emulator callbacks (title: through guard).
-	title          string
-	bracketedPaste bool
-	appCursor      bool
-	noAutowrap     bool
-	cursorHidden   bool
+	title        string
+	input        uint16 // bit i: inputModes[i] is set
+	noAutowrap   bool
+	cursorHidden bool
+
+	respond atomic.Pointer[func([]byte)] // see SetResponder
 
 	// Damage tracking: ver increases with every Write that changed cells;
 	// rowVer[y] is the ver that last changed row y. A client that has seen
@@ -67,6 +69,21 @@ type Screen struct {
 
 	guard stringGuard // keeps UTF-8 OSC/DCS payloads away from the parser
 	buf   []byte      // scratch for filtered output
+}
+
+// inputModes are the DEC private modes that change what a terminal sends as
+// input: cursor key form, mouse tracking and its encodings, focus events and
+// bracketed paste. A raw-mode snapshot sets or resets every one of them, so
+// a client whose terminal was left in another state (a different program, a
+// reconnect) sends the program input in the form it asked for. Tracking
+// modes are listed in increasing order of what they report: terminals keep
+// only one of them active, the last set.
+var inputModes = [...]ansi.DECMode{
+	ansi.ModeCursorKeys,
+	ansi.ModeMouseX10, ansi.ModeMouseNormal, ansi.ModeMouseButtonEvent, ansi.ModeMouseAnyEvent,
+	ansi.ModeMouseExtUtf8, ansi.ModeMouseExtSgr, ansi.ModeMouseExtUrxvt,
+	ansi.ModeFocusEvent,
+	ansi.ModeBracketedPaste,
 }
 
 // New returns a screen of the given size. respond receives the emulator's
@@ -86,6 +103,7 @@ func New(cols, rows int, respond func([]byte)) *Screen {
 	} else {
 		e.SetScrollbackSize(1)
 	}
+	s.SetResponder(respond)
 	s.guard.onTitle = func(t string) { s.title = t } // runs inside Write, s.mu held
 	// Callbacks run inside emu.Write, i.e. with s.mu held.
 	e.SetCallbacks(vt.Callbacks{
@@ -95,23 +113,39 @@ func New(cols, rows int, respond func([]byte)) *Screen {
 		DisableMode:      func(m ansi.Mode) { s.setMode(m, false) },
 	})
 	// RIS clears both screens and drops their touched lists; the default
-	// handler still runs (false = not handled).
+	// handler still runs (false = not handled) and resets the modes vt
+	// knows through DisableMode, but not the mouse encodings it does not
+	// track (?1005, ?1015).
 	e.RegisterEscHandler('c', func() bool {
 		s.full = true
+		s.input = 0
 		return false
 	})
-	go drain(e, respond)
+	go s.drain()
 	return s
+}
+
+// SetResponder replaces the receiver of terminal query replies (see New);
+// nil drops them. A passthrough session whose local terminal went away
+// starts answering queries itself this way.
+func (s *Screen) SetResponder(respond func([]byte)) {
+	if respond == nil {
+		s.respond.Store(nil)
+		return
+	}
+	s.respond.Store(&respond)
 }
 
 // drain consumes the emulator's reply pipe. The emulator writes replies
 // synchronously while parsing, so an unread pipe would block Write.
-func drain(e *vt.Emulator, respond func([]byte)) {
+func (s *Screen) drain() {
 	buf := make([]byte, 512)
 	for {
-		n, err := e.Read(buf)
-		if n > 0 && respond != nil {
-			respond(bytes.Clone(buf[:n]))
+		n, err := s.emu.Read(buf)
+		if n > 0 {
+			if respond := s.respond.Load(); respond != nil {
+				(*respond)(bytes.Clone(buf[:n]))
+			}
 		}
 		if err != nil {
 			return
@@ -120,14 +154,30 @@ func drain(e *vt.Emulator, respond func([]byte)) {
 }
 
 func (s *Screen) setMode(m ansi.Mode, on bool) {
-	switch m {
-	case ansi.ModeBracketedPaste:
-		s.bracketedPaste = on
-	case ansi.ModeCursorKeys:
-		s.appCursor = on
-	case ansi.ModeAutoWrap:
+	if m == ansi.ModeAutoWrap {
 		s.noAutowrap = !on
+		return
 	}
+	for i, im := range inputModes {
+		if m == im {
+			if on {
+				s.input |= 1 << i
+			} else {
+				s.input &^= 1 << i
+			}
+			return
+		}
+	}
+}
+
+// modeOn reports whether input mode m is set (s.mu held).
+func (s *Screen) modeOn(m ansi.DECMode) bool {
+	for i, im := range inputModes {
+		if im == m {
+			return s.input&(1<<i) != 0
+		}
+	}
+	return false
 }
 
 // Write feeds program output to the emulator.
@@ -179,7 +229,7 @@ func (s *Screen) Title() string {
 func (s *Screen) BracketedPaste() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.bracketedPaste
+	return s.modeOn(ansi.ModeBracketedPaste)
 }
 
 // AppCursorKeys reports whether the program enabled DECCKM (cursor keys send
@@ -187,7 +237,7 @@ func (s *Screen) BracketedPaste() bool {
 func (s *Screen) AppCursorKeys() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.appCursor
+	return s.modeOn(ansi.ModeCursorKeys)
 }
 
 // Close stops the reply drain. The screen stays readable.

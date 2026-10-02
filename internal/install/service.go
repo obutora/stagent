@@ -59,6 +59,23 @@ func (e *env) runCmd(name string, args ...string) error {
 	return nil
 }
 
+// linger reports whether systemd keeps the user's service manager (and all
+// that runs under it) after the last logout; known is false when loginctl
+// cannot tell.
+func (e *env) linger() (on, known bool) {
+	out, err := e.run.Run(cmdTimeout, "loginctl", "show-user", strconv.Itoa(e.uid), "--property=Linger", "--value")
+	if err != nil {
+		return false, false
+	}
+	switch strings.TrimSpace(out) {
+	case "yes":
+		return true, true
+	case "no":
+		return false, true
+	}
+	return false, false
+}
+
 // --- systemd -----------------------------------------------------------------
 
 func systemdQuote(s string) string {
@@ -72,10 +89,14 @@ func (e *env) systemdUnitText() string {
 	sb.WriteString("[Unit]\nDescription=SSH Term agent daemon (stagent)\n\n[Service]\nType=simple\n")
 	sb.WriteString("ExecStart=" + systemdQuote(e.l.Bin) + " daemon\n")
 	sb.WriteString("Restart=on-failure\nRestartSec=5\n")
-	if e.getenv("XDG_RUNTIME_DIR") == "" {
-		// Clients of this host resolve the socket without XDG_RUNTIME_DIR;
-		// make the service's daemon agree with them.
-		sb.WriteString("UnsetEnvironment=XDG_RUNTIME_DIR\n")
+	// The daemon's socket lives under TMPDIR (paths); give the service's
+	// daemon the TMPDIR this host's clients resolve it with. Environment=
+	// expands specifiers but not variables, so only % is doubled.
+	if t := e.getenv("TMPDIR"); t != "" {
+		q := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%")
+		sb.WriteString(`Environment="` + q.Replace("TMPDIR="+t) + "\"\n")
+	} else {
+		sb.WriteString("UnsetEnvironment=TMPDIR\n")
 	}
 	sb.WriteString("\n[Install]\nWantedBy=default.target\n")
 	return sb.String()
@@ -293,7 +314,7 @@ func (e *env) serviceAddChanges() ([]*Change, error) {
 			}
 			return e.runCmd("systemctl", "--user", "restart", systemdUnit)
 		}
-		if out, err := e.run.Run(cmdTimeout, "loginctl", "show-user", strconv.Itoa(e.uid), "--property=Linger", "--value"); err != nil || strings.TrimSpace(out) != "yes" {
+		if on, _ := e.linger(); !on {
 			e.note("systemd stops user services when your last session ends unless lingering is enabled: run `loginctl enable-linger` (may require an administrator) to keep the daemon running after logout.")
 		}
 	} else {

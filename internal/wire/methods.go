@@ -68,6 +68,9 @@ const (
 	CapHooks      = "hooks" // approvals / hook-derived state
 	CapTranscript = "transcript"
 	CapPush       = "push" // ntfy / webhook
+	// CapPersist: session.spawn shell, attach resume (since/offset/end),
+	// signal hangup, runtime mode changes (handoff).
+	CapPersist = "persist"
 )
 
 type HelloParams struct {
@@ -118,12 +121,22 @@ type AttachParams struct {
 	ID   string `json:"id"`
 	Mode string `json:"mode"`          // default raw
 	FPS  int    `json:"fps,omitempty"` // screen mode cap, default 15, max 30
+	// Since is the stream position the client consumed up to (the last
+	// `end` it saw); raw mode resumes from there when possible. nil = no
+	// resume.
+	Since *int64 `json:"since,omitempty"`
 }
 
 type AttachResult struct {
 	Cols int    `json:"cols"`
 	Rows int    `json:"rows"`
 	Mode string `json:"mode"`
+	// Offset is the stream position right after the first output item,
+	// where live output continues.
+	Offset int64 `json:"offset"`
+	// Resumed: the first output item is the missed range [since, offset)
+	// (reset false) instead of a snapshot.
+	Resumed bool `json:"resumed"`
 }
 
 // OutputParams carries terminal bytes to an attached client. When Reset is
@@ -133,6 +146,9 @@ type OutputParams struct {
 	ID    string `json:"id"`
 	Data  []byte `json:"data"` // base64 in JSON
 	Reset bool   `json:"reset,omitempty"`
+	// End is the stream position after this chunk (raw mode; for a reset
+	// snapshot the position the snapshot was taken at).
+	End int64 `json:"end,omitempty"`
 }
 
 type ResizeParams struct {
@@ -186,11 +202,14 @@ type ScrollbackResult struct {
 }
 
 type SpawnParams struct {
-	Command []string          `json:"command"`
-	Cwd     string            `json:"cwd,omitempty"` // default home
-	Cols    int               `json:"cols"`
-	Rows    int               `json:"rows"`
-	Env     map[string]string `json:"env,omitempty"`
+	Command []string `json:"command"`
+	// Shell runs the user's login shell instead of Command (which must then
+	// be empty).
+	Shell bool              `json:"shell,omitempty"`
+	Cwd   string            `json:"cwd,omitempty"` // default home
+	Cols  int               `json:"cols"`
+	Rows  int               `json:"rows"`
+	Env   map[string]string `json:"env,omitempty"`
 }
 
 type SpawnResult struct {
@@ -202,6 +221,7 @@ const (
 	SignalInterrupt = "interrupt" // Ctrl-C to the PTY
 	SignalTerminate = "terminate" // SIGTERM / CTRL_BREAK / TerminateProcess after grace
 	SignalKill      = "kill"      // SIGKILL / TerminateProcess
+	SignalHangup    = "hangup"    // SIGHUP, as when a terminal closes (Windows: like terminate)
 )
 
 type SignalParams struct {
@@ -304,6 +324,7 @@ type SessionPatch struct {
 	LastActivityAt *int64  `json:"last_activity_at,omitempty"`
 	Cols           *int    `json:"cols,omitempty"`
 	Rows           *int    `json:"rows,omitempty"`
+	Mode           *string `json:"mode,omitempty"` // passthrough → detached on handoff
 }
 
 // HolderNotifyParams is a notification the program itself emitted (OSC 9 /

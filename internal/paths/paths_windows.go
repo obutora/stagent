@@ -41,6 +41,10 @@ func userTag() string {
 
 func localDataBase() string { return os.TempDir() }
 
+// ensurePrivateDir is never reached on Windows: RunDir is under Root, not
+// in a shared temporary directory (%TEMP% is per user anyway).
+func ensurePrivateDir(dir string) error { return os.MkdirAll(dir, 0o700) }
+
 // Network homes on Windows (roaming profiles on a share) keep %USERPROFILE%
 // on the local disk, so no relocation is needed.
 func isNetworkFS(string) bool { return false }

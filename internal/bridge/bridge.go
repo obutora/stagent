@@ -23,6 +23,7 @@ import (
 	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/proc"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
@@ -77,6 +78,13 @@ type Bridge struct {
 	baseEnv  []string                 // see sessionEnv
 	loginEnv func() ([]string, error) // replaceable in tests
 
+	// Detached holder starts (see startHolder); used by the spawn worker
+	// only, one spawn at a time.
+	spawnProc func(exe string, args []string, dir string, env []string, logPath string) (int, error)
+	scopeArgv func() []string // replaceable in tests; default holderScope
+	scopeOnce sync.Once
+	scope     []string // argv prefix moving holders into a systemd scope; nil = plain
+
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
 	wg      sync.WaitGroup // every goroutine of the bridge
@@ -129,6 +137,8 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		}
 		return captureLoginEnv(exe)
 	}
+	b.spawnProc = proc.SpawnDetached
+	b.scopeArgv = holderScope
 	return b
 }
 
@@ -268,7 +278,7 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 		Arch:     runtime.GOARCH,
 		Home:     b.l.Home,
 		Capabilities: []string{
-			wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush,
+			wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush, wire.CapPersist,
 		},
 	}, nil
 }

@@ -132,6 +132,47 @@ func TestReadClampsBeforeAndSize(t *testing.T) {
 	}
 }
 
+// Range backs attach resumes: it must return exactly the requested bytes or
+// refuse, never a shorter or zero-filled range.
+func TestRangeIsExactOrRefused(t *testing.T) {
+	s, err := open(filepath.Join(t.TempDir(), "sess"), 2, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.Write(stream(0, 35)) // retained: [20,35)
+	for _, tc := range []struct {
+		start, end int64
+		ok         bool
+	}{
+		{20, 35, true},
+		{27, 33, true}, // across a segment boundary
+		{35, 35, true}, // nothing missed
+		{19, 35, false},
+		{30, 36, false},
+		{33, 30, false},
+	} {
+		data, ok := s.Range(tc.start, tc.end)
+		if ok != tc.ok || ok && !bytes.Equal(data, stream(int(tc.start), int(tc.end-tc.start))) {
+			t.Errorf("Range(%d,%d) = %d bytes ok=%v, want ok=%v", tc.start, tc.end, len(data), ok, tc.ok)
+		}
+	}
+
+	// After a write error the stream has a gap: ranges into it are refused,
+	// earlier bytes are still served.
+	s.cur.Close()
+	s.Write(stream(35, 5))
+	if _, end := s.Bounds(); end != 40 {
+		t.Fatalf("end after failed write = %d, want 40", end)
+	}
+	if _, ok := s.Range(30, 40); ok {
+		t.Error("Range into unstored bytes succeeded")
+	}
+	if data, ok := s.Range(30, 35); !ok || !bytes.Equal(data, stream(30, 5)) {
+		t.Errorf("Range(30,35) before the gap = %d bytes ok=%v", len(data), ok)
+	}
+}
+
 func TestOpenDiscardsStaleSegmentsAndUsesPrivateModes(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sess")
 	s1, _ := open(dir, 4, 10)

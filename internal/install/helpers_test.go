@@ -54,6 +54,9 @@ func (d *fakeDaemon) Status() (*wire.DaemonStatus, error) {
 }
 
 func (d *fakeDaemon) Shutdown() error {
+	if !d.running {
+		return errors.New("daemon unreachable")
+	}
 	d.shutdowns++
 	if d.exitOnShutdown {
 		d.running = false
@@ -72,6 +75,8 @@ type testEnv struct {
 	*env
 	run    *fakeRunner
 	daemon *fakeDaemon
+	// others are daemons listening at other addresses (daemonAt).
+	others map[string]*fakeDaemon
 	vars   map[string]string
 	bins   map[string]string // lookPath results
 	killed []int
@@ -86,10 +91,16 @@ func newTestEnv(t *testing.T, goos string) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	te := &testEnv{run: &fakeRunner{}, daemon: &fakeDaemon{}, vars: map[string]string{}, bins: map[string]string{}}
+	te := &testEnv{run: &fakeRunner{}, daemon: &fakeDaemon{}, others: map[string]*fakeDaemon{}, vars: map[string]string{}, bins: map[string]string{}}
 	clock := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	te.env = &env{
 		l: l, goos: goos, run: te.run, daemon: te.daemon,
+		daemonAt: func(addr string) daemonAPI {
+			if d, ok := te.others[addr]; ok {
+				return d
+			}
+			return &fakeDaemon{}
+		},
 		lookPath: func(name string) (string, error) {
 			if p, ok := te.bins[name]; ok {
 				return p, nil

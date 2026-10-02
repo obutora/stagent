@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/proc"
 	"github.com/obutora/stagent/internal/rpc"
@@ -40,10 +40,10 @@ type daemonAPI interface {
 	Sessions() ([]wire.Session, error)
 }
 
-type ipcDaemon struct{ l *paths.Layout }
+type ipcDaemon struct{ addr string }
 
 func (d ipcDaemon) call(method string, result any) error {
-	conn, err := daemonclient.Dial(d.l, 500*time.Millisecond)
+	conn, err := ipc.Dial(d.addr, 500*time.Millisecond)
 	if err != nil {
 		return err
 	}
@@ -79,6 +79,9 @@ type env struct {
 	goos   string
 	run    Runner
 	daemon daemonAPI
+	// daemonAt reaches a daemon listening at another address (one started
+	// by an earlier version with a different layout).
+	daemonAt func(addr string) daemonAPI
 
 	lookPath func(string) (string, error)
 	getenv   func(string) string
@@ -109,7 +112,8 @@ func newEnv() (*env, error) {
 		l:        l,
 		goos:     runtime.GOOS,
 		run:      execRunner{},
-		daemon:   ipcDaemon{l},
+		daemon:   ipcDaemon{l.DaemonAddr},
+		daemonAt: func(addr string) daemonAPI { return ipcDaemon{addr} },
 		lookPath: exec.LookPath,
 		getenv:   os.Getenv,
 		now:      time.Now,

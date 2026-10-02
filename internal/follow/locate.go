@@ -68,8 +68,8 @@ type location struct {
 }
 
 // locator finds the agents running in the terminal that shares stagent's
-// SSH connection. Its decisions depend only on the snapshot, muxSystem and
-// ttyHosts.
+// SSH connection, or in a stagent session. Its decisions depend only on the
+// snapshot, muxSystem, ttyHosts and session.
 type locator struct {
 	self      int
 	sshConn   string // stagent's own SSH_CONNECTION ("" when unset)
@@ -86,6 +86,10 @@ type locator struct {
 	// costly part of the fallback, and the environment a program started
 	// with is fixed.
 	conns map[image]connClass
+	// session, set by `stagent follow --session`, replaces the search for
+	// the terminal: it returns the one root, the session's program (see
+	// holderSession).
+	session func() (int, error)
 }
 
 // instance identifies a process across snapshots (pids are recycled).
@@ -178,6 +182,8 @@ type search struct {
 	// could not tell apart, each one the tab's or not.
 	sessions bool
 	conn     *connStats // the SSH_CONNECTION fallback's, nil when it did not run
+	// sessionErr: why the session of `--session` has no root.
+	sessionErr error
 }
 
 // connStats counts what the SSH_CONNECTION fallback saw.
@@ -208,7 +214,8 @@ func (st *connStats) count(c connClass) {
 	}
 }
 
-// scope returns the roots of the process trees belonging to the terminal.
+// scope returns the roots of the process trees belonging to the terminal:
+// with `--session`, the session's program alone.
 //
 // Every channel of an SSH connection — the terminal's shell and this exec
 // channel — is a child of the connection's SSH server process, so the
@@ -219,6 +226,13 @@ func (st *connStats) count(c connClass) {
 // the user's processes carrying stagent's SSH_CONNECTION stand in for it;
 // without SSH_CONNECTION there is no terminal to find, rather than a guess.
 func (l *locator) scope(s *ptable.Snapshot) ([]int, search) {
+	if l.session != nil {
+		pid, err := l.session()
+		if err != nil {
+			return nil, search{sessionErr: err}
+		}
+		return []int{pid}, search{}
+	}
 	if root := connectionRoot(s, l.self); root != 0 {
 		var roots []int
 		for _, c := range s.Children(root) {
@@ -365,7 +379,8 @@ func descends(s *ptable.Snapshot, pid, anc int) bool {
 // maxDiagChain bounds the ancestors a diag lists.
 const maxDiagChain = 8
 
-// diagnose explains a no_terminal result in one line for bug reports:
+// diagnose explains a no_terminal result in one line for bug reports. With
+// `--session` that is why the session has no program to search. Else it is
 // stagent's pid and user, whether its SSH_CONNECTION is set, the connection
 // root it found (via=root:<name>:<pid>, with that process's child count),
 // else what the Tailscale session search (via=tailscale:<daemon pid>) and
@@ -373,6 +388,9 @@ const maxDiagChain = 8
 // via=none, then its ancestors as the snapshot has them. It names
 // processes and users, never environment values or addresses.
 func (l *locator) diagnose(s *ptable.Snapshot, sr search) string {
+	if sr.sessionErr != nil {
+		return sr.sessionErr.Error()
+	}
 	var b strings.Builder
 	conn := "unset"
 	if l.sshConn != "" {

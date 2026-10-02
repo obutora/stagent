@@ -50,6 +50,7 @@ type Store struct {
 	cur     *os.File
 	end     int64
 	err     error // sticky write error (e.g. disk full); writes become no-ops
+	errAt   int64 // stream offset where err began: later bytes were not stored
 }
 
 // Open creates (or empties) dir and returns a store keeping at most maxSegs
@@ -122,6 +123,7 @@ func (s *Store) Write(p []byte) (int, error) {
 
 func (s *Store) fail(err error) {
 	s.err = err
+	s.errAt = s.end
 	if s.cur != nil {
 		s.cur.Close()
 		s.cur = nil
@@ -187,17 +189,49 @@ func (s *Store) Read(before int64, maxBytes int) (data []byte, start, end, first
 	if start == end {
 		return []byte{}, start, end, first, nil
 	}
-	data = make([]byte, end-start)
+	if data, err = s.read(start, end); err != nil {
+		return nil, 0, 0, 0, err
+	}
+	return data, start, end, first, nil
+}
+
+// Range returns exactly the stream bytes [start, end), at most MaxReadBytes.
+// ok is false when any of them is no longer retained or was never stored
+// (after a write error), so a caller resuming a client from start falls back
+// to something else rather than send a gap.
+func (s *Store) Range(start, end int64) (data []byte, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored := s.end
+	if s.err != nil {
+		stored = s.errAt
+	}
+	if start < s.first() || end > stored || start > end || end-start > MaxReadBytes {
+		return nil, false
+	}
+	if start == end {
+		return []byte{}, true
+	}
+	data, err := s.read(start, end)
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// read copies [start, end) out of the retained segments (s.mu held).
+func (s *Store) read(start, end int64) ([]byte, error) {
+	data := make([]byte, end-start)
 	i := sort.Search(len(s.segs), func(i int) bool { return s.segs[i].end() > start })
 	for off := start; off < end && i < len(s.segs); i++ {
 		sg := s.segs[i]
 		lo, hi := off, min(end, sg.end())
 		if err := readAt(s.segPath(sg.start), data[lo-start:hi-start], lo-sg.start); err != nil {
-			return nil, 0, 0, 0, err
+			return nil, err
 		}
 		off = hi
 	}
-	return data, start, end, first, nil
+	return data, nil
 }
 
 func readAt(path string, buf []byte, off int64) error {
@@ -227,6 +261,7 @@ func (s *Store) Close() error {
 	}
 	if s.err == nil {
 		s.err = errClosed
+		s.errAt = s.end
 	}
 	return err
 }

@@ -146,6 +146,9 @@ func (d *Daemon) holderUpdate(cs *connState, p wire.SessionPatch) {
 	if p.Rows != nil && *p.Rows != s.s.Rows {
 		s.s.Rows, changed = *p.Rows, true
 	}
+	if p.Mode != nil && *p.Mode != s.s.Mode {
+		s.s.Mode, changed = *p.Mode, true
+	}
 	if p.State != nil {
 		source := ""
 		if p.StateSource != nil {

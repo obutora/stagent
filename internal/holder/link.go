@@ -227,5 +227,9 @@ func sessionPatch(old, cur *wire.Session) (wire.SessionPatch, bool) {
 		p.Cols, p.Rows = &cur.Cols, &cur.Rows
 		changed = true
 	}
+	if old.Mode != cur.Mode {
+		p.Mode = &cur.Mode
+		changed = true
+	}
 	return p, changed
 }

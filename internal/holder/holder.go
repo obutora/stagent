@@ -42,6 +42,10 @@ import (
 type Options struct {
 	Command  []string
 	Detached bool
+	// Handoff keeps a passthrough session running when its local terminal
+	// hangs up: the session becomes detached instead of the program being
+	// hung up (stagent run --handoff).
+	Handoff bool
 	// ID is the session id (16 lowercase hex chars); empty = random.
 	ID string
 	// Cols/Rows size a detached session; passthrough follows the local
@@ -87,17 +91,29 @@ type Holder struct {
 	in    *inputQueue
 	link  *daemonLink
 	local *localTerm // nil when detached
+	// stopLocalSize ends following the local terminal's size (handoff).
+	stopLocalSize context.CancelFunc
 
 	sbWarned         bool
 	lastActivityWake int64 // pump goroutine only
 
-	// mu guards sess, atts and ended. It is held while output goes into
-	// the screen and the raw attachment queues, so a snapshot taken under
-	// it lines up exactly with the byte stream that follows.
-	mu    sync.Mutex
-	sess  wire.Session
-	atts  map[*attachment]struct{}
-	ended bool
+	// mu guards sess, atts, ended, handedOff and the stream positions. It
+	// is held while output goes into the screen and the raw attachment
+	// queues, so a snapshot taken under it lines up exactly with the byte
+	// stream that follows.
+	mu        sync.Mutex
+	sess      wire.Session
+	atts      map[*attachment]struct{}
+	ended     bool
+	handedOff bool // passthrough whose local terminal hung up (Options.Handoff)
+	// pos counts the program output fanned out so far. The pump writes each
+	// chunk to the scrollback just before fanning it out, so the scrollback
+	// holds every byte before pos.
+	pos int64
+	// sizePos is pos at the last size change (-1: none). Raw bytes from
+	// before it were laid out for another size, so a client cannot resume
+	// across it.
+	sizePos int64
 }
 
 // Run runs a session until its program exits and returns the program's
@@ -106,6 +122,9 @@ type Holder struct {
 func Run(ctx context.Context, o Options) (int, error) {
 	if len(o.Command) == 0 {
 		return ExitUsage, errors.New("no command given")
+	}
+	if o.Handoff && o.Detached {
+		return ExitUsage, errors.New("--handoff applies to passthrough sessions only")
 	}
 	l := o.Layout
 	if l == nil {
@@ -120,7 +139,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 	} else if !validID(id) {
 		return ExitUsage, fmt.Errorf("invalid session id %q (want 16 lowercase hex characters)", id)
 	}
-	h := &Holder{o: o, layout: l, id: id, atts: map[*attachment]struct{}{}}
+	h := &Holder{o: o, layout: l, id: id, atts: map[*attachment]struct{}{}, sizePos: -1}
 
 	if !o.Detached {
 		lt, err := openLocal()
@@ -254,12 +273,24 @@ func (h *Holder) run(ctx context.Context, ln net.Listener) (int, error) {
 	go h.in.run()
 	if ln != nil {
 		go h.serve(srvCtx, ln)
+		// Tmp cleaners must not take the socket of a long-idle session.
+		keep := []string{h.layout.RunDir, h.layout.HolderAddr(h.id)}
+		if d := h.layout.HolderSocketDir(); d != "" {
+			keep = append(keep, d)
+		}
+		go paths.KeepFresh(srvCtx, keep...)
 	}
 	go h.link.run()
 
 	if h.local != nil {
-		go h.local.copyInput(srvCtx, h.in, h.det)
-		go h.local.watchSize(srvCtx, h.followLocalSize)
+		var lost func()
+		if h.o.Handoff {
+			lost = h.handoff
+		}
+		sizeCtx, stopSize := context.WithCancel(srvCtx)
+		h.stopLocalSize = stopSize
+		go h.local.copyInput(srvCtx, h.in, h.det, lost)
+		go h.local.watchSize(sizeCtx, h.followLocalSize)
 	}
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, termSignals...)
@@ -375,6 +406,7 @@ func (h *Holder) output(b []byte) {
 	now := time.Now().UnixMilli()
 	h.mu.Lock()
 	h.scr.Write(b)
+	h.pos += int64(len(b))
 	h.sess.LastActivityAt = now
 	var shared []byte
 	for a := range h.atts {
@@ -382,7 +414,7 @@ func (h *Holder) output(b []byte) {
 			if shared == nil {
 				shared = bytes.Clone(b)
 			}
-			a.pushOutput(shared)
+			a.pushOutput(shared, h.pos)
 		} else {
 			a.markDirty()
 		}
@@ -437,6 +469,7 @@ func (h *Holder) applySize(cols, rows int) {
 	}
 	h.scr.Resize(cols, rows)
 	h.sess.Cols, h.sess.Rows = cols, rows
+	h.sizePos = h.pos
 	rp := &wire.ResizeParams{ID: h.id, Cols: cols, Rows: rows}
 	for a := range h.atts {
 		a.pushResize(rp)
@@ -448,12 +481,50 @@ func (h *Holder) applySize(cols, rows int) {
 // followLocalSize applies the local terminal's new size (passthrough: the
 // local terminal owns the size, even after an app forced another one).
 func (h *Holder) followLocalSize(cols, rows int) {
-	h.applySize(cols, rows)
+	if h.localOwnsSize() {
+		h.applySize(cols, rows)
+	}
+}
+
+// localOwnsSize reports whether a local terminal decides the session size
+// (passthrough, not handed off).
+func (h *Holder) localOwnsSize() bool {
+	if h.local == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.handedOff
+}
+
+// handoff turns a passthrough session whose local terminal hung up into a
+// detached one (Options.Handoff): output stops going to the terminal, the
+// emulator answers the program's terminal queries in its place, the app
+// owns the size and the daemon learns the new mode. The program is not
+// signalled; it keeps running as if nothing happened.
+func (h *Holder) handoff() {
+	h.local.disable()
+	h.mu.Lock()
+	if h.handedOff || h.ended {
+		h.mu.Unlock()
+		return
+	}
+	h.handedOff = true
+	h.sess.Mode = wire.ModeDetached
+	h.mu.Unlock()
+	h.stopLocalSize()
+	h.scr.SetResponder(h.in.tryPush)
+	h.link.wake()
+	h.logf("stagent run: session %s: terminal hung up, continuing detached", h.id)
 }
 
 func (h *Holder) forwardSignal(s os.Signal) {
 	switch name := signalName(s); name {
 	case pty.SignalHangup:
+		if h.o.Handoff {
+			h.handoff() // later hangups find it done and are ignored
+			return
+		}
 		// The local terminal is gone: stop writing to it and hang up the
 		// program the way a closing terminal would.
 		if h.local != nil {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/obutora/stagent/internal/attachcli"
 	"github.com/obutora/stagent/internal/bridge"
 	"github.com/obutora/stagent/internal/daemon"
 	"github.com/obutora/stagent/internal/follow"
@@ -20,12 +21,18 @@ import (
 
 const usage = `usage: stagent <command> [args]
 
-  run [--detached] [--cols N --rows N] [--cwd DIR] -- <cmd> [args...]
-                      run a program under a PTY holder (agent session)
+  run [--detached | --handoff] [--cols N --rows N] [--cwd DIR] -- <cmd> [args...]
+                      run a program under a PTY holder (agent session);
+                      --handoff keeps it running detached when this terminal closes
+  ls [--json]         list sessions, most recently active first
+  attach [ID | --last] [--detach-key ctrl-]]
+                      attach this terminal to a session (Ctrl-] detaches)
   daemon              run the session registry / event daemon (auto-started)
   bridge              speak the app protocol on stdin/stdout
-  follow              stream the transcript of the coding agent running in
-                      this SSH connection's terminal (JSON lines on stdout)
+  follow [--session ID]
+                      stream the transcript of the coding agent running in
+                      this SSH connection's terminal, or of stagent session ID
+                      (JSON lines on stdout)
   hook <harness> [event]
                       entry point for harness hooks (reads the payload on stdin)
   install             create the layout and manifest (after the binary is placed)
@@ -48,6 +55,10 @@ func dispatch(args []string) int {
 	switch cmd {
 	case "run":
 		return holder.Main(rest)
+	case "ls":
+		return attachcli.Ls(rest)
+	case "attach":
+		return attachcli.Attach(rest)
 	case "daemon":
 		return daemon.Main(rest)
 	case "bridge":

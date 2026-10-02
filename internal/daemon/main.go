@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -51,6 +52,11 @@ func Main(args []string) int {
 		return 1
 	}
 	signal.Ignore(syscall.SIGHUP)
+	// Keep tmp cleaners away from the socket and RunDir while serving (the
+	// holder socket directory too: it may be empty between sessions).
+	fresh, stopFresh := context.WithCancel(context.Background())
+	defer stopFresh()
+	go paths.KeepFresh(fresh, l.RunDir, l.HolderSocketDir(), l.DaemonAddr)
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {

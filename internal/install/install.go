@@ -26,6 +26,7 @@ type InstallResult struct {
 	OK      bool       `json:"ok"`
 	Version string     `json:"version"`
 	Layout  LayoutInfo `json:"layout"`
+	Notes   []string   `json:"notes"`
 }
 
 // Main runs one installer command and returns the exit code.
@@ -192,9 +193,26 @@ func (e *env) install() (*InstallResult, error) {
 			os.Remove(f)
 		}
 	}
+	e.stopLegacyDaemon()
 	e.touchManifest()
 	if err := e.saveManifest(); err != nil {
 		return nil, err
 	}
-	return &InstallResult{OK: true, Version: version.Version, Layout: layoutInfo(l)}, nil
+	return &InstallResult{OK: true, Version: version.Version, Layout: layoutInfo(l), Notes: nonNil(e.notes)}, nil
+}
+
+// stopLegacyDaemon shuts down (best effort) a daemon of a version before
+// 0.3.0 that still listens in $XDG_RUNTIME_DIR, where Linux sockets lived
+// until they moved out of logind's reach (paths). Clients now look for the
+// daemon in the new place, so the old one would only keep running unseen.
+func (e *env) stopLegacyDaemon() {
+	x := e.getenv("XDG_RUNTIME_DIR")
+	if e.goos != "linux" || e.l.Isolated || x == "" {
+		return
+	}
+	addr := filepath.Join(x, "stagent", "stagent.sock")
+	if addr == e.l.DaemonAddr || e.daemonAt(addr).Shutdown() != nil {
+		return
+	}
+	e.note("Stopped the daemon of an earlier stagent version at %s. Sessions started before the update keep running, but the app no longer lists or reaches them.", addr)
 }

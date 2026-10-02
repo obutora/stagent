@@ -6,23 +6,25 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/obutora/stagent/internal/logind"
 	"github.com/obutora/stagent/internal/version"
 )
 
 // DoctorReport is the output of `stagent doctor` (PROTOCOL.md).
 type DoctorReport struct {
-	Version      string          `json:"version"`
-	Protocol     int             `json:"protocol"`
-	OS           string          `json:"os"`
-	Arch         string          `json:"arch"`
-	Home         string          `json:"home"`
-	Layout       LayoutInfo      `json:"layout"`
-	Daemon       DaemonReport    `json:"daemon"`
-	Harnesses    []HarnessReport `json:"harnesses"`
-	ShellWrapper ShellReport     `json:"shell_wrapper"`
-	Service      ServiceReport   `json:"service"`
-	Orphans      []Finding       `json:"orphans"`
-	Problems     []string        `json:"problems"`
+	Version      string            `json:"version"`
+	Protocol     int               `json:"protocol"`
+	OS           string            `json:"os"`
+	Arch         string            `json:"arch"`
+	Home         string            `json:"home"`
+	Layout       LayoutInfo        `json:"layout"`
+	Daemon       DaemonReport      `json:"daemon"`
+	Harnesses    []HarnessReport   `json:"harnesses"`
+	ShellWrapper ShellReport       `json:"shell_wrapper"`
+	Service      ServiceReport     `json:"service"`
+	Persistence  PersistenceReport `json:"persistence"`
+	Orphans      []Finding         `json:"orphans"`
+	Problems     []string          `json:"problems"`
 }
 
 type DaemonReport struct {
@@ -52,6 +54,17 @@ type ServiceReport struct {
 	Kind      string `json:"kind"` // systemd | launchd | schtasks | none
 	Installed bool   `json:"installed"`
 	Running   bool   `json:"running"`
+}
+
+// PersistenceReport says whether detached sessions outlive the user's
+// logout. Unknown facts (off Linux, logind not reachable) are null.
+type PersistenceReport struct {
+	RunDir string `json:"run_dir"`
+	// RunDirSurvivesLogout: RunDir is outside $XDG_RUNTIME_DIR, which
+	// logind deletes at the last logout.
+	RunDirSurvivesLogout bool  `json:"run_dir_survives_logout"`
+	KillUserProcesses    *bool `json:"kill_user_processes"`
+	Linger               *bool `json:"linger"`
 }
 
 // Finding names something stagent left on the host.
@@ -203,6 +216,11 @@ func (e *env) doctor() *DoctorReport {
 	r.Service.Kind = e.serviceKind()
 	r.Service.Installed, r.Service.Running = e.serviceState()
 
+	r.Persistence = e.persistenceReport()
+	if p := r.Persistence; p.KillUserProcesses != nil && *p.KillUserProcesses && p.Linger != nil && !*p.Linger {
+		r.Problems = append(r.Problems, "detached sessions end when you log out: logind kills user processes (KillUserProcesses=yes) and lingering is off; run `loginctl enable-linger` (may require an administrator) to keep them running")
+	}
+
 	for _, a := range e.inventory(false) {
 		if !a.integration {
 			continue
@@ -215,6 +233,31 @@ func (e *env) doctor() *DoctorReport {
 		}
 	}
 	return r
+}
+
+// persistenceReport checks what ends detached sessions at logout on Linux:
+// a RunDir in $XDG_RUNTIME_DIR (deleted at the last logout) and logind's
+// KillUserProcesses without lingering (the bridge moves holders into the
+// user's service manager, which stops at the last logout unless lingering).
+func (e *env) persistenceReport() PersistenceReport {
+	p := PersistenceReport{RunDir: e.l.RunDir, RunDirSurvivesLogout: true}
+	if e.goos != "linux" {
+		return p
+	}
+	if x := e.getenv("XDG_RUNTIME_DIR"); x != "" {
+		rel, err := filepath.Rel(x, e.l.RunDir)
+		p.RunDirSurvivesLogout = err != nil || strings.HasPrefix(rel, "..")
+	}
+	cmd := logind.KillUserProcessesCmd
+	if out, err := e.run.Run(cmdTimeout, cmd[0], cmd[1:]...); err == nil {
+		if v, ok := logind.ParseBusctlBool(out); ok {
+			p.KillUserProcesses = &v
+		}
+	}
+	if v, ok := e.linger(); ok {
+		p.Linger = &v
+	}
+	return p
 }
 
 func (e *env) harnessReport(id string, t *target) HarnessReport {

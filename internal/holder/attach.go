@@ -105,7 +105,7 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 		if p.Cols <= 0 || p.Rows <= 0 {
 			return nil, wire.Errorf(wire.ErrBadRequest, "invalid size %dx%d", p.Cols, p.Rows)
 		}
-		if h.local != nil && !p.Force {
+		if !p.Force && h.localOwnsSize() {
 			return nil, wire.Errorf(wire.ErrNotSizeOwner, "the local terminal owns the size of a passthrough session")
 		}
 		h.applySize(p.Cols, p.Rows)
@@ -142,7 +142,7 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 			if err := h.in.push(ctx, []inputChunk{{data: []byte{0x03}}}); err != nil {
 				return nil, wire.Errorf(wire.ErrSessionEnded, "%v", err)
 			}
-		case wire.SignalTerminate, wire.SignalKill:
+		case wire.SignalTerminate, wire.SignalKill, wire.SignalHangup:
 			if err := h.pty.Signal(p.Signal); err != nil {
 				return nil, err
 			}
@@ -173,6 +173,25 @@ func (h *Holder) checkLive(id string) error {
 	return nil
 }
 
+// maxResume bounds the output replayed to a resuming client; past it a
+// snapshot is cheaper and just as good.
+const maxResume = 1 << 20
+
+// missedLocked returns the output a raw client that consumed the stream up
+// to since has missed, if it can be replayed exactly: the bytes are still in
+// the scrollback and were laid out for the current size. Read under h.mu,
+// so the range ends exactly where queued live output will continue.
+func (h *Holder) missedLocked(since *int64) ([]byte, bool) {
+	if since == nil || h.sb == nil {
+		return nil, false
+	}
+	s := *since
+	if s < 0 || s > h.pos || h.pos-s > maxResume || h.sizePos >= s {
+		return nil, false
+	}
+	return h.sb.Range(s, h.pos)
+}
+
 func (cs *connState) attach(c *rpc.Conn, m *wire.Msg, p wire.AttachParams) (any, error) {
 	h := cs.h
 	mode := p.Mode
@@ -199,14 +218,28 @@ func (cs *connState) attach(c *rpc.Conn, m *wire.Msg, p wire.AttachParams) (any,
 		return nil, wire.Errorf(wire.ErrSessionEnded, "session %s has ended", h.id)
 	}
 	var first []byte
+	resumed := false
 	if a.raw {
-		first = h.scr.Snapshot()
+		if first, resumed = h.missedLocked(p.Since); !resumed {
+			first = h.scr.Snapshot()
+		}
 	} else {
 		first, a.differ = h.scr.SnapshotDiffer()
 	}
-	a.items = append(a.items, item{data: first, reset: true})
+	switch {
+	case !resumed:
+		it := item{data: first, reset: true}
+		if a.raw {
+			it.end = h.pos
+		}
+		a.items = append(a.items, it)
+	case len(first) > 0:
+		// Not counted against rawQueueLimit: like a snapshot, it is the
+		// starting point the queue limit protects.
+		a.items = append(a.items, item{data: first, end: h.pos})
+	}
 	h.atts[a] = struct{}{}
-	res := wire.AttachResult{Cols: h.sess.Cols, Rows: h.sess.Rows, Mode: mode}
+	res := wire.AttachResult{Cols: h.sess.Cols, Rows: h.sess.Rows, Mode: mode, Offset: h.pos, Resumed: resumed}
 	h.mu.Unlock()
 	cs.att = a
 
@@ -229,6 +262,7 @@ func (cs *connState) detach() {
 type item struct {
 	data   []byte
 	reset  bool
+	end    int64 // raw: stream position after data (a snapshot: where it was taken)
 	resize *wire.ResizeParams
 }
 
@@ -262,16 +296,17 @@ func (a *attachment) signal() {
 	}
 }
 
-// pushOutput queues raw bytes (h.mu held). Past rawQueueLimit the queued
-// bytes are dropped and the client is resynchronized with a snapshot.
-func (a *attachment) pushOutput(b []byte) {
+// pushOutput queues raw bytes ending at stream position end (h.mu held).
+// Past rawQueueLimit the queued bytes are dropped and the client is
+// resynchronized with a snapshot.
+func (a *attachment) pushOutput(b []byte, end int64) {
 	a.mu.Lock()
 	if !a.resync {
 		if a.queued+len(b) > rawQueueLimit {
 			a.dropData()
 			a.resync = true
 		} else {
-			a.items = append(a.items, item{data: b})
+			a.items = append(a.items, item{data: b, end: end})
 			a.queued += len(b)
 		}
 	}
@@ -385,7 +420,7 @@ func (a *attachment) run() {
 				a.dirty = false
 				a.mu.Unlock()
 				if f := a.differ.Frame(); f != nil {
-					if a.notifyOutput(f, false) != nil {
+					if a.notifyOutput(f, false, 0) != nil {
 						return
 					}
 				}
@@ -413,21 +448,23 @@ func (a *attachment) resnapshot() {
 	snap := a.h.scr.Snapshot()
 	a.mu.Lock()
 	a.dropData()
-	a.items = append(a.items, item{data: snap, reset: true})
+	a.items = append(a.items, item{data: snap, reset: true, end: a.h.pos})
 	a.resync = false
 	a.mu.Unlock()
 	a.h.mu.Unlock()
 }
 
 // send writes queued items in order, merging consecutive raw chunks into
-// one notification. It reports false when the connection failed.
+// one notification that reports the last chunk's end. It reports false when
+// the connection failed.
 func (a *attachment) send(items []item) bool {
 	var buf []byte
+	var end int64
 	flush := func() bool {
 		if len(buf) == 0 {
 			return true
 		}
-		err := a.notifyOutput(buf, false)
+		err := a.notifyOutput(buf, false, end)
 		buf = nil
 		return err == nil
 	}
@@ -438,16 +475,17 @@ func (a *attachment) send(items []item) bool {
 				return false
 			}
 		case it.reset:
-			if !flush() || a.notifyOutput(it.data, true) != nil {
+			if !flush() || a.notifyOutput(it.data, true, it.end) != nil {
 				return false
 			}
 		default:
 			buf = append(buf, it.data...)
+			end = it.end
 		}
 	}
 	return flush()
 }
 
-func (a *attachment) notifyOutput(data []byte, reset bool) error {
-	return a.conn.Notify(wire.NotifyOutput, wire.OutputParams{ID: a.h.id, Data: data, Reset: reset})
+func (a *attachment) notifyOutput(data []byte, reset bool, end int64) error {
+	return a.conn.Notify(wire.NotifyOutput, wire.OutputParams{ID: a.h.id, Data: data, Reset: reset, End: end})
 }

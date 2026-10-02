@@ -6,6 +6,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -427,11 +430,75 @@ func TestSpawnRejectsInvalidRequests(t *testing.T) {
 		{Cols: 80, Rows: 24},
 		{Command: []string{"sh"}, Cwd: "/nonexistent/stagent-test", Cols: 80, Rows: 24},
 		{Command: []string{"sh"}, Env: map[string]string{"A=B": "c"}},
+		{Shell: true, Command: []string{"sh"}},
 	} {
 		if e := a.call(t, wire.MethodSessionSpawn, p, nil); e == nil || e.Code != wire.ErrBadRequest {
 			t.Errorf("spawn %+v: %v", p, e)
 		}
 	}
+}
+
+// Holders go through the systemd scope while that works; a scoped start
+// whose process dies before the holder answers is retried plainly, and the
+// bridge then stops using the scope.
+func TestScopedSpawnFallsBackToPlainStart(t *testing.T) {
+	const fakeRun = "/fake/systemd-run"
+	var (
+		br         *Bridge
+		mu         sync.Mutex
+		starts     []string
+		scopeWorks = true
+	)
+	_, a := startBridge(t, func(b *Bridge) {
+		br = b
+		b.scopeArgv = func() []string { return []string{fakeRun, "--user", "--scope", "--"} }
+		b.spawnProc = func(exe string, args []string, dir string, env []string, logPath string) (int, error) {
+			mu.Lock()
+			works := exe != fakeRun || scopeWorks
+			if exe == fakeRun {
+				starts = append(starts, "scope")
+				if args[2] != "--" || args[4] != "run" {
+					t.Errorf("scoped start argv %q", args)
+				}
+			} else {
+				starts = append(starts, "plain")
+			}
+			mu.Unlock()
+			if !works { // systemd-run failing: a process that is already gone
+				dead := exec.Command(os.Args[0], "-test.run=^$")
+				if err := dead.Run(); err != nil {
+					return 0, err
+				}
+				return dead.Process.Pid, nil
+			}
+			id := args[slices.Index(args, "--id")+1]
+			serveFake(t, br.l.HolderAddr(id), func(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any, error) {
+				return wire.Session{ID: id, Mode: wire.ModeDetached}, nil
+			})
+			return os.Getpid(), nil
+		}
+	})
+	spawn := func(want ...string) {
+		t.Helper()
+		mu.Lock()
+		starts = nil
+		mu.Unlock()
+		var res wire.SpawnResult
+		if e := a.call(t, wire.MethodSessionSpawn, wire.SpawnParams{Command: []string{"sh"}}, &res); e != nil {
+			t.Fatalf("spawn: %v", e)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if !slices.Equal(starts, want) {
+			t.Fatalf("starts = %q, want %q", starts, want)
+		}
+	}
+	spawn("scope")
+	mu.Lock()
+	scopeWorks = false
+	mu.Unlock()
+	spawn("scope", "plain")
+	spawn("plain")
 }
 
 func TestLostWatchIsRestoredByTheNextDaemonRequest(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 )
 
@@ -206,6 +207,55 @@ func TestModesAndTitle(t *testing.T) {
 	}
 }
 
+// clientModes applies snapshot to a client whose terminal was left with
+// stale input modes on, and returns every mode the snapshot set or reset.
+func clientModes(t *testing.T, snapshot []byte) map[int]bool {
+	t.Helper()
+	c := newClient(t, 20, 5)
+	c.write([]byte("\x1b[?1004h\x1b[?1015h\x1b[?9h\x1b[?1l")) // left by an earlier program
+	modes := map[int]bool{}
+	c.emu.SetCallbacks(vt.Callbacks{
+		EnableMode:  func(m ansi.Mode) { modes[m.Mode()] = true },
+		DisableMode: func(m ansi.Mode) { modes[m.Mode()] = false },
+	})
+	c.write(snapshot)
+	return modes
+}
+
+func TestSnapshotRestoresInputModes(t *testing.T) {
+	s := New(20, 5, nil)
+	defer s.Close()
+	s.Write([]byte("\x1b[?1h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[?1004h\x1b[?1004l"))
+
+	got := clientModes(t, s.Snapshot())
+	want := map[int]bool{
+		1: true, 9: false, 1000: true, 1002: false, 1003: true,
+		1004: false, 1005: false, 1006: true, 1015: false, 2004: true,
+	}
+	for m, on := range want {
+		if v, ok := got[m]; !ok || v != on {
+			t.Errorf("mode ?%d after snapshot: set=%v explicit=%v, want set=%v", m, v, ok, on)
+		}
+	}
+	// Sets come after every reset: xterm turns mouse reporting off on any
+	// tracking-mode reset.
+	if snap := string(s.Snapshot()); !strings.HasSuffix(snap, "\x1b[?1;1000;1003;1006;2004h") {
+		t.Errorf("snapshot does not end with the mode sets: %q", snap[max(0, len(snap)-80):])
+	}
+}
+
+func TestRISClearsInputModesIncludingUntrackedEncodings(t *testing.T) {
+	s := New(20, 5, nil)
+	defer s.Close()
+	s.Write([]byte("\x1b[?1005h\x1b[?1015h\x1b[?1002h\x1b[?2004h\x1bc"))
+	got := clientModes(t, s.Snapshot())
+	for _, m := range inputModes {
+		if on, ok := got[int(m)]; !ok || on {
+			t.Errorf("mode ?%d after RIS: set=%v explicit=%v", int(m), on, ok)
+		}
+	}
+}
+
 func TestQueriesAreAnsweredWithoutBlockingWrite(t *testing.T) {
 	replies := make(chan []byte, 4)
 	s := New(20, 5, func(b []byte) { replies <- b })
@@ -234,6 +284,24 @@ func TestQueriesAreAnsweredWithoutBlockingWrite(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Write blocked on unanswered queries")
+	}
+}
+
+// A passthrough session whose terminal went away (handoff) starts answering
+// queries itself.
+func TestResponderCanBeSetLater(t *testing.T) {
+	replies := make(chan []byte, 4)
+	s := New(20, 5, nil)
+	defer s.Close()
+	s.SetResponder(func(b []byte) { replies <- b })
+	s.Write([]byte("\x1b[2;4H\x1b[6n"))
+	select {
+	case r := <-replies:
+		if string(r) != "\x1b[2;4R" {
+			t.Fatalf("CPR reply %q", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no reply after SetResponder")
 	}
 }
 

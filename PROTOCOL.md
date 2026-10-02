@@ -45,7 +45,7 @@ app's protocol, the app offers an update of the binary.
 |---|---|---|
 | `hello` | `{protocol, client}` | `{protocol, version, os, arch, home, capabilities[]}` |
 | `ping` | – | `{}` |
-| `session.spawn` | `{command[], cwd?, cols, rows, env?{}}` | `{session}` — a detached session; app owns its size |
+| `session.spawn` | `{command[]?, shell?, cwd?, cols, rows, env?{}}` | `{session}` — a detached session; app owns its size |
 
 `session.spawn` starts the command with the environment of the user's login
 shell (`$SHELL -l -i`, then `$SHELL -l`, captured once per bridge), not the
@@ -55,19 +55,40 @@ name still missing from that PATH is looked up in the usual per-user tool
 directories (`~/.bun/bin`, `~/.local/bin`, npm/pnpm/volta/nvm/fnm/mise,
 Homebrew). `env` entries override both.
 
-Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`.
+With `shell: true` (capability `persist`) the session runs the user's login
+shell instead of a command: argv `[<shell>, "-l"]`, `<shell>` being `SHELL`
+of that captured environment (`/bin/sh` when unset). `command` must then be
+empty or absent (`bad_request` otherwise); on Windows the request fails with
+`unsupported`. This is how a terminal tab runs its shell in a persistent
+session: it outlives the SSH connection and is re-attached later.
+
+On Linux, when logind kills a login session's processes as it ends
+(`KillUserProcesses=yes`) and `systemd-run` exists, holders are started
+through `systemd-run --user --scope --collect --quiet -- <stagent> run
+--detached …` so they leave the bridge's SSH login session; if that start
+fails before the holder answers, the holder is started directly and the
+bridge stops using the scope. Without lingering (`loginctl enable-linger`)
+the user's service manager, and with it the scope, still ends at the last
+logout; `stagent doctor` reports that case.
+
+Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
+`persist`. `persist` announces everything this document marks with it:
+`session.spawn` `shell`, attach resume (`since`, `offset`, `resumed`,
+`output.end`), the `hangup` signal, input-mode restoring snapshots and
+sessions changing from `passthrough` to `detached` (handoff). An app that
+relies on them treats a bridge without `persist` as needing an update.
 
 ### Session (forwarded to the session's holder)
 
 | method | params | result |
 |---|---|---|
 | `session.info` | `{id}` | `Session` |
-| `session.attach` | `{id, mode: "raw"\|"screen", fps?}` | `{cols, rows, mode}` then `output` / `resize` / `closed` notifications |
+| `session.attach` | `{id, mode: "raw"\|"screen", fps?, since?}` | `{cols, rows, mode, offset, resumed}` then `output` / `resize` / `closed` notifications |
 | `session.detach` | `{id}` | `{}` |
 | `session.input` | `{id, text?, paste?, keys?[], submit?}` | `{}` |
 | `session.resize` | `{id, cols, rows, force?}` | `{}`; `not_size_owner` for a passthrough session without `force` |
 | `session.scrollback` | `{id, before?, max_bytes?}` | `{data, start, end, first}` |
-| `session.signal` | `{id, signal: "interrupt"\|"terminate"\|"kill"}` | `{}` |
+| `session.signal` | `{id, signal: "interrupt"\|"terminate"\|"kill"\|"hangup"}` | `{}` |
 
 Attach modes:
 
@@ -85,6 +106,50 @@ On `reset: true` the client clears screen and scrollback before writing
 `data`. `resize {id, cols, rows}` arrives when the session size changes;
 the client resizes its terminal to exactly that size. `closed {id,
 exit_code}` ends the stream.
+
+A raw snapshot leaves the client's terminal in the state the program's next
+bytes expect: cursor position and visibility, pen, scroll region, autowrap,
+the alternate screen, and (`persist`) the input modes — DECCKM (`?1`),
+mouse tracking (`?9`, `?1000`, `?1002`, `?1003`), mouse encodings
+(`?1005`, `?1006`, `?1015`), focus events (`?1004`) and bracketed paste
+(`?2004`): every one of them the program has off is reset (`CSI ? … l`),
+then every one it has on is set (`CSI ? … h`).
+
+Stream positions (`persist`, raw mode). Every byte the program writes has a
+position in the session's output stream, the same offsets as
+`session.scrollback`. Each raw `output` carries `end`: the position after
+its `data` (for a `reset: true` snapshot, the position the snapshot was
+taken at; `end` is omitted when it is 0). The attach result's `offset` is
+the position right after the first `output` item, i.e. where live output
+continues. A client stores the `end` of the last `output` it fully wrote to
+its terminal and passes it as `since` when it attaches again (after a
+detach, a dropped connection, an app restart). The holder resumes when
+`mode` is `raw`, the session has a scrollback, `since <= P` (P = the
+current position), `P - since <= 1 MiB`, the bytes `[since, P)` are still
+retained and the session size did not change at or after `since`. The
+result then has `resumed: true` and the first `output` is `{reset: false,
+data: bytes [since, P), end: P}` — omitted when `since == P` — so the
+client's terminal continues exactly where it stopped, scrollback included.
+Otherwise `resumed` is false and the first `output` is the usual `reset:
+true` snapshot. Absent `since` never resumes. Screen mode ignores `since`
+and its frames carry no `end`.
+
+Terminal queries (DA, CPR, DECRQM, OSC 10/11/12/4 colour queries, …) the
+program sends are answered by the holder's emulator whenever the session
+has no local terminal (detached, or passthrough after a handoff); in a
+passthrough session the local terminal answers them. Attached clients must
+not answer queries themselves: their replies would arrive as typed input.
+
+`session.signal`: `interrupt` writes Ctrl-C to the terminal, `terminate`
+sends SIGTERM (Windows: Ctrl-Break, then TerminateProcess after a grace
+period), `kill` SIGKILL / TerminateProcess, and `hangup` (`persist`)
+SIGHUP — what closing a terminal does; a shell exits on it, which is how
+the app ends a persistent shell session (Windows: same as `terminate`).
+
+A passthrough session started with `stagent run --handoff` changes its
+`mode` to `detached` when its local terminal hangs up (see "Command-line
+tools"); `session.updated` reports it. From then on the app owns the size
+(`session.resize` without `force`) and the holder answers terminal queries.
 
 `session.input` is applied in order: `text` raw, `paste` (wrapped in
 `ESC[200~ … ESC[201~` when the program enabled bracketed paste), `keys`,
@@ -138,7 +203,7 @@ directly and are unaffected.
 | `event` | `Event` |
 | `session.updated` | `Session` (full object; replaces the previous one) |
 | `session.removed` | `{id}` |
-| `output` | `{id, data, reset?}` |
+| `output` | `{id, data, reset?, end?}` |
 | `resize` | `{id, cols, rows}` |
 | `closed` | `{id, exit_code}` |
 | `transcript` | `{session_id?, path, messages[]}` |
@@ -149,7 +214,10 @@ directly and are unaffected.
 holder_pid, mode (passthrough|detached), state (working|idle|waiting_input|
 needs_approval|exited), state_source (hook|terminal|activity|process),
 title?, conversation_id?, transcript_path?, last_message?, cols, rows,
-started_at, last_activity_at, exit_code?`.
+started_at, last_activity_at, exit_code?`. `mode` is fixed for the life of
+a session except for one transition (`persist`): a `passthrough` session
+started with `--handoff` becomes `detached` when its local terminal hangs
+up.
 
 `Event`: `seq, time, session_id?, kind, data`. Kinds and `data`:
 
@@ -182,6 +250,23 @@ Codex, omp) running in a terminal tab. The app runs it over an exec channel
 **on the same SSH connection as the tab's shell**, with the command forms of
 "Starting the bridge" (`follow` instead of `bridge`). It needs no daemon,
 hooks or installation beyond the binary, and exits when stdin reaches EOF.
+
+`stagent follow --session ID` (also `-session ID`, `--session=ID`; ID = 16
+lowercase hex chars) follows the agent running inside stagent session ID
+instead of the tab's: the process tree searched is the session's program
+(its `pid` from the holder's `session.info`) rather than the tab found
+below. Agent recognition, multiplexers inside that tree, transcripts,
+`select` / `older` and all frames are the same. The holder is asked on
+every scan (1 s, bounded by 1 s). When it gives no program to search the
+`target` is `{mux: "none", reason: "no_terminal", diag, agents: [],
+selected: null}` with `diag` `stagent session <ID>: holder not reachable:
+<error>` (no such session, or it ended and its holder exited), `stagent
+session <ID>: session ended (exit <N>)` or `stagent session <ID>: holder
+reports no program pid`; follow keeps scanning and the usual target follows
+once the holder answers. A holder answering without an agent in the tree is
+the usual `no_agent`. An invalid ID, an unknown flag or a positional
+argument print a message on stderr and exit 2; without `--session`
+`stagent follow` behaves as described below.
 
 Framing as above (one JSON object per line, ASCII-only output, `\r`
 tolerated on input), but frames are plain objects named by `t`, not
@@ -372,12 +457,26 @@ success (non-zero with `{"error": "..."}` on failure).
 
 | command | output |
 |---|---|
-| `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}}` — creates directories and the manifest; idempotent |
+| `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, notes[]}` — creates directories and the manifest; idempotent |
 | `stagent doctor --json` | `DoctorReport` |
 | `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--remove claude,codex,omp,shell-wrapper,service]` | `{applied, changes[{id, target, action (create\|modify\|delete), summary, diff}], notes[]}` |
 | `stagent uninstall --json --level stop\|unhook\|purge [--uploads]` | `{level, steps[{action, target, ok, error?}], removed[], failed[{path, reason, sessions[]}], remaining[]}` |
 
 Levels are cumulative: `unhook` includes `stop`, `purge` includes `unhook`.
+
+Sockets live in `run_dir`. On Linux (without `STAGENT_HOME`) that is
+`<TMPDIR or /tmp>/stagent-<uid>`, not `$XDG_RUNTIME_DIR`, which logind
+removes at the user's last logout and with it every detached session's
+socket. It is created with mode 0700; stagent refuses to use it (the
+command fails with an error naming it) when it is a symlink or not a
+directory, belongs to another user or is accessible by group or others.
+Holders and the daemon touch their sockets and `run_dir` every hour so tmp
+cleaners keep them. `install` stops a daemon of an earlier version still
+listening at `$XDG_RUNTIME_DIR/stagent/stagent.sock` (best effort, reported
+in `notes`); sessions that version started stay reachable only through its
+old directory until they end. With `STAGENT_HOME` (tests, isolated
+installs) `run_dir` is `<root>/run`, or a `stagent-<uid>-<hash>` directory
+in tmp when socket paths would be too long there.
 
 `DoctorReport`:
 
@@ -393,10 +492,76 @@ Levels are cumulative: `unhook` includes `stop`, `purge` includes `unhook`.
   ],
   "shell_wrapper": {"installed": false, "files": []},
   "service": {"kind": "systemd|launchd|schtasks|none", "installed": false, "running": false},
+  "persistence": {"run_dir": "/tmp/stagent-1000", "run_dir_survives_logout": true,
+                  "kill_user_processes": false, "linger": true},
   "orphans": [{"target": "/home/u/.claude/settings.json", "detail": "..."}],
   "problems": []
 }
 ```
+
+`persistence` tells whether detached sessions outlive the user's logout:
+`run_dir_survives_logout` is false when `run_dir` is below
+`$XDG_RUNTIME_DIR` (always true off Linux); `kill_user_processes` is
+logind's `KillUserProcesses` and `linger` whether lingering is enabled for
+the user (`null` when unknown or off Linux). When `kill_user_processes` is
+true and `linger` false, `problems` says that detached sessions end at
+logout and suggests `loginctl enable-linger`.
+
+## Command-line tools
+
+These run in a terminal on the server; the app does not use them.
+
+`stagent run [--detached | --handoff] [--id ID] [--cols N --rows N] [--cwd
+DIR] -- <cmd> [args...]` runs `<cmd>` as a session. Without `--detached`
+it is mirrored on the terminal it was started in (passthrough), which owns
+the size; when that terminal hangs up the program gets SIGHUP. With
+`--handoff` (`persist`; passthrough only, a usage error with `--detached`)
+the hangup — SIGHUP to `stagent run`, or its terminal input failing with
+EOF/EIO — does not reach the program: mirroring stops, the session's `mode`
+becomes `detached` (`holder.update`, so watchers get `session.updated`), the
+holder starts answering terminal queries, the local size is no longer
+followed and `session.resize` works without `force`. Later hangups are
+ignored. The shell wrappers (`integrate --shell-wrapper`) run `stagent run
+--handoff -- …` instead of `stagent run -- …` when the environment has
+`STAGENT_HANDOFF=1` (exactly `1`). A handed-off session stays in the login
+session it was started from, so where logind kills a session's processes
+at its end (`KillUserProcesses=yes`) it ends with that login session. On
+Windows a closing console still ends the process, so a handoff only happens
+when console input reaches EOF.
+
+`stagent ls [--json]` lists the daemon's sessions (`sessions.list`), most
+recent `last_activity_at` first: a table of ID, MODE, STATE, LAST ACTIVITY
+(relative), COMMAND and TITLE/CWD (the title the program set, else the
+working directory), or with `--json` the `{sessions[]}` result on one line.
+Without a running daemon the list is empty and the exit status 0.
+
+`stagent attach [ID | --last] [--detach-key ctrl-X]` attaches the terminal
+it runs in (stdin must be a terminal) to a session, talking to the holder
+directly: the terminal goes into raw mode, the session is resized to the
+terminal's size (`force`, again on every SIGWINCH), and a raw attach
+(without `since`) streams the snapshot and then the output to stdout while
+keystrokes go to `session.input` as `text` (bytes that are not UTF-8 arrive
+as U+FFFD). Replies of the local terminal to the program's queries are
+filtered out of the keystrokes — CPR `ESC [ r ; c R` (and `ESC [ ? r ; c
+R`), DA `ESC [ ? … c` / `ESC [ > … c`, DECRPM `ESC [ ? … $ y`, OSC
+10/11/12/4 colour replies and XTVERSION `ESC P > | … ESC \`; keys, mouse
+reports and focus reports (`ESC [ I` / `ESC [ O`) pass — because the holder
+answers queries itself. xterm's modified F3 (`ESC [ 1 ; m R`) cannot be told
+from a CPR and is dropped too. With an ID the holder is asked directly, so
+no daemon is needed. Without one it attaches the only live session and
+fails, listing them, when there are none or several; `--last` takes the
+live session with the newest `last_activity_at`. Neither ever picks the
+session the command itself runs in (`STAGENT_SESSION_ID`), and naming it is
+an error. The detach key (default Ctrl-], `--detach-key ctrl-X` for X in
+`@`, `a`–`z`, `\`, `]`, `^`, `_`; not Ctrl-[, which is ESC) detaches and
+prints `[detached]` once no second press follows within 300 ms; pressing it
+twice in a row sends it to the program once. Every exit resets the input
+and screen modes the program may have left on and restores the terminal.
+Exit status: 0 detached; N when the session ends (`[session ended (exit
+N)]`); 1 when the holder is unreachable or the connection is lost
+(`[connection to session lost]`); 128+signal on SIGTERM / SIGHUP / SIGINT;
+2 for usage errors, no terminal or no session to choose. Not available on
+Windows.
 
 ## Harness hooks
 

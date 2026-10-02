@@ -56,3 +56,34 @@ func TestCLIUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+// install stops a daemon of an earlier version still listening in
+// $XDG_RUNTIME_DIR, only for the real (non-isolated) installation on Linux.
+func TestInstallStopsLegacyDaemon(t *testing.T) {
+	for _, c := range []struct {
+		goos     string
+		isolated bool
+		running  bool
+		stop     bool
+	}{
+		{"linux", false, true, true},
+		{"linux", false, false, false},
+		{"linux", true, true, false},
+		{"darwin", false, true, false},
+	} {
+		te := newTestEnv(t, c.goos)
+		te.l.Isolated = c.isolated
+		xdg := t.TempDir()
+		te.vars["XDG_RUNTIME_DIR"] = xdg
+		legacy := &fakeDaemon{running: c.running, exitOnShutdown: true}
+		te.others[filepath.Join(xdg, "stagent", "stagent.sock")] = legacy
+		r, err := te.install()
+		if err != nil {
+			t.Fatal(err)
+		}
+		noted := strings.Contains(strings.Join(r.Notes, "\n"), "Stopped the daemon of an earlier stagent version")
+		if (legacy.shutdowns == 1) != c.stop || noted != c.stop {
+			t.Errorf("%+v: shutdowns %d, notes %q", c, legacy.shutdowns, r.Notes)
+		}
+	}
+}
