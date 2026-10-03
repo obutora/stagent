@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +156,17 @@ func (te *testEnv) reload() {
 	te.loadManifest()
 }
 
+// notesWith returns the notes of code.
+func notesWith(notes []Note, code string) []Note {
+	var out []Note
+	for _, n := range notes {
+		if n.Code == code {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func (te *testEnv) integrate(t *testing.T, o integrateOpts) *IntegrateResult {
 	t.Helper()
 	te.reload()
@@ -206,6 +218,9 @@ func removeAll(t *testing.T, p string) {
 
 func chmodX(t *testing.T, p string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no executable bit and no #! scripts")
+	}
 	if err := os.Chmod(p, 0o755); err != nil {
 		t.Fatal(err)
 	}

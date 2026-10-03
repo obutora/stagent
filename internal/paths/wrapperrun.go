@@ -13,10 +13,14 @@ import (
 type WrapperRunRecord struct {
 	// At is when the program was started, unix ms.
 	At int64 `json:"at"`
-	// SurvivesLogout says whether `stagent run`, where it ended up after
-	// leaving the login session (logind.Escape, Linux) or swapping its
-	// bootstrap port (bootstrap.Swap, macOS), outlives the user's logout;
-	// nil when unknown.
+	// Placement is where `stagent run` ended up after leaving the login
+	// session (logind.Escape, Linux): a logind.Placement name, "" when
+	// unknown. Whether it outlives logout there depends on logind's
+	// settings, so `stagent doctor` judges it with the current ones.
+	Placement string `json:"placement,omitempty"`
+	// SurvivesLogout says whether `stagent run` swapped its bootstrap port
+	// (bootstrap.Swap, macOS), so that it outlives the user's logout; nil
+	// when unknown and off macOS.
 	SurvivesLogout *bool `json:"survives_logout"`
 	// BootstrapError is why the swap failed on macOS; "" otherwise.
 	BootstrapError string `json:"bootstrap_error,omitempty"`

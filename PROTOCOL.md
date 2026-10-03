@@ -707,9 +707,9 @@ success (non-zero with `{"error": "..."}` on failure).
 
 | command | output |
 |---|---|
-| `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, replaced_daemon?, changes[], notes[]}` — creates directories and the manifest and completes an update (below); idempotent |
+| `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, replaced_daemon?, changes[], notes[{code, text, args?}]}` — creates directories and the manifest and completes an update (below); idempotent |
 | `stagent doctor --json` | `DoctorReport` |
-| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--linger] [--terminal] [--remove claude,codex,omp,shell-wrapper,service,linger,terminal]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[]}` |
+| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--linger] [--terminal] [--remove claude,codex,omp,shell-wrapper,service,linger,terminal]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
 | `stagent uninstall --json --level stop\|unhook\|purge [--uploads] [--linger]` | `{level, steps[{action, target, ok, error?}], removed[], failed[{path, reason, sessions[]}], remaining[]}` |
 
 Levels are cumulative: `unhook` includes `stop`, `purge` includes `unhook`.
@@ -788,6 +788,33 @@ file. Its output, in both modes:
   telling the user which shell was found when the result is
   `nothing_to_do`.
 - `applied` is true when `--apply` wrote every change (and the manifest).
+- `notes[]`: remarks for the user (below).
+
+`notes[]` of `install` and `integrate` are `{code, text, args?}`. `text`
+is the remark in English, with the values of `args` filled in, and may be
+reworded; `code` keeps its meaning, so a client can word the remark itself
+from `code` and `args` (an object of strings). A client shows `text` for a
+code it does not know.
+
+| code | args | remark |
+|---|---|---|
+| `claude_restart` | – | running Claude sessions load the new hooks only after a restart |
+| `claude_windows_hooks` | – | on Windows the hooks run `stagent.exe` directly; deleting the binary without `uninstall --level unhook` leaves hooks that error until removed (`doctor` lists them as orphans) |
+| `omp_restart` | – | running omp sessions load the extension only after a restart |
+| `codex_trust` | – | Codex asks to review and trust the new hooks at its next start; stagent writes no trust entries |
+| `codex_notify_fallback` | `reason` | Codex is integrated through the notify program (turn complete only, no approvals); `reason`: `windows` (no Codex hooks on Windows), `inline_features` (`features` is an inline table), `hooks_removed` (this Codex removed the hooks feature), `no_hooks_feature` (this Codex has none) |
+| `codex_notify_kept` | `command` | Codex already has another notify program (`command`); stagent left it, so turn-complete events are not reported |
+| `codex_features_kept` | – | removing left `[features] hooks` as it is: it changed after stagent enabled it |
+| `no_shell` | – | no supported shell rc file was found; nothing to wrap (`result` `nothing_to_do`) |
+| `powershell_no_bom` | `path`, `bin` | the profile `path` has no UTF-8 BOM and the wrapper names stagent by the non-ASCII path `bin`; Windows PowerShell 5.1 will not find it |
+| `binary_missing` | `path` | stagent is not installed at `path` yet; hooks and wrappers stay inactive until it is |
+| `service_linger` | – | (`--service`, systemd) lingering is off, so the user service stops at the last logout |
+| `launch_agent` | – | (`--service`, macOS) the LaunchAgent runs in the user domain and survives logout; starting before any login after a restart is unverified |
+| `terminal_no_profiles` | – | Terminal.app has no saved profiles; nothing to change |
+| `terminal_running` | – | Terminal.app is running and applies the change once it is quit and opened again |
+| `not_applied` | `failed` | (`--apply`) the change ids that failed, comma-separated (`manifest: <error>` when the manifest could not be saved) |
+| `legacy_daemon_stopped` | `addr` | (`install`) a daemon of a version before 0.3.0 at `addr` was stopped; sessions it had keep running but are no longer listed |
+| `daemon_replace_failed` | `running`, `version`, `error` | (`install`) the running daemon (`running`) could not be replaced by this `version` |
 
 `--shell-wrapper` writes the wrapper block to `~/.bashrc` (when it exists
 or bash is the login shell), `$ZDOTDIR/.zshrc` (same for zsh), a fish file
@@ -869,12 +896,15 @@ in tmp when socket paths would be too long there.
 `last_run_at` (unix ms, `null` when never) is when `stagent run
 --handoff=auto` — which only the shell wrappers pass — last started a
 program on this host, i.e. the last start through a wrapper.
-`last_run_survives_logout` is whether that start, where it ended up after
-leaving the login session (see "Leaving the login session"), outlives the
-user's logout — on macOS, whether it swapped to the per-user bootstrap
-port, so that the programs the agent starts can still use the network
-after a logout from the GUI: `null` when it cannot be told, on Windows, or
-the start was recorded by stagent before 0.4.0.
+`last_run_survives_logout` is whether that start outlives the user's
+logout: on Linux, where it ended up after leaving the login session (see
+"Leaving the login session"), judged with `kill_user_processes` and
+`linger` as they are now, so turning lingering off makes it false for a
+start under the service manager; on macOS, whether it swapped to the
+per-user bootstrap port, so that the programs the agent starts can still
+use the network after a logout from the GUI. `null` when it cannot be
+told, on Windows, or the start was recorded by stagent before 0.4.0 (on
+Linux, before 0.4.1).
 `last_run_bootstrap_error` is why that swap failed (macOS), `null`
 otherwise; a failure adds a `problems` line.
 
@@ -912,9 +942,9 @@ the user (`null` when unknown or off Linux).
 
 `linger_needed` says whether agents started on this host end at logout
 unless lingering is turned on (`integrate --linger`). It is false when
-lingering is on; otherwise, once a start through a wrapper recorded
-`last_run_survives_logout`, it is the opposite of that (`linger_reason`
-`last_run`); before that, true when `kill_user_processes` is true
+lingering is on; otherwise, once a start through a wrapper is recorded
+and `last_run_survives_logout` is known, it is the opposite of that
+(`linger_reason` `last_run`); else true when `kill_user_processes` is true
 (`kill_user_processes`) or the user has a login session of type `x11` or
 `wayland` now, whose terminals run under the user's service manager
 (`graphical_session`). It is `null` when neither `kill_user_processes`
@@ -970,10 +1000,12 @@ logout); with `KillUserProcesses=no` and no lingering the login session
 outlives the last logout while the service manager does not, so it stays.
 A process already in a service unit (the daemon of `integrate --service`)
 stays too. If the call fails the process runs on where it is. Everything
-it starts inherits the scope. A wrapper start then records whether it
-outlives logout from its cgroup: in a login session's scope unless
-`KillUserProcesses` is yes, under the service manager when lingering is
-on, and outside the user's slice always.
+it starts inherits the scope. A wrapper start then records where it runs
+from its cgroup — a login session's scope, under the service manager, or
+outside the user's slice — and `doctor` judges from that and logind's
+settings at the time it runs whether the start outlives logout: in a login
+session's scope unless `KillUserProcesses` is yes, under the service
+manager when lingering is on, and outside the user's slice always.
 
 Leaving the GUI session's bootstrap namespace (macOS): a process started
 from a terminal of the GUI login session keeps running after the user logs

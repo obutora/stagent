@@ -15,7 +15,7 @@ type IntegrateResult struct {
 	// LoginShell is the base name of $SHELL ("" when unknown).
 	LoginShell string    `json:"login_shell"`
 	Changes    []*Change `json:"changes"`
-	Notes      []string  `json:"notes"`
+	Notes      []Note    `json:"notes"`
 }
 
 // Values of IntegrateResult.Result.
@@ -81,9 +81,9 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 			c, err := e.addChange(e.claudeTarget())
 			one(h)(c, err)
 			if c != nil {
-				e.note("Claude Code reads hooks when a session starts; restart running Claude sessions to activate them.")
+				e.note(noteClaudeRestart, "Claude Code reads hooks when a session starts; restart running Claude sessions to activate them.")
 				if e.goos == "windows" {
-					e.note("On Windows the hooks run stagent.exe directly (valid in Git Bash and cmd). If the binary is deleted without `stagent uninstall --level unhook`, Claude reports a non-blocking hook error until the entries are removed; `stagent doctor` lists them as orphans.")
+					e.note(noteClaudeWindowsHooks, "On Windows the hooks run stagent.exe directly (valid in Git Bash and cmd). If the binary is deleted without `stagent uninstall --level unhook`, Claude reports a non-blocking hook error until the entries are removed; `stagent doctor` lists them as orphans.")
 				}
 			}
 		case hCodex:
@@ -91,7 +91,7 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 		case hOmp:
 			one(h)(e.addChange(e.ompTarget()))
 			if e.findHarness(hOmp) != "" {
-				e.note("omp loads extensions at startup; restart running omp sessions to activate the extension.")
+				e.note(noteOmpRestart, "omp loads extensions at startup; restart running omp sessions to activate the extension.")
 			}
 		}
 	}
@@ -99,7 +99,7 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 		ts := e.shellAddTargets()
 		if len(ts) == 0 {
 			noShell = true
-			e.note("No supported shell rc file was found (bash, zsh, fish or PowerShell); nothing to wrap.")
+			e.note(noteNoShell, "No supported shell rc file was found (bash, zsh, fish or PowerShell); nothing to wrap.")
 		}
 		for _, t := range ts {
 			one(t.id)(e.addChange(t))
@@ -132,7 +132,7 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	}
 	if len(o.harness)+len(o.remove) > 0 || o.shellWrapper || o.service {
 		if !exists(e.l.Bin) {
-			e.note("The stagent binary is not installed at %s yet; hooks and wrappers stay inactive until it is.", e.l.Bin)
+			e.note(noteBinaryMissing, "The stagent binary is not installed at {path} yet; hooks and wrappers stay inactive until it is.", "path", e.l.Bin)
 		}
 	}
 
@@ -142,7 +142,7 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	}
 	if !o.apply {
 		r.Result = summarize(r.Changes, settled, false, noShell)
-		r.Notes = nonNil(e.notes)
+		r.Notes = e.notesOut()
 		return r, nil
 	}
 	if err := e.l.EnsureDirs(); err != nil {
@@ -167,10 +167,10 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	// result, changes[].error, notes); the command still exits 0.
 	r.Applied = len(failed) == 0
 	if !r.Applied {
-		e.note("Not applied: %s.", strings.Join(failed, ", "))
+		e.note(noteNotApplied, "Not applied: {failed}.", "failed", strings.Join(failed, ", "))
 	}
 	r.Result = summarize(r.Changes, settled, manifestErr != nil, noShell)
-	r.Notes = nonNil(e.notes)
+	r.Notes = e.notesOut()
 	return r, nil
 }
 
@@ -205,7 +205,7 @@ func summarize(changes []*Change, settled int, otherErr, noShell bool) string {
 // codexAddChanges plans the Codex integration: hooks.json plus the features
 // flag, or the notify fallback.
 func (e *env) codexAddChanges() ([]*Change, error) {
-	mode, why := e.codexMode()
+	mode, reason := e.codexMode()
 	var out []*Change
 	if mode == "hooks" {
 		c, err := e.addChange(e.codexHooksTarget())
@@ -214,10 +214,10 @@ func (e *env) codexAddChanges() ([]*Change, error) {
 		}
 		if c != nil {
 			out = append(out, c)
-			e.note("Codex asks you to review and trust the new hooks on its next start; stagent does not write trust entries.")
+			e.note(noteCodexTrust, "Codex asks you to review and trust the new hooks on its next start; stagent does not write trust entries.")
 		}
 	} else {
-		e.note("Codex: %s; using the notify program instead (turn-complete events only, no approvals).", why)
+		e.note(noteCodexNotifyFallback, "Codex: "+codexNotifyWhy[reason]+"; using the notify program instead (turn-complete events only, no approvals).", "reason", reason)
 	}
 	c, err := e.addChange(e.codexConfigTarget(mode))
 	if err != nil {

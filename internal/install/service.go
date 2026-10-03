@@ -324,7 +324,7 @@ func (e *env) serviceAddChanges() ([]*Change, error) {
 			return e.runCmd("systemctl", "--user", "restart", systemdUnit)
 		}
 		if on, _ := e.linger(); !on {
-			e.note("systemd stops user services when your last session ends unless lingering is enabled: run `loginctl enable-linger` (may require an administrator) to keep the daemon running after logout.")
+			e.note(noteServiceLinger, "systemd stops user services when your last session ends unless lingering is enabled: run `loginctl enable-linger` (may require an administrator) to keep the daemon running after logout.")
 		}
 	} else {
 		c.Summary = "install the LaunchAgent and load it into the user domain with `launchctl bootstrap user/<uid>`"
@@ -340,7 +340,7 @@ func (e *env) serviceAddChanges() ([]*Change, error) {
 			}
 			return e.runCmd("launchctl", "bootstrap", e.launchdDomains()[0], t.path)
 		}
-		e.note("The LaunchAgent runs in your user domain (user/<uid>), outside the GUI session, so the daemon keeps running after you log out; agents do not need it for that. Whether it starts after a restart before anyone has logged in has not been verified.")
+		e.note(noteLaunchAgent, "The LaunchAgent runs in your user domain (user/<uid>), outside the GUI session, so the daemon keeps running after you log out; agents do not need it for that. Whether it starts after a restart before anyone has logged in has not been verified.")
 	}
 	return []*Change{c}, nil
 }

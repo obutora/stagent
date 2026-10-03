@@ -3,6 +3,7 @@ package install
 import (
 	"encoding/json"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -205,8 +206,13 @@ func TestClaudeCreatedSettingsAreDeletedOnRemove(t *testing.T) {
 	if len(r.Changes) != 1 || r.Changes[0].Action != "create" {
 		t.Fatalf("changes = %+v", r.Changes)
 	}
-	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("created settings: %v %v", st, err)
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows has no permission bits: Go reports 0666 for any writable file.
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+		t.Fatalf("created settings mode = %v", st.Mode().Perm())
 	}
 	te.integrate(t, integrateOpts{apply: true, remove: []string{hClaude}})
 	if exists(path) {

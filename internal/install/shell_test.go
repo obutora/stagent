@@ -133,10 +133,10 @@ func TestShellWrapperPowerShellProfile(t *testing.T) {
 	if !strings.HasPrefix(got, blockBegin+"\r\n") || strings.Contains(strings.ReplaceAll(got, "\r\n", ""), "\n") {
 		t.Fatalf("new PowerShell profile must be UTF-8 without BOM and CRLF: %q", got[:40])
 	}
-	if !isASCII(got) || !strings.Contains(got, `$bin = Join-Path $env:USERPROFILE '.ssh-term\agent\bin\stagent'`+"\r\n") {
+	if !isASCII(got) || !strings.Contains(got, `$bin = Join-Path $env:USERPROFILE '.ssh-term\agent\bin\`+filepath.Base(l.Bin)+`'`+"\r\n") {
 		t.Fatalf("$bin is not built from USERPROFILE / profile not ASCII:\n%s", got)
 	}
-	if strings.Contains(strings.Join(r.Notes, "\n"), "BOM") {
+	if len(notesWith(r.Notes, notePowerShellNoBOM)) != 0 {
 		t.Fatalf("unexpected encoding note: %v", r.Notes)
 	}
 	te.integrate(t, integrateOpts{apply: true, remove: []string{"shell-wrapper"}})
@@ -146,9 +146,9 @@ func TestShellWrapperPowerShellProfile(t *testing.T) {
 	te.vars["USERPROFILE"] = filepath.Join(t.TempDir(), "other")
 	writeFile(t, ps7, "\xef\xbb\xbf# mine\r\n")
 	r = te.integrate(t, integrateOpts{shellWrapper: true})
-	notes := strings.Join(r.Notes, "\n")
-	if !strings.Contains(notes, ps5+" has no UTF-8 BOM") || strings.Contains(notes, ps7+" has no UTF-8 BOM") {
-		t.Fatalf("notes = %v", r.Notes)
+	bom := notesWith(r.Notes, notePowerShellNoBOM)
+	if len(bom) != 1 || bom[0].Args["path"] != ps5 || bom[0].Args["bin"] != l.Bin || !strings.HasPrefix(bom[0].Text, ps5+" has no UTF-8 BOM") || !strings.Contains(bom[0].Text, "("+l.Bin+")") {
+		t.Fatalf("notes = %+v", r.Notes)
 	}
 	for _, c := range r.Changes {
 		if !strings.Contains(c.Diff, "$bin = "+psQuote(l.Bin)) {

@@ -31,7 +31,8 @@ func TestDoctorReportsOrphans(t *testing.T) {
 
 	// A hook entry written by hand (or by an older install) is ours but not
 	// in the manifest; a tracked one is not an orphan.
-	writeFile(t, te.codexHooks(), `{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "`+te.l.Bin+` hook codex", "timeout": 10}]}]}}`)
+	cmd, _ := json.Marshal(te.l.Bin + " hook codex") // a Windows path has backslashes
+	writeFile(t, te.codexHooks(), `{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": `+string(cmd)+`, "timeout": 10}]}]}}`)
 	te.reload()
 	r := te.doctor()
 	got := orphanTargets(r)
@@ -133,7 +134,7 @@ func fakeLogind(kill, linger *string, types *[]string) func(string, []string) (s
 // or the sockets are in $XDG_RUNTIME_DIR. Lingering is needed when it is
 // off and, before any start through the wrapper, logind kills user
 // processes or the user has a graphical session; after one, when that
-// start does not survive logout.
+// start does not survive logout where it runs, with the settings now.
 func TestDoctorPersistence(t *testing.T) {
 	te := newTestEnv(t, "linux")
 	kill, linger, types := "b true\n", "no\n", []string{"tty"}
@@ -173,20 +174,48 @@ func TestDoctorPersistence(t *testing.T) {
 	kill = "b true\n"
 	check(&yes, nil, &yes, lingerReasonKill)
 
-	// After a start through the wrapper, its outcome decides.
-	kill, linger, types = "b true\n", "no\n", []string{"tty"}
-	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 1, SurvivesLogout: &yes})
-	check(&yes, &no, &no, "")
-	kill, types = "b false\n", []string{"x11"}
-	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 2, SurvivesLogout: &no})
-	check(&no, &no, &yes, lingerReasonLastRun)
-	if sw := te.doctor().ShellWrapper; sw.LastRunAt == nil || *sw.LastRunAt != 2 || sw.LastRunSurvivesLogout == nil || *sw.LastRunSurvivesLogout {
-		t.Errorf("shell_wrapper %+v", sw)
+	// After a start through the wrapper, where it runs decides.
+	lastRun := func(want *bool) {
+		t.Helper()
+		eq := func(a, b *bool) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
+		if sw := te.doctor().ShellWrapper; sw.LastRunAt == nil || !eq(sw.LastRunSurvivesLogout, want) {
+			t.Errorf("kill %q linger %q: shell_wrapper %+v (survives %v)", kill, linger, sw, sw.LastRunSurvivesLogout)
+		}
 	}
+	kill, linger, types = "b true\n", "no\n", []string{"tty"}
+	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 1, Placement: "other"})
+	check(&yes, &no, &no, "")
+	lastRun(&yes)
+	kill, types = "b false\n", []string{"x11"}
+	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 2, Placement: "manager"})
+	check(&no, &no, &yes, lingerReasonLastRun)
+	lastRun(&no)
 	linger = "yes\n"
 	check(&no, &yes, &no, "")
+	lastRun(&yes)
+	// Started under the user manager while lingering was on, lingering
+	// turned off since: it ends at the next logout.
+	kill, linger = "b true\n", "no\n"
+	check(&yes, &no, &yes, lingerReasonLastRun)
+	lastRun(&no)
+	// Lingering unknown: the user manager's fate is too.
+	linger = ""
+	check(&yes, nil, &yes, lingerReasonKill)
+	lastRun(nil)
+	kill, linger = "b false\n", "no\n"
+	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 3, Placement: "session"})
+	check(&no, &no, &no, "")
+	lastRun(&yes)
+	kill = "b true\n"
+	check(&yes, &no, &yes, lingerReasonLastRun)
+	lastRun(&no)
+	// No placement (logind could not tell): judged as before any start; a
+	// survives_logout recorded on Linux is not taken.
+	kill = "b false\n"
+	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 4, SurvivesLogout: &yes})
+	check(&no, &no, &yes, lingerReasonGraphical)
+	lastRun(nil)
 	// A record of stagent before 0.4.0 holds only the time.
-	linger = "no\n"
 	writeFile(t, te.l.WrapperRun, "1700000000000\n")
 	check(&no, &no, &yes, lingerReasonGraphical)
 	if sw := te.doctor().ShellWrapper; sw.LastRunAt == nil || *sw.LastRunAt != 1700000000000 || sw.LastRunSurvivesLogout != nil {

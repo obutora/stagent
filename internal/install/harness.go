@@ -143,16 +143,33 @@ func (e *env) codexHooksTarget() *target {
 
 // --- Codex config.toml ---------------------------------------------------
 
+// Why Codex falls back to the notify program: the reason of codexMode
+// (noteCodexNotifyFallback's arg) and its English wording.
+const (
+	codexReasonWindows        = "windows"
+	codexReasonInlineFeatures = "inline_features"
+	codexReasonHooksRemoved   = "hooks_removed"
+	codexReasonNoHooksFeature = "no_hooks_feature"
+)
+
+var codexNotifyWhy = map[string]string{
+	codexReasonWindows:        "Codex hooks are not supported on Windows",
+	codexReasonInlineFeatures: "config.toml defines features as an inline table, which stagent does not edit",
+	codexReasonHooksRemoved:   "this Codex version removed the hooks feature",
+	codexReasonNoHooksFeature: "this Codex version has no hooks feature",
+}
+
 // codexMode decides how Codex is integrated: "hooks" (hooks.json plus the
-// features flag) or "notify" (the legacy notify program, turn-complete only).
-func (e *env) codexMode() (mode string, why string) {
+// features flag) or "notify" (the legacy notify program, turn-complete
+// only), with the reason (codexReason*) for "notify".
+func (e *env) codexMode() (mode string, reason string) {
 	if e.goos == "windows" {
-		return "notify", "Codex hooks are not supported on Windows"
+		return "notify", codexReasonWindows
 	}
 	if cur, _ := readOptional(e.codexConfig()); cur != nil {
 		d := parseTOMLLines(cur)
 		if d.findKey("features", 0, d.firstHeader()) >= 0 {
-			return "notify", "config.toml defines features as an inline table, which stagent does not edit"
+			return "notify", codexReasonInlineFeatures
 		}
 	}
 	if bin := e.findHarness(hCodex); bin != "" {
@@ -162,12 +179,12 @@ func (e *env) codexMode() (mode string, why string) {
 				f := strings.Fields(line)
 				if len(f) >= 2 && f[0] == "hooks" {
 					if f[1] == "removed" {
-						return "notify", "this Codex version removed the hooks feature"
+						return "notify", codexReasonHooksRemoved
 					}
 					return "hooks", ""
 				}
 			}
-			return "notify", "this Codex version has no hooks feature"
+			return "notify", codexReasonNoHooksFeature
 		}
 	}
 	return "hooks", ""
@@ -193,7 +210,7 @@ func (e *env) codexConfigTarget(mode string) *target {
 			added, existing := addNotify(d, e.l.Bin)
 			if !added {
 				if !isOurCommand(existing) {
-					e.note("Codex already has a notify program (%s); stagent did not replace it, so Codex turn-complete events are not reported.", strings.TrimSpace(existing))
+					e.note(noteCodexNotifyKept, "Codex already has a notify program ({command}); stagent did not replace it, so Codex turn-complete events are not reported.", "command", strings.TrimSpace(existing))
 				}
 				return addResult{after: cur}, nil
 			}
@@ -208,7 +225,7 @@ func (e *env) codexConfigTarget(mode string) *target {
 						continue
 					}
 					if _, ok := revertFeatureHooks(d, ed); !ok {
-						e.note("Left Codex [features] hooks as it is: it was changed after stagent enabled it.")
+						e.note(noteCodexFeaturesKept, "Left Codex [features] hooks as it is: it was changed after stagent enabled it.")
 					}
 				}
 			}

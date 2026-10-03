@@ -2,10 +2,10 @@ package install
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
@@ -103,7 +103,7 @@ type env struct {
 	haveM bool
 	mErr  error
 	dirty bool
-	notes []string
+	notes []Note
 }
 
 func newEnv() (*env, error) {
@@ -151,6 +151,56 @@ func (e *env) saveManifest() error {
 	return nil
 }
 
-func (e *env) note(format string, args ...any) {
-	e.notes = append(e.notes, fmt.Sprintf(format, args...))
+// Note is one remark of install / integrate (PROTOCOL.md): Text in English
+// for people; Code, with Args, for a client that words it itself. A Code
+// keeps its meaning; Text may be reworded.
+type Note struct {
+	Code string            `json:"code"`
+	Text string            `json:"text"`
+	Args map[string]string `json:"args,omitempty"`
+}
+
+// Codes of Note.Code (PROTOCOL.md).
+const (
+	noteClaudeRestart       = "claude_restart"
+	noteClaudeWindowsHooks  = "claude_windows_hooks"
+	noteOmpRestart          = "omp_restart"
+	noteCodexTrust          = "codex_trust"
+	noteCodexNotifyFallback = "codex_notify_fallback" // args: reason (codexReason*)
+	noteCodexNotifyKept     = "codex_notify_kept"     // args: command
+	noteCodexFeaturesKept   = "codex_features_kept"
+	noteNoShell             = "no_shell"
+	notePowerShellNoBOM     = "powershell_no_bom" // args: path, bin
+	noteBinaryMissing       = "binary_missing"    // args: path
+	noteServiceLinger       = "service_linger"
+	noteLaunchAgent         = "launch_agent"
+	noteTerminalNoProfiles  = "terminal_no_profiles"
+	noteTerminalRunning     = "terminal_running"
+	noteNotApplied          = "not_applied"           // args: failed
+	noteDaemonReplaceFailed = "daemon_replace_failed" // args: running, version, error
+	noteLegacyDaemonStopped = "legacy_daemon_stopped" // args: addr
+)
+
+// note records a Note. kv are its Args as key, value pairs; text names
+// each one as {key} where it shows the value.
+func (e *env) note(code, text string, kv ...string) {
+	n := Note{Code: code, Text: text}
+	if len(kv) > 0 {
+		n.Args = make(map[string]string, len(kv)/2)
+		repl := make([]string, 0, len(kv))
+		for i := 0; i+1 < len(kv); i += 2 {
+			n.Args[kv[i]] = kv[i+1]
+			repl = append(repl, "{"+kv[i]+"}", kv[i+1])
+		}
+		n.Text = strings.NewReplacer(repl...).Replace(text)
+	}
+	e.notes = append(e.notes, n)
+}
+
+// notesOut is e.notes for JSON: [] rather than null.
+func (e *env) notesOut() []Note {
+	if e.notes == nil {
+		return []Note{}
+	}
+	return e.notes
 }

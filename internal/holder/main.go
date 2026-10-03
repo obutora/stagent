@@ -102,15 +102,13 @@ func (r *runFlags) wantHandoff(l *paths.Layout) bool {
 }
 
 // recordWrapperRun stores when a shell wrapper (the only caller passing
-// --handoff=auto) last started a program and whether this process, where
-// esc left it (Linux) or after bs (macOS), outlives the user's logout, for
+// --handoff=auto) last started a program, where esc left this process
+// (Linux) and whether bs makes it outlive the user's logout (macOS), for
 // `stagent doctor` (shell_wrapper.last_run_at, last_run_survives_logout,
 // last_run_bootstrap_error).
 func recordWrapperRun(l *paths.Layout, esc logind.Result, bs bootstrap.Result) {
-	rec := paths.WrapperRunRecord{At: time.Now().UnixMilli(), BootstrapError: bs.Err}
+	rec := paths.WrapperRunRecord{At: time.Now().UnixMilli(), Placement: logind.Place(esc.Cgroup).String(), BootstrapError: bs.Err}
 	if v, known := bs.SurvivesLogout(); known {
-		rec.SurvivesLogout = &v
-	} else if v, known := esc.SurvivesLogout(); known {
 		rec.SurvivesLogout = &v
 	}
 	l.WriteWrapperRun(rec)

@@ -115,7 +115,7 @@ func TestEscape(t *testing.T) {
 		if !strings.HasPrefix(unit, "stagent-run-") || !strings.HasSuffix(unit, ".scope") || argv[1] != "--user" || pid != strconv.Itoa(os.Getpid()) {
 			t.Fatalf("start argv %q", argv)
 		}
-		if s, k := r.SurvivesLogout(); s || !k {
+		if s, k := r.Survives(Place(r.Cgroup)); s || !k {
 			t.Fatalf("survives %v known %v: the user manager ends at the last logout without lingering", s, k)
 		}
 	})
@@ -123,7 +123,7 @@ func TestEscape(t *testing.T) {
 		f := &fakeLogind{kill: "b false", linger: "b true", cgroup: session}
 		f.install(t)
 		r := Escape("stagent-daemon")
-		if s, k := r.SurvivesLogout(); !r.Moved || !s || !k {
+		if s, k := r.Survives(Place(r.Cgroup)); !r.Moved || !s || !k {
 			t.Fatalf("result %+v", r)
 		}
 	})
@@ -131,7 +131,7 @@ func TestEscape(t *testing.T) {
 		f := &fakeLogind{kill: "b false", linger: "b false", cgroup: session}
 		f.install(t)
 		r := Escape("stagent-run")
-		if s, k := r.SurvivesLogout(); r.Moved || len(f.starts) != 0 || !s || !k {
+		if s, k := r.Survives(Place(r.Cgroup)); r.Moved || len(f.starts) != 0 || !s || !k {
 			t.Fatalf("result %+v, starts %q", r, f.starts)
 		}
 	})
@@ -146,7 +146,7 @@ func TestEscape(t *testing.T) {
 		f := &fakeLogind{kill: "b true", linger: "b false", cgroup: session, startFails: true}
 		f.install(t)
 		r := Escape("stagent-run")
-		if s, k := r.SurvivesLogout(); r.Moved || r.Cgroup != session || s || !k {
+		if s, k := r.Survives(Place(r.Cgroup)); r.Moved || r.Cgroup != session || s || !k {
 			t.Fatalf("result %+v", r)
 		}
 	})
@@ -154,7 +154,7 @@ func TestEscape(t *testing.T) {
 		f := &fakeLogind{cgroup: session}
 		f.install(t)
 		r := Escape("stagent-run")
-		if _, k := r.SurvivesLogout(); r.Moved || len(f.starts) != 0 || k {
+		if _, k := r.Survives(Place(r.Cgroup)); r.Moved || len(f.starts) != 0 || k {
 			t.Fatalf("result %+v", r)
 		}
 	})

@@ -81,9 +81,9 @@ func TestInstallStopsLegacyDaemon(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		noted := strings.Contains(strings.Join(r.Notes, "\n"), "Stopped the daemon of an earlier stagent version")
+		noted := len(notesWith(r.Notes, noteLegacyDaemonStopped)) == 1
 		if (legacy.shutdowns == 1) != c.stop || noted != c.stop {
-			t.Errorf("%+v: shutdowns %d, notes %q", c, legacy.shutdowns, r.Notes)
+			t.Errorf("%+v: shutdowns %d, notes %+v", c, legacy.shutdowns, r.Notes)
 		}
 	}
 }
@@ -138,9 +138,9 @@ func TestInstallReplacesDaemonOfAnotherVersion(t *testing.T) {
 			if c.service && !te.run.ran("systemctl --user restart stagent.service") {
 				t.Errorf("service not restarted; calls %v", te.run.calls)
 			}
-			failed := strings.Contains(strings.Join(r.Notes, "\n"), "replacing it failed")
+			failed := len(notesWith(r.Notes, noteDaemonReplaceFailed)) == 1
 			if failed != c.spawnFails {
-				t.Errorf("notes %q", r.Notes)
+				t.Errorf("notes %+v", r.Notes)
 			}
 		})
 	}

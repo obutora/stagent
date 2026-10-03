@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -34,6 +35,9 @@ func readOnlyDir(t *testing.T, dir string) {
 	t.Helper()
 	if os.Geteuid() == 0 {
 		t.Skip("root writes to read-only directories")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ignores directory permission bits")
 	}
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)

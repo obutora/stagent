@@ -3,6 +3,22 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.4.1
+
+### Changed
+
+- `install` and `integrate` `notes[]` are objects `{code, text, args?}`
+  instead of strings: `text` is the English remark, `code` (with `args`)
+  lets the app word it in its own language (codes in PROTOCOL.md). Apps
+  that read the objects need a host of 0.4.1 or later.
+
+### Fixed
+
+- `doctor` judges whether the last wrapper start survives logout with
+  logind's current `KillUserProcesses` and lingering: `stagent run`
+  records where it ended up (`placement`), so `linger_needed` is true
+  again after `integrate --remove linger`.
+
 ## 0.4.0
 
 The bridge protocol stays 1: 0.3.0 apps keep working with a 0.4.0 host.

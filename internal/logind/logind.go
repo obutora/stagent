@@ -106,6 +106,28 @@ const (
 	PlaceOther
 )
 
+var placeNames = [...]string{PlaceSession: "session", PlaceManager: "manager", PlaceOther: "other"}
+
+// String is the placement's name ("session", "manager", "other"); "" for
+// PlaceUnknown.
+func (p Placement) String() string {
+	if p < 0 || int(p) >= len(placeNames) {
+		return ""
+	}
+	return placeNames[p]
+}
+
+// ParsePlacement returns the placement named s (String); PlaceUnknown for
+// any other s.
+func ParsePlacement(s string) Placement {
+	for p, name := range placeNames {
+		if name != "" && name == s {
+			return Placement(p)
+		}
+	}
+	return PlaceUnknown
+}
+
 // SystemdCgroup returns the cgroup path systemd tracks units by from the
 // content of /proc/<pid>/cgroup: the name=systemd hierarchy of cgroup v1,
 // else the unified (v2) one. "" when neither is there.
@@ -178,12 +200,6 @@ type Result struct {
 	Cgroup string
 	// Moved: the process is in the new scope.
 	Moved bool
-}
-
-// SurvivesLogout reports whether the process outlives logout where it is
-// now; known is false off Linux and when it cannot be told.
-func (r Result) SurvivesLogout() (survives, known bool) {
-	return r.Facts.Survives(Place(r.Cgroup))
 }
 
 // run is replaced in tests.

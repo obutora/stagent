@@ -68,7 +68,7 @@ func TestCodexHooksAndFeatureFlagRoundTrip(t *testing.T) {
 	if got := strings.Join(changeIDs(r.Changes), ","); got != "codex-hooks,codex-config" {
 		t.Fatalf("changes = %s", got)
 	}
-	if !strings.Contains(strings.Join(r.Notes, "\n"), "trust") {
+	if len(notesWith(r.Notes, noteCodexTrust)) != 1 {
 		t.Errorf("no note about Codex hook trust: %v", r.Notes)
 	}
 
@@ -94,7 +94,7 @@ func TestCodexHooksAndFeatureFlagRoundTrip(t *testing.T) {
 
 	// Codex records trust for our hook (SessionStart group 1) after the
 	// user accepts it.
-	trusted := cfg + "[hooks.state.\"" + te.codexHooks() + ":session_start:1:0\"]\nenabled = true\ntrusted_hash = \"sha256:bbbb\"\n"
+	trusted := cfg + "[hooks.state." + tomlString(te.codexHooks()+":session_start:1:0") + "]\nenabled = true\ntrusted_hash = \"sha256:bbbb\"\n"
 	writeFile(t, te.codexConfig(), trusted)
 
 	te.integrate(t, integrateOpts{apply: true, remove: []string{hCodex}})
@@ -171,8 +171,11 @@ func TestCodexNotifyFallbackNeverOverwritesUserNotify(t *testing.T) {
 	if got := readFile(t, te.codexConfig()); got != before {
 		t.Fatalf("user's config changed:\n%s", got)
 	}
-	if !strings.Contains(strings.Join(r.Notes, "\n"), "notify.py") {
-		t.Errorf("no note about the existing notify: %v", r.Notes)
+	if kept := notesWith(r.Notes, noteCodexNotifyKept); len(kept) != 1 || !strings.Contains(kept[0].Args["command"], "/home/u/notify.py") {
+		t.Errorf("no note about the existing notify: %+v", r.Notes)
+	}
+	if fb := notesWith(r.Notes, noteCodexNotifyFallback); len(fb) != 1 || fb[0].Args["reason"] != codexReasonWindows || !strings.Contains(fb[0].Text, codexNotifyWhy[codexReasonWindows]) {
+		t.Errorf("no notify fallback note for Windows: %+v", r.Notes)
 	}
 	// Removing Codex must not touch the user's notify either.
 	if r := te.integrate(t, integrateOpts{apply: true, remove: []string{hCodex}}); len(r.Changes) != 0 {
@@ -206,8 +209,8 @@ func TestCodexFeaturesListDecidesSupport(t *testing.T) {
 		}
 		return "", nil
 	}
-	if mode, why := te.codexMode(); mode != "notify" || !strings.Contains(why, "no hooks feature") {
-		t.Fatalf("mode = %s (%s)", mode, why)
+	if mode, reason := te.codexMode(); mode != "notify" || reason != codexReasonNoHooksFeature {
+		t.Fatalf("mode = %s (%s)", mode, reason)
 	}
 	te.run.respond = func(string, []string) (string, error) { return "hooks  stable  false\n", nil }
 	if mode, _ := te.codexMode(); mode != "hooks" {

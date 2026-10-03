@@ -178,7 +178,7 @@ func (e *env) terminalAddChange() (*Change, error) {
 		return nil, err
 	}
 	if profiles == nil {
-		e.note("Terminal.app has no saved profiles; nothing to change.")
+		e.note(noteTerminalNoProfiles, "Terminal.app has no saved profiles; nothing to change.")
 		return nil, nil
 	}
 	var names, before, after []string
@@ -196,7 +196,7 @@ func (e *env) terminalAddChange() (*Change, error) {
 		return nil, nil
 	}
 	if _, err := e.run.Run(cmdTimeout, "pgrep", "-x", "Terminal"); err == nil {
-		e.note("Terminal.app is running: it applies the change after it is quit and opened again (until then, closing a window running an agent still asks).")
+		e.note(noteTerminalRunning, "Terminal.app is running: it applies the change after it is quit and opened again (until then, closing a window running an agent still asks).")
 	}
 	c := &Change{ID: "terminal", Target: terminalTarget, Action: "modify",
 		Summary: "add stagent to noWarnProcesses of the Terminal profiles " + strings.Join(names, ", ") + " (Terminal does not ask before closing a window running an agent or at logout)",

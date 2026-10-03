@@ -36,7 +36,7 @@ type InstallResult struct {
 	// Changes are the shell wrapper files rewritten to this version's block
 	// (refreshShellWrapper), in integrate's form.
 	Changes []*Change `json:"changes"`
-	Notes   []string  `json:"notes"`
+	Notes   []Note    `json:"notes"`
 }
 
 // Main runs one installer command and returns the exit code.
@@ -219,7 +219,7 @@ func (e *env) install() (*InstallResult, error) {
 	if err := e.saveManifest(); err != nil {
 		return nil, err
 	}
-	return &InstallResult{OK: true, Version: version.Version, Layout: layoutInfo(l), ReplacedDaemon: replaced, Changes: changes, Notes: nonNil(e.notes)}, nil
+	return &InstallResult{OK: true, Version: version.Version, Layout: layoutInfo(l), ReplacedDaemon: replaced, Changes: changes, Notes: e.notesOut()}, nil
 }
 
 // refreshShellWrapper rewrites the shell wrapper blocks already on the host
@@ -270,7 +270,7 @@ func (e *env) replaceDaemon() string {
 		return ""
 	}
 	fail := func(err error) string {
-		e.note("The running daemon is version %s, this binary %s, and replacing it failed: %v. Restart it with `stagent uninstall --level stop`.", st.Version, version.Version, err)
+		e.note(noteDaemonReplaceFailed, "The running daemon is version {running}, this binary {version}, and replacing it failed: {error}. Restart it with `stagent uninstall --level stop`.", "running", st.Version, "version", version.Version, "error", err.Error())
 		return ""
 	}
 	if _, _, err := e.shutdownDaemon(st); err != nil {
@@ -332,5 +332,5 @@ func (e *env) stopLegacyDaemon() {
 	if addr == e.l.DaemonAddr || e.daemonAt(addr).Shutdown() != nil {
 		return
 	}
-	e.note("Stopped the daemon of an earlier stagent version at %s. Sessions started before the update keep running, but the app no longer lists or reaches them.", addr)
+	e.note(noteLegacyDaemonStopped, "Stopped the daemon of an earlier stagent version at {addr}. Sessions started before the update keep running, but the app no longer lists or reaches them.", "addr", addr)
 }

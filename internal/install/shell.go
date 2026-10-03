@@ -295,7 +295,7 @@ func (e *env) blockTarget(id, path, block, defEOL string, psProfile bool) *targe
 				return addResult{}, &contentError{codeUTF16Profile, path + " is UTF-16 encoded; add the wrapper manually"}
 			}
 			if psProfile && !isASCII(block) && !bytes.HasPrefix(cur, utf8BOM) {
-				e.note("%s has no UTF-8 BOM and the wrapper names stagent by a path with non-ASCII characters (%s); Windows PowerShell 5.1 reads such a file in the ANSI code page and will not find stagent. Save the profile as UTF-8 with BOM, or install stagent under %%USERPROFILE%%.", path, e.l.Bin)
+				e.note(notePowerShellNoBOM, "{path} has no UTF-8 BOM and the wrapper names stagent by a path with non-ASCII characters ({bin}); Windows PowerShell 5.1 reads such a file in the ANSI code page and will not find stagent. Save the profile as UTF-8 with BOM, or install stagent under %USERPROFILE%.", "path", path, "bin", e.l.Bin)
 			}
 			var after []byte
 			if cur == nil {

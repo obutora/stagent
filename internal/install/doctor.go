@@ -81,10 +81,11 @@ type ShellReport struct {
 	// LastRunAt is when `stagent run --handoff=auto` (a shell wrapper) last
 	// started a program on this host, unix ms; null when never.
 	LastRunAt *int64 `json:"last_run_at"`
-	// LastRunSurvivesLogout is whether that start, where it ended up after
-	// leaving the login session (Linux) or swapping its bootstrap port
-	// (macOS), outlives the user's logout; null when unknown or never
-	// recorded (before 0.4.0, Windows).
+	// LastRunSurvivesLogout is whether that start outlives the user's
+	// logout: on Linux where it ended up after leaving the login session,
+	// judged with logind's settings now; on macOS whether it swapped its
+	// bootstrap port. Null when unknown or never recorded (before 0.4.0,
+	// Windows).
 	LastRunSurvivesLogout *bool `json:"last_run_survives_logout"`
 	// LastRunBootstrapError is why that start's swap failed (macOS); null
 	// otherwise.
@@ -282,9 +283,11 @@ func (e *env) doctor() *DoctorReport {
 			r.ShellWrapper.Files = append(r.ShellWrapper.Files, t.path)
 		}
 	}
+	lastPlace := logind.PlaceUnknown
 	if rec, ok := e.l.ReadWrapperRun(); ok {
 		r.ShellWrapper.LastRunAt = &rec.At
 		r.ShellWrapper.LastRunSurvivesLogout = rec.SurvivesLogout
+		lastPlace = logind.ParsePlacement(rec.Placement)
 		if rec.BootstrapError != "" {
 			r.ShellWrapper.LastRunBootstrapError = &rec.BootstrapError
 			r.Problems = append(r.Problems, "the tools of the last agent started through the shell wrapper cannot resolve host names after you log out of the GUI: switching to the per-user bootstrap port failed: "+rec.BootstrapError)
@@ -293,7 +296,11 @@ func (e *env) doctor() *DoctorReport {
 	r.Service.Kind = e.serviceKind()
 	r.Service.Installed, r.Service.Running = e.serviceState()
 
-	r.Persistence = e.persistenceReport(r.ShellWrapper.LastRunSurvivesLogout)
+	var lastRun *bool
+	r.Persistence, lastRun = e.persistenceReport(lastPlace)
+	if e.goos == "linux" {
+		r.ShellWrapper.LastRunSurvivesLogout = lastRun
+	}
 	r.Terminal = e.terminalReport()
 	if p := r.Persistence; p.LingerNeeded != nil && *p.LingerNeeded {
 		const fix = "; run `loginctl enable-linger` (may require an administrator) to keep them running"
@@ -329,38 +336,43 @@ func (e *env) doctor() *DoctorReport {
 
 // persistenceReport checks what ends detached sessions at logout on Linux:
 // a RunDir in $XDG_RUNTIME_DIR (deleted at the last logout), logind's
-// KillUserProcesses and lingering (see lingerNeeded). lastRun is
-// ShellReport.LastRunSurvivesLogout.
-func (e *env) persistenceReport(lastRun *bool) PersistenceReport {
-	p := PersistenceReport{RunDir: e.l.RunDir, RunDirSurvivesLogout: true, LingerEnabledByStagent: e.m.LingerEnabled}
+// KillUserProcesses and lingering (see lingerNeeded). lastPlace is where
+// the last start through a shell wrapper ran (PlaceUnknown when none is
+// recorded); lastRun is whether it outlives logout with the settings read
+// now, nil when unknown and off Linux.
+func (e *env) persistenceReport(lastPlace logind.Placement) (p PersistenceReport, lastRun *bool) {
+	p = PersistenceReport{RunDir: e.l.RunDir, RunDirSurvivesLogout: true, LingerEnabledByStagent: e.m.LingerEnabled}
 	if e.goos != "linux" {
-		return p
+		return p, nil
 	}
 	if x := e.getenv("XDG_RUNTIME_DIR"); x != "" {
 		rel, err := filepath.Rel(x, e.l.RunDir)
 		p.RunDirSurvivesLogout = err != nil || strings.HasPrefix(rel, "..")
 	}
+	var f logind.Facts
 	cmd := logind.KillUserProcessesCmd
 	if out, err := e.run.Run(cmdTimeout, cmd[0], cmd[1:]...); err == nil {
-		if v, ok := logind.ParseBusctlBool(out); ok {
-			p.KillUserProcesses = &v
+		if f.Kill, f.KillKnown = logind.ParseBusctlBool(out); f.KillKnown {
+			p.KillUserProcesses = &f.Kill
 		}
 	}
-	if v, ok := e.linger(); ok {
-		p.Linger = &v
+	if f.Linger, f.LingerKnown = e.linger(); f.LingerKnown {
+		p.Linger = &f.Linger
+	}
+	if v, known := f.Survives(lastPlace); known {
+		lastRun = &v
 	}
 	e.lingerNeeded(&p, lastRun)
-	return p
+	return p, lastRun
 }
 
 // lingerNeeded sets LingerNeeded and LingerReason. Lingering is needed
 // when it is off and agents started here end at logout: as the last start
-// through a shell wrapper found (`stagent run` records where it ended up),
-// or, before any such start, when logind kills user processes (holders
-// leave the session for the user manager, which ends at the last logout)
-// or the user has a graphical session (its terminals run under the user
-// manager). Unknown when neither KillUserProcesses nor lingering can be
-// read.
+// through a shell wrapper does where it runs (lastRun), or, before any
+// such start, when logind kills user processes (holders leave the session
+// for the user manager, which ends at the last logout) or the user has a
+// graphical session (its terminals run under the user manager). Unknown
+// when neither KillUserProcesses nor lingering can be read.
 func (e *env) lingerNeeded(p *PersistenceReport, lastRun *bool) {
 	if p.KillUserProcesses == nil && p.Linger == nil {
 		return
@@ -443,11 +455,11 @@ func (e *env) codexReport() HarnessReport {
 	hooks := e.codexHooksTarget()
 	h := e.harnessReport(hCodex, hooks)
 	cfg := e.codexConfigTarget("")
-	mode, why := e.codexMode()
+	mode, reason := e.codexMode()
 	h.HooksSupported = mode == "hooks"
 	if !h.HooksSupported {
 		h.ConfigPath = cfg.path
-		h.Notes = append(h.Notes, why+"; integration uses the notify program")
+		h.Notes = append(h.Notes, codexNotifyWhy[reason]+"; integration uses the notify program")
 	}
 	if cur, _ := readOptional(cfg.path); cur != nil {
 		d := parseTOMLLines(cur)
