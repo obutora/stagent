@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"slices"
 	"syscall"
 )
 
@@ -157,6 +159,7 @@ func (e *env) writeAdd(t *target, before []byte, res addResult) error {
 		// restores a state that contains those edits.
 		rec.Backup = ""
 	}
+	rec.CreatedDirs = addUnique(rec.CreatedDirs, missingDirs(filepath.Dir(resolveTarget(t.path)))...)
 	if err := atomicWrite(t.path, res.after, t.mode); err != nil {
 		return err
 	}
@@ -179,9 +182,10 @@ func (e *env) writeAdd(t *target, before []byte, res addResult) error {
 }
 
 // removeChange plans taking t's elements out. When the file is exactly what
-// we last wrote, it is restored from the backup (or deleted if we created
-// it); otherwise our elements are removed one by one. nil when there is
-// nothing of ours in the file.
+// we last wrote, it is restored from the backup, which is then deleted (or
+// the file is deleted if we created it, with the directories we created for
+// it once empty); otherwise our elements are removed one by one. nil when
+// there is nothing of ours in the file.
 func (e *env) removeChange(t *target) (*Change, error) {
 	cur, err := readOptional(t.path)
 	if err != nil {
@@ -192,7 +196,7 @@ func (e *env) removeChange(t *target) (*Change, error) {
 	}
 	rec := e.m.config(t.id, t.path)
 	var after []byte
-	summary, decided := "", false
+	summary, decided, restored := "", false, ""
 	if rec != nil && sha256Hex(cur) == rec.SHA256After {
 		switch {
 		case rec.Created || rec.Owned:
@@ -200,7 +204,7 @@ func (e *env) removeChange(t *target) (*Change, error) {
 		case rec.Backup != "" && fileSHA256(rec.Backup) == rec.SHA256Before:
 			b, err := os.ReadFile(rec.Backup)
 			if err == nil {
-				after, summary, decided = b, "restore the pre-stagent content from "+rec.Backup, true
+				after, summary, decided, restored = b, "restore the pre-stagent content from "+rec.Backup+" and delete the backup", true, rec.Backup
 			}
 		}
 	}
@@ -233,6 +237,12 @@ func (e *env) removeChange(t *target) (*Change, error) {
 			return err
 		}
 		if rec != nil {
+			if after == nil {
+				removeEmptyDirs(rec.CreatedDirs)
+			}
+			if restored != "" {
+				e.dropBackup(restored)
+			}
 			e.m.dropConfig(rec)
 			e.dirty = true
 		}
@@ -242,6 +252,15 @@ func (e *env) removeChange(t *target) (*Change, error) {
 		return nil
 	}
 	return c, nil
+}
+
+// dropBackup deletes a backup whose content is back in its file. One that
+// cannot be deleted stays listed for purge.
+func (e *env) dropBackup(b string) {
+	if err := os.Remove(b); err == nil || errors.Is(err, fs.ErrNotExist) {
+		e.m.Backups = slices.DeleteFunc(e.m.Backups, func(x string) bool { return x == b })
+		e.dirty = true
+	}
 }
 
 // dropStaleRecords forgets manifest records of targets that no longer hold
@@ -257,6 +276,9 @@ func (e *env) dropStaleRecords(ts []*target) {
 			continue
 		}
 		if cur == nil || t.present(cur) == "" {
+			if cur == nil {
+				removeEmptyDirs(rec.CreatedDirs)
+			}
 			e.m.dropConfig(rec)
 			e.dirty = true
 		}

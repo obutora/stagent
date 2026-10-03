@@ -27,8 +27,9 @@ type Manifest struct {
 	Dirs     []string       `json:"dirs"`     // directories created by install
 	Configs  []*ConfigEntry `json:"configs"`  // integration targets created or modified
 	Services []ServiceEntry `json:"services"` // login services / scheduled tasks
-	// Backups are the pre-edit copies of modified config files. They stay
-	// after unhook and are deleted by purge.
+	// Backups are the pre-edit copies of modified config files. A backup is
+	// deleted once its content is restored into the file; one that could not
+	// be restored (the file changed since) stays until purge.
 	Backups []string `json:"backups"`
 	// LingerEnabled: `integrate --linger` turned lingering on (it was off).
 	// Only then do `integrate --remove linger` and `uninstall --linger`
@@ -77,6 +78,9 @@ type ConfigEntry struct {
 	// Backup restores the file to its pre-stagent content. Cleared when the
 	// file was changed by someone else between two of our edits.
 	Backup string `json:"backup,omitempty"`
+	// CreatedDirs are the missing parent directories our write of the file
+	// created; deleting the file also deletes those that are empty again.
+	CreatedDirs []string `json:"created_dirs,omitempty"`
 
 	// CreatedContainers are JSON pointers (e.g. "/hooks/Stop") of objects
 	// and arrays we added; they are removed again once empty.

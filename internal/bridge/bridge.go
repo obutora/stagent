@@ -138,7 +138,7 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		}
 		return captureLoginEnv(exe)
 	}
-	b.spawnProc = proc.SpawnDetached
+	b.spawnProc = proc.SpawnHolder
 	return b
 }
 

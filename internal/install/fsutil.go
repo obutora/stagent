@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -95,6 +96,31 @@ func atomicWrite(path string, data []byte, mode fs.FileMode) error {
 	}
 	ok = true
 	return nil
+}
+
+// missingDirs lists dir and those of its ancestors that do not exist yet:
+// the directories a write into dir creates.
+func missingDirs(dir string) []string {
+	var out []string
+	for !exists(dir) {
+		out = append(out, dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return out
+}
+
+// removeEmptyDirs deletes dirs that are empty, deepest first; a directory
+// that holds anything stays.
+func removeEmptyDirs(dirs []string) {
+	dirs = slices.Clone(dirs)
+	slices.SortFunc(dirs, func(a, b string) int { return len(b) - len(a) })
+	for _, d := range dirs {
+		os.Remove(d)
+	}
 }
 
 // backupName is `<file>.sshterm-bak-<UTC timestamp>`, made unique if a backup

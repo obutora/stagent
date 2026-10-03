@@ -3,9 +3,6 @@
 package proc
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -72,23 +69,15 @@ func start(exe string, args []string, dir string, env []string, logPath string) 
 	return pid, nil
 }
 
-// spawnSpec is written next to the log for the scheduled task to pick up;
-// the task's own command line stays short (schtasks /TR is limited to 261
-// characters, and the XML Arguments field is kept equally small).
-type spawnSpec struct {
-	Task string   `json:"task"`
-	Args []string `json:"args"`
-	Dir  string   `json:"dir"`
-	Env  []string `json:"env"`
-	Log  string   `json:"log"`
-}
-
+// spawnViaTask starts the process through a one-off task. Its spec goes to
+// a file because the task's command line must stay short (schtasks /TR is
+// limited to 261 characters, and the XML Arguments field is kept equally
+// small).
 func spawnViaTask(exe string, args []string, dir string, env []string, logPath string) error {
-	var rb [6]byte
-	if _, err := rand.Read(rb[:]); err != nil {
+	name, err := newSpawnName()
+	if err != nil {
 		return err
 	}
-	name := "spawn-" + hex.EncodeToString(rb[:])
 	task := TaskFolder + name
 	if env == nil {
 		env = os.Environ()
@@ -98,11 +87,7 @@ func spawnViaTask(exe string, args []string, dir string, env []string, logPath s
 		specDir = os.TempDir()
 	}
 	specPath := filepath.Join(specDir, name+".json")
-	spec, err := json.Marshal(spawnSpec{Task: task, Args: args, Dir: dir, Env: env, Log: logPath})
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(specPath, spec, 0o600); err != nil {
+	if err := writeSpec(specPath, spawnSpec{Task: task, Args: args, Dir: dir, Env: env, Log: logPath}); err != nil {
 		return err
 	}
 	sid, err := paths.CurrentUserSID()
@@ -132,13 +117,8 @@ func spawnViaTask(exe string, args []string, dir string, env []string, logPath s
 // in-process. cleanup deletes the task definition; call it when the process
 // is about to exit.
 func RunSpawnTask(specPath string) (args []string, cleanup func(), err error) {
-	b, err := os.ReadFile(specPath)
+	s, err := readSpec(specPath)
 	if err != nil {
-		return nil, nil, err
-	}
-	os.Remove(specPath)
-	var s spawnSpec
-	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, nil, err
 	}
 	os.Clearenv()

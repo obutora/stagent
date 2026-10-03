@@ -90,7 +90,9 @@ On Linux a holder that must leave the login session it was started from
 (here the bridge's SSH session) to outlive it moves itself into a new scope
 of the user's service manager as the first thing `stagent run` does — see
 "Leaving the login session" under Command-line tools. The bridge starts
-holders directly.
+holders directly there. On macOS, while the user is logged in to the GUI,
+the bridge starts them in the GUI login session so that the agent can use
+the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
 `persist`. `persist` announces everything this document marks with it:
@@ -831,6 +833,18 @@ non-ASCII characters and the profile has no BOM, `notes` warns that
 Windows PowerShell 5.1 would misread it. `--remove shell-wrapper` and
 `uninstall --level unhook` take the block out of every one of these files.
 
+Removing (`--remove`, `uninstall --level unhook`) brings a file back to its
+state before stagent when it is still exactly what stagent last wrote:
+a file stagent created is deleted, together with the directories stagent
+created for it (e.g. `~/.omp/agent/extensions`, and `~/.omp` when it did
+not exist) once they are empty again; a file stagent edited is restored
+from the backup it took at the first edit (`<file>.sshterm-bak-<UTC
+time>`), and the backup is deleted. When the file changed since, only
+stagent's elements are taken out and the backup stays, as the only copy
+of the content before stagent: `doctor` lists it (`purge` level) and
+`uninstall --level purge` deletes it. A directory holding anything else
+stays.
+
 `install` completes an update of the binary (the app runs it after
 placing a new one):
 
@@ -979,6 +993,14 @@ where `stagent run` started (see below). On Windows a closing console
 still ends the process, so a handoff only happens when console input
 reaches EOF.
 
+A `--detached` holder writes its diagnostics to stderr. When stderr is a
+pipe or socket (`stagent run --detached` run over an SSH exec channel),
+the holder points it at `log/<id>.log` once the program runs, after one
+line naming that file: the reader goes away with the connection, and a
+later diagnostic would otherwise end the holder with SIGPIPE (Windows has
+none and keeps stderr). Errors before the program runs still reach the
+original stderr.
+
 `--handoff=auto` (also passthrough only) decides at every start, in this
 order: the environment variable `STAGENT_HANDOFF` when it is exactly `0`
 (no handoff) or `1` (handoff) — any other value is ignored; else
@@ -1023,6 +1045,23 @@ holder writes the reason to its log, the daemon to `daemon.log`, a wrapper
 start records it (`last_run_bootstrap_error`) and the daemon reports it
 (`daemon.bootstrap_error`). The calls go through `ebitengine/purego`, so
 the binary stays `CGO_ENABLED=0`.
+
+Starting in the GUI login session (macOS): the login keychain is unlocked
+only for processes of the GUI login session — what counts is the audit
+session, not the bootstrap port — so an agent started from an SSH session
+(or a `user/<uid>` job) finds it locked, and claude reports itself logged
+out. So while the user is logged in to the GUI, the bridge starts a
+`session.spawn` holder from a one-off launchd job it loads into
+`gui/<uid>` (label `com.obutora.stagent.spawn-<random>`, the plist and a
+spec with the arguments, directory and environment written next to the
+holder's log and deleted again). The job runs `stagent spawn-task <spec>`,
+which starts the holder detached — outside the job, which the GUI logout
+stops — and removes the job. The holder still swaps to the per-user
+bootstrap port as above. When `launchctl bootstrap gui/<uid>` fails (no
+GUI login), the holder is started directly, without the keychain, and its
+log says why. claude then asks to log in; a `/login` there is saved to
+`~/.claude/.credentials.json` (claude's fallback when it cannot write the
+keychain), which later sessions started outside the GUI session read.
 
 In a terminal (not `--detached`), just before the program starts, `stagent
 run` prints one line to stderr when the daemon holds agent sessions on the

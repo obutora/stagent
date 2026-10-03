@@ -437,6 +437,86 @@ func TestDeliberateStopIsNotUndoneByHolders(t *testing.T) {
 	waitSessions(1) // the holder found the new daemon and re-registered
 }
 
+// TestHolderOutlivesItsStderrReader: `stagent run --detached` started over
+// an SSH exec channel has a pipe for stderr, whose reader goes away with
+// the connection. A daemon replaced after that makes the holder log; the
+// session must survive it and register with the new daemon (#250).
+func TestHolderOutlivesItsStderrReader(t *testing.T) {
+	bin := buildStagent(t)
+	t.Setenv(paths.EnvHome, t.TempDir())
+	t.Setenv(daemonclient.EnvExe, bin)
+	l, err := paths.Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "00000000000000d2"
+	holder := exec.Command(bin, "run", "--detached", "--id", id, "--", "sleep", "60")
+	holder.Stderr = w
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	exited := make(chan struct{})
+	go func() {
+		holder.Wait()
+		close(exited)
+	}()
+	t.Cleanup(func() {
+		holder.Process.Kill()
+		<-exited
+		shutdownDaemon(l)
+	})
+	registered := func() bool {
+		conn, err := ipc.Dial(l.DaemonAddr, 200*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		c := rpc.NewClient(conn, nil)
+		defer c.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		var res wire.SessionsListResult
+		if c.Call(ctx, wire.MethodSessionsList, nil, &res) != nil {
+			return false
+		}
+		return slices.ContainsFunc(res.Sessions, func(s wire.Session) bool { return s.ID == id && s.State != wire.StateExited })
+	}
+	waitRegistered := func() {
+		t.Helper()
+		deadline := time.Now().Add(20 * time.Second)
+		for !registered() {
+			select {
+			case <-exited:
+				t.Fatalf("holder exited: %v", holder.ProcessState)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the holder never registered")
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	waitRegistered()
+	r.Close() // the SSH client went away
+
+	if err := shutdownDaemon(l); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second) // the holder logs that the daemon is gone
+	if err := daemonclient.StartDaemon(l); err != nil {
+		t.Fatal(err)
+	}
+	waitRegistered()
+	log, err := os.ReadFile(filepath.Join(l.LogDir, id+".log"))
+	if err != nil || !strings.Contains(string(log), "registered with the daemon") {
+		t.Fatalf("holder log (%v):\n%s", err, log)
+	}
+}
+
 // TestSpawnFindsAgentsOutsideTheExecPath: an SSH exec channel starts the
 // bridge with a non-login shell's PATH. Agents installed where only the
 // login profile puts them on PATH (bun's ~/.bun/bin in ~/.bash_profile) must

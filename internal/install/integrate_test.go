@@ -45,6 +45,52 @@ func readOnlyDir(t *testing.T, dir string) {
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 }
 
+// Removing a file stagent created also removes the directories it created
+// for it, once they are empty; directories that existed before or hold
+// something else stay.
+func TestRemoveDeletesDirectoriesStagentCreated(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		existing string // created before integrate ("" = none)
+		gone     []string
+		kept     []string
+	}{
+		{"no ~/.omp before", "", []string{".omp"}, nil},
+		{"~/.omp/agent before", ".omp/agent/sessions/x.jsonl", []string{".omp/agent/extensions"}, []string{".omp/agent/sessions"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			te := newTestEnv(t, "linux")
+			if c.existing != "" {
+				writeFile(t, te.home(c.existing), "x")
+			}
+			te.integrate(t, integrateOpts{apply: true, harness: []string{hOmp}})
+			if !exists(te.ompExtension()) {
+				t.Fatal("extension not installed")
+			}
+			te.integrate(t, integrateOpts{apply: true, remove: []string{hOmp}})
+			for _, p := range c.gone {
+				if exists(te.home(p)) {
+					t.Errorf("%s left behind", p)
+				}
+			}
+			for _, p := range c.kept {
+				if !exists(te.home(p)) {
+					t.Errorf("%s removed", p)
+				}
+			}
+		})
+	}
+	// Something else put a file next to ours: the directory stays.
+	te := newTestEnv(t, "linux")
+	te.integrate(t, integrateOpts{apply: true, harness: []string{hOmp}})
+	other := filepath.Join(filepath.Dir(te.ompExtension()), "other.ts")
+	writeFile(t, other, "x")
+	te.integrate(t, integrateOpts{apply: true, remove: []string{hOmp}})
+	if exists(te.ompExtension()) || !exists(other) {
+		t.Fatalf("extension exists %v, other.ts exists %v", exists(te.ompExtension()), exists(other))
+	}
+}
+
 func TestIntegrateResult(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		te := newTestEnv(t, "linux")

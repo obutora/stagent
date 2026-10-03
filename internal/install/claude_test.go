@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -133,7 +134,13 @@ func TestClaudeUnmergeRemovesOnlyOurEntries(t *testing.T) {
 	te := newTestEnv(t, "linux")
 	path := te.claudeSettings()
 	writeFile(t, path, claudeSettingsBefore)
+	backup := ""
 	te.integrate(t, integrateOpts{apply: true, harness: []string{hClaude}})
+	if rec := te.m.config(hClaude, path); rec == nil || rec.Backup == "" {
+		t.Fatalf("backup not recorded: %+v", rec)
+	} else {
+		backup = rec.Backup
+	}
 
 	// The user edits the file afterwards: a foreign hook next to ours in a
 	// group we created, and a new top-level key.
@@ -173,6 +180,10 @@ func TestClaudeUnmergeRemovesOnlyOurEntries(t *testing.T) {
 	if !strings.Contains(readFile(t, path), `"theme": "dark"`) {
 		t.Error("user's new key lost")
 	}
+	// The backup is the only copy of the content before stagent: it stays.
+	if te.reload(); !exists(backup) || !slices.Contains(te.m.Backups, backup) {
+		t.Errorf("backup %s dropped after an element-wise removal (listed: %v)", backup, te.m.Backups)
+	}
 	if te.m.config(hClaude, path) != nil {
 		t.Error("manifest still records the Claude integration")
 	}
@@ -196,6 +207,10 @@ func TestClaudeRemoveRestoresBackupWhenUntouched(t *testing.T) {
 	}
 	if got := readFile(t, path); got != orig {
 		t.Fatalf("restored content differs:\n%q\nwant\n%q", got, orig)
+	}
+	// The backup's content is back in the file: it is deleted.
+	if te.reload(); exists(rec.Backup) || len(te.m.Backups) != 0 {
+		t.Fatalf("backup %s left after restoring it (listed: %v)", rec.Backup, te.m.Backups)
 	}
 }
 

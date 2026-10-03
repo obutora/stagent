@@ -3,6 +3,28 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.4.2
+
+### Fixed
+
+- Removing integrations (`integrate --remove`, `uninstall --level unhook`)
+  leaves the home as it was before them: the directories stagent created
+  for a file it then deletes go too once empty (`~/.omp/agent/extensions`,
+  `~/.omp`), and a `<file>.sshterm-bak-<time>` backup is deleted once its
+  content is restored. A backup of a file changed since stagent's edit
+  stays until `uninstall --level purge` (PROTOCOL.md).
+- A holder started with `stagent run --detached` over an SSH exec channel
+  (stderr a pipe) no longer dies of SIGPIPE when it logs after the
+  connection closed — when `install` replaces the daemon, say. Once the
+  program runs, its stderr goes to `log/<id>.log`, like a holder the app
+  starts.
+- macOS: claude started in a session from the app (`session.spawn`) is
+  logged in while you are logged in to the GUI. The login keychain is
+  locked for SSH sessions, so the bridge now starts the holder through a
+  one-off launchd job in the GUI login session (`gui/<uid>`); without a
+  GUI login it starts as before, and a `/login` there is kept in
+  `~/.claude/.credentials.json` (PROTOCOL.md).
+
 ## 0.4.1
 
 ### Changed

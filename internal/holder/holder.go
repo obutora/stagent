@@ -60,8 +60,10 @@ type Options struct {
 	Layout *paths.Layout
 	// DialDaemon connects to the daemon; nil = daemonclient.DialOrStart.
 	DialDaemon func() (net.Conn, error)
-	// Logf receives diagnostics; nil = stderr when detached, the holder log
-	// file in passthrough (stderr is the user's terminal there).
+	// Logf receives diagnostics; nil = stderr when detached (moved to the
+	// session's log file once the program runs when stderr is a pipe or
+	// socket), the holder log file in passthrough (stderr is the user's
+	// terminal there).
 	Logf func(format string, args ...any)
 }
 
@@ -275,6 +277,9 @@ func Run(ctx context.Context, o Options) (int, error) {
 		}
 	}
 
+	if o.Detached && o.Logf == nil {
+		h.moveStderrToLog()
+	}
 	return h.run(ctx, ln)
 }
 

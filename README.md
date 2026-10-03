@@ -99,6 +99,12 @@ MCP servers) could no longer resolve host names. So `stagent run` and
 does; the keychain stays usable while you are logged in. If that fails
 they start anyway and `stagent doctor` says why
 (`shell_wrapper.last_run_bootstrap_error`, `daemon.bootstrap_error`).
+The login keychain is unlocked only inside the GUI login session, not in
+SSH sessions, so while you are logged in to the GUI the app's sessions
+start through a one-off launchd job in that session (`gui/<uid>`), and
+claude uses the login it has there. Without a GUI login they start from
+the SSH session and claude asks you to `/login`; that login is kept in
+`~/.claude/.credentials.json`.
 `stagent integrate --terminal` keeps Terminal.app from asking before it
 closes a window running an agent, or at logout (`stagent` in each
 profile's `noWarnProcesses`; removing it takes out only that entry).

@@ -112,7 +112,8 @@ func loginShell(env []string) string {
 
 // startHolder starts `exe args` as a detached holder and waits until it
 // answers. The holder leaves the bridge's login session itself where that
-// is needed (logind.Escape in `stagent run`).
+// is needed on Linux (logind.Escape in `stagent run`); on macOS
+// proc.SpawnHolder starts it in the GUI login session when there is one.
 func (b *Bridge) startHolder(id, exe string, args, env []string, logPath string) (*wire.Session, error) {
 	pid, err := b.spawnProc(exe, args, b.l.Home, env, logPath)
 	if err != nil {

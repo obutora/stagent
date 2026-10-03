@@ -87,6 +87,10 @@ func TestUninstallStopKillsUnresponsiveDaemon(t *testing.T) {
 func TestUninstallUnhookRestoresConfigsAndRemovesService(t *testing.T) {
 	te, settings := installed(t)
 	te.reload()
+	backups := append([]string(nil), te.m.Backups...)
+	if len(backups) == 0 {
+		t.Fatal("no backups taken")
+	}
 	r := te.uninstall("unhook", false, false)
 	for _, want := range []string{"stop-service", "stop-daemon", "restore", "disable-service"} {
 		if !strings.Contains(","+stepActions(r)+",", ","+want+",") {
@@ -106,23 +110,34 @@ func TestUninstallUnhookRestoresConfigsAndRemovesService(t *testing.T) {
 		t.Errorf("remaining = %+v", r.Remaining)
 	}
 	// The installation itself stays, with a manifest that no longer lists
-	// integrations but keeps the backups for purge.
+	// integrations; the backups restored are deleted.
 	te.reload()
-	if !exists(te.l.Bin) || len(te.m.Configs) != 0 || len(te.m.Services) != 0 || len(te.m.Backups) == 0 {
+	if !exists(te.l.Bin) || len(te.m.Configs) != 0 || len(te.m.Services) != 0 || len(te.m.Backups) != 0 {
 		t.Fatalf("manifest after unhook: %+v", te.m)
+	}
+	for _, b := range backups {
+		if exists(b) {
+			t.Errorf("backup %s left after restoring it", b)
+		}
 	}
 }
 
 func TestUninstallPurgeRemovesEverything(t *testing.T) {
 	te, _ := installed(t)
 	writeFile(t, te.l.UploadsDir+"/photo.png", "x")
+	// Edited after stagent: unhook only takes the block out, so the backup
+	// is not restored and stays for purge.
+	writeFile(t, te.home(".bashrc"), readFile(t, te.home(".bashrc"))+"alias ll='ls -l'\n")
 	te.reload()
-	backups := append([]string(nil), te.m.Backups...)
+	backup := te.m.config("shell-bash", te.home(".bashrc")).Backup
+	if backup == "" {
+		t.Fatal("no backup of .bashrc")
+	}
 	r := te.uninstall("purge", true, false)
 	if len(r.Failed) != 0 {
 		t.Fatalf("failed = %+v", r.Failed)
 	}
-	for _, p := range append([]string{te.l.Root, te.l.UploadsDir}, backups...) {
+	for _, p := range []string{te.l.Root, te.l.UploadsDir, backup} {
 		if exists(p) {
 			t.Errorf("%s still exists", p)
 		}
