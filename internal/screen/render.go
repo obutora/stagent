@@ -3,6 +3,7 @@ package screen
 import (
 	"bytes"
 	"strconv"
+	"strings"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -229,6 +230,35 @@ func writeRow(b *bytes.Buffer, src cellSource, y, cols int) (trimmed bool) {
 		b.WriteString(ansi.ResetStyle)
 	}
 	return end < cols
+}
+
+// Lines returns the text of the visible screen (the alternate one while it
+// is active), one string per row, without attributes and trailing blanks.
+// A wide character appears once; cells never written read as blanks.
+func (s *Screen) Lines() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, s.rows)
+	var b strings.Builder
+	for y := range s.rows {
+		end := lastCell(s.emu, y, s.cols) + 1
+		if end == 0 {
+			continue
+		}
+		b.Reset()
+		for x := 0; x < end; {
+			c := s.emu.CellAt(x, y)
+			if c == nil || c.IsZero() || c.Content == "" {
+				b.WriteByte(' ')
+				x++
+				continue
+			}
+			b.WriteString(c.Content)
+			x += max(c.Width, 1)
+		}
+		out[y] = strings.TrimRight(b.String(), " ")
+	}
+	return out
 }
 
 // cup writes a cursor position for 0-based row y, column x.

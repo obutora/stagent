@@ -8,21 +8,36 @@ import (
 
 // IntegrateResult is the output of `stagent integrate`.
 type IntegrateResult struct {
-	Applied bool      `json:"applied"`
-	Changes []*Change `json:"changes"`
-	Notes   []string  `json:"notes"`
+	Applied bool `json:"applied"`
+	// Result sums up the outcome: ok | partial | nothing_to_do | failed
+	// (summarize).
+	Result string `json:"result"`
+	// LoginShell is the base name of $SHELL ("" when unknown).
+	LoginShell string    `json:"login_shell"`
+	Changes    []*Change `json:"changes"`
+	Notes      []string  `json:"notes"`
 }
+
+// Values of IntegrateResult.Result.
+const (
+	resultOK          = "ok"
+	resultPartial     = "partial"
+	resultNothingToDo = "nothing_to_do"
+	resultFailed      = "failed"
+)
 
 type integrateOpts struct {
 	apply        bool
 	harness      []string
 	shellWrapper bool
 	service      bool
+	linger       bool
+	terminal     bool
 	remove       []string
 }
 
 // Removable integration names for --remove.
-var removeIDs = []string{hClaude, hCodex, hOmp, "shell-wrapper", "service"}
+var removeIDs = []string{hClaude, hCodex, hOmp, "shell-wrapper", "service", "linger", "terminal"}
 
 func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	for _, h := range o.harness {
@@ -30,29 +45,35 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 			return nil, errors.New("cannot both add and remove " + h)
 		}
 	}
-	if o.shellWrapper && slices.Contains(o.remove, "shell-wrapper") || o.service && slices.Contains(o.remove, "service") {
+	if o.shellWrapper && slices.Contains(o.remove, "shell-wrapper") || o.service && slices.Contains(o.remove, "service") || o.linger && slices.Contains(o.remove, "linger") || o.terminal && slices.Contains(o.remove, "terminal") {
 		return nil, errors.New("cannot both add and remove the same integration")
 	}
 	var changes []*Change
-	var planErrs []string
-	// many / one collect planned changes; a planning error for one target
-	// becomes a note and does not stop the others.
+	// settled counts targets planned without error that need no change.
+	settled := 0
+	// many / one collect planned changes; a target that cannot be planned
+	// becomes a skip change carrying the error and does not stop the
+	// others.
 	many := func(id string) func([]*Change, error) {
 		return func(cs []*Change, err error) {
-			if err != nil {
-				e.note("%s: %v", id, err)
-				planErrs = append(planErrs, id)
-			}
+			n := 0
 			for _, c := range cs {
 				if c != nil {
 					changes = append(changes, c)
+					n++
 				}
+			}
+			if err != nil {
+				changes = append(changes, skipChange(id, err))
+			} else if n == 0 {
+				settled++
 			}
 		}
 	}
 	one := func(id string) func(*Change, error) {
 		return func(c *Change, err error) { many(id)([]*Change{c}, err) }
 	}
+	noShell := false
 
 	for _, h := range o.harness {
 		switch h {
@@ -77,17 +98,21 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	if o.shellWrapper {
 		ts := e.shellAddTargets()
 		if len(ts) == 0 {
+			noShell = true
 			e.note("No supported shell rc file was found (bash, zsh, fish or PowerShell); nothing to wrap.")
 		}
 		for _, t := range ts {
 			one(t.id)(e.addChange(t))
 		}
-		if e.goos != "windows" && slices.ContainsFunc(ts, func(t *target) bool { return t.id == "shell-bash" }) && exists(e.home(".bash_profile")) {
-			e.note("bash login shells read ~/.bash_profile; make sure it sources ~/.bashrc so the wrapper is defined there too.")
-		}
 	}
 	if o.service {
 		many("service")(e.serviceAddChanges())
+	}
+	if o.linger {
+		one("linger")(e.lingerAddChange())
+	}
+	if o.terminal {
+		one("terminal")(e.terminalAddChange())
 	}
 	var removed []*target
 	for _, id := range o.remove {
@@ -96,8 +121,13 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 		for _, t := range ts {
 			one(t.id)(e.removeChange(t))
 		}
-		if id == "service" {
+		switch id {
+		case "service":
 			many(id)(e.serviceRemoveChanges())
+		case "linger":
+			one(id)(e.lingerRemoveChange())
+		case "terminal":
+			one(id)(e.terminalRemoveChange())
 		}
 	}
 	if len(o.harness)+len(o.remove) > 0 || o.shellWrapper || o.service {
@@ -106,37 +136,70 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 		}
 	}
 
-	r := &IntegrateResult{Changes: changes, Notes: e.notes}
+	r := &IntegrateResult{LoginShell: e.loginShell(), Changes: changes}
 	if r.Changes == nil {
 		r.Changes = []*Change{}
 	}
 	if !o.apply {
+		r.Result = summarize(r.Changes, settled, false, noShell)
 		r.Notes = nonNil(e.notes)
 		return r, nil
 	}
 	if err := e.l.EnsureDirs(); err != nil {
 		return nil, err
 	}
-	failed := planErrs
+	var failed []string
 	for _, c := range changes {
-		if err := c.apply(); err != nil {
-			c.Error = err.Error()
+		if c.apply == nil {
+			failed = append(failed, c.ID) // skip
+		} else if err := c.apply(); err != nil {
+			c.Error, c.ErrorCode = err.Error(), errorCode(err)
 			failed = append(failed, c.ID)
 		}
 	}
 	e.dropStaleRecords(removed)
 	e.touchManifest()
-	if err := e.saveManifest(); err != nil {
-		failed = append(failed, "manifest: "+err.Error())
+	manifestErr := e.saveManifest()
+	if manifestErr != nil {
+		failed = append(failed, "manifest: "+manifestErr.Error())
 	}
 	// Partial failures are reported in the document itself (applied=false,
-	// changes[].error, notes); the command still exits 0.
+	// result, changes[].error, notes); the command still exits 0.
 	r.Applied = len(failed) == 0
 	if !r.Applied {
 		e.note("Not applied: %s.", strings.Join(failed, ", "))
 	}
+	r.Result = summarize(r.Changes, settled, manifestErr != nil, noShell)
 	r.Notes = nonNil(e.notes)
 	return r, nil
+}
+
+// summarize is IntegrateResult.Result: nothing_to_do when a shell wrapper
+// was asked for and no shell target exists; otherwise ok without errors,
+// failed when nothing went right (no clean change and no target already
+// in place), partial in between.
+func summarize(changes []*Change, settled int, otherErr, noShell bool) string {
+	if noShell {
+		return resultNothingToDo
+	}
+	bad, good := 0, settled
+	if otherErr {
+		bad++
+	}
+	for _, c := range changes {
+		if c.Error != "" {
+			bad++
+		} else {
+			good++
+		}
+	}
+	switch {
+	case bad == 0:
+		return resultOK
+	case good == 0:
+		return resultFailed
+	}
+	return resultPartial
 }
 
 // codexAddChanges plans the Codex integration: hooks.json plus the features

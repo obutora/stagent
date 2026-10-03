@@ -171,6 +171,12 @@ func TTYName(uint64) string { return "" }
 // TTYHosts returns nil: Windows has no terminal logins.
 func TTYHosts() map[uint64]string { return nil }
 
+// ReadsTerminal is unknown on Windows: consoles are not told apart.
+func ReadsTerminal(int) (tty, known bool) { return false, false }
+
+// get is not implemented on Windows.
+func get(int) (Proc, bool) { return Proc{}, false }
+
 // Owner is the user of the process's primary token. Opening another user's
 // token takes privileges stagent usually lacks: that process's owner is
 // then unknown.

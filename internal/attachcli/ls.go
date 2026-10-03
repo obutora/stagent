@@ -134,26 +134,30 @@ func cmpDesc(a, b int64) int {
 // home are parameters so the output is reproducible.
 func writeTable(w io.Writer, list []wire.Session, now time.Time, home string) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tMODE\tSTATE\tLAST ACTIVITY\tCOMMAND\tTITLE/CWD")
+	fmt.Fprintln(tw, "ID\tMODE\tSTATE\tLAST ACTIVITY\tPC INPUT\tCOMMAND\tTITLE/CWD")
 	for _, s := range list {
 		state := s.State
 		if s.ExitCode != nil {
 			state = fmt.Sprintf("%s (%d)", wire.StateExited, *s.ExitCode)
 		}
-		last := "-"
-		if s.LastActivityAt > 0 {
-			last = ago(now.Sub(time.UnixMilli(s.LastActivityAt)))
-		}
 		where := s.Title
 		if where == "" {
 			where = shortenHome(s.Cwd, home)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			s.ID, s.Mode, state, last,
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			s.ID, s.Mode, state, sinceOrDash(now, s.LastActivityAt), sinceOrDash(now, s.LastLocalInputAt),
 			clip(printable(strings.Join(s.Command, " ")), commandWidth),
 			clip(printable(where), whereWidth))
 	}
 	tw.Flush()
+}
+
+// sinceOrDash renders the unix ms time at with ago, or "-" when unset (0).
+func sinceOrDash(now time.Time, at int64) string {
+	if at <= 0 {
+		return "-"
+	}
+	return ago(now.Sub(time.UnixMilli(at)))
 }
 
 // ago renders an elapsed time in its largest whole unit: 5s, 3m, 2h, 4d.

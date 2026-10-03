@@ -1,0 +1,31 @@
+|
+|✻ Worked for 11s · done 10:50
+| 
+|❯ Use the Write tool to create a.txt containing hi          
+|
+|● Write(a.txt)
+|  ⎿  Wrote 1 line to a.txt
+|      1 hi
+|
+|● /tmp/chatcap/claude1/a.txt を作成し、中身を hi
+|  にしました。
+|
+|✻ Baked for 3s · done 10:50
+|  
+|❯ Use the AskUserQuestion tool to ask me which color I      
+|  prefer, options Red, Green, Blue. Then reply with my      
+|  answer only.                                              
+|
+|● User answered Claude's questions:
+|  ⎿  · どの色が好みですか？ → Green
+|
+|✢ Ebbing… (5s · ↓ 141 tokens)
+|  ⎿  Tip: Use git worktrees to run multiple Claude sessions 
+|     in parallel.
+|                                        ◐ medium · /effort
+|────────────────────────────────────────────────────────────
+|❯ 
+|────────────────────────────────────────────────────────────
+|  ctx:40k(4%) …/claude1 
+|  ⏸ manual mode on · ← for agents
+cursor=2,26 alt=true appCursor=false bracketed=true

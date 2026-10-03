@@ -37,8 +37,47 @@ func TestMain(m *testing.M) {
 // test through its master side.
 type localTerminal struct {
 	ptmx, tty *os.File
+	cooked    uint32 // tty's lflag before stagent run took it
 	mu        sync.Mutex
 	out       []byte
+}
+
+// startPassthrough runs `stagent run args...` in a fresh 90x20 local
+// terminal and records what the terminal shows. exited gets cmd.Wait's
+// result.
+func startPassthrough(t *testing.T, args []string) (lt *localTerminal, cmd *exec.Cmd, exited <-chan error) {
+	t.Helper()
+	a, _ := json.Marshal(args)
+	ptmx, tty, err := cpty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ptmx.Close(); tty.Close() })
+	cpty.Setsize(ptmx, &cpty.Winsize{Cols: 90, Rows: 20})
+	lt = &localTerminal{ptmx: ptmx, tty: tty, cooked: lflag(t, tty)}
+
+	cmd = exec.Command(os.Args[0], "-test.run=^$")
+	cmd.Env = append(os.Environ(), envRunArgs+"="+string(a))
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(buf)
+			lt.mu.Lock()
+			lt.out = append(lt.out, buf[:n]...)
+			lt.mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return lt, cmd, done
 }
 
 func (lt *localTerminal) waitFor(t *testing.T, want string) {
@@ -72,40 +111,9 @@ func lflag(t *testing.T, f *os.File) uint32 {
 func TestPassthroughMirrorsAndFollowsLocalTerminal(t *testing.T) {
 	l := isolate(t)
 	id := wire.NewSessionID()
-	args, _ := json.Marshal([]string{"--id", id, "--", "sh", "-c",
+	lt, cmd, exited := startPassthrough(t, []string{"--id", id, "--", "sh", "-c",
 		"stty size; read a; stty size; read b; stty size; read c; exit 5"})
-
-	ptmx, tty, err := cpty.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ptmx.Close()
-	defer tty.Close()
-	cpty.Setsize(ptmx, &cpty.Winsize{Cols: 90, Rows: 20})
-	cooked := lflag(t, tty)
-
-	cmd := exec.Command(os.Args[0], "-test.run=^$")
-	cmd.Env = append(os.Environ(), envRunArgs+"="+string(args))
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	lt := &localTerminal{ptmx: ptmx, tty: tty}
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := ptmx.Read(buf)
-			lt.mu.Lock()
-			lt.out = append(lt.out, buf[:n]...)
-			lt.mu.Unlock()
-			if err != nil {
-				return
-			}
-		}
-	}()
+	ptmx, tty := lt.ptmx, lt.tty
 
 	lt.waitFor(t, "20 90") // the program got the local size and its output is mirrored
 	if lflag(t, tty)&(unix.ICANON|unix.ECHO) != 0 {
@@ -153,8 +161,89 @@ func TestPassthroughMirrorsAndFollowsLocalTerminal(t *testing.T) {
 		cmd.Process.Kill()
 		t.Fatal("stagent run did not exit")
 	}
-	if got := lflag(t, tty); got&(unix.ICANON|unix.ECHO) != cooked&(unix.ICANON|unix.ECHO) {
-		t.Fatalf("local terminal mode not restored: lflag %#x, was %#x", got, cooked)
+	if got := lflag(t, tty); got&(unix.ICANON|unix.ECHO) != lt.cooked&(unix.ICANON|unix.ECHO) {
+		t.Fatalf("local terminal mode not restored: lflag %#x, was %#x", got, lt.cooked)
+	}
+}
+
+// Keystrokes at the local terminal set last_local_input_at; replies the
+// terminal sends on its own (CPR, focus reports) do not, but focus reports
+// set focused. `stagent attach` input (local) counts the same way, its
+// focus lasting as long as its connection; the app's input does not.
+func TestPassthroughRecordsLocalTyping(t *testing.T) {
+	l := isolate(t)
+	id := wire.NewSessionID()
+	lt, cmd, exited := startPassthrough(t, []string{"--id", id, "--", "sh", "-c",
+		"echo ready; read a; echo got; read b; exit 0"})
+	lt.waitFor(t, "ready")
+	c := dialHolder(t, l, id)
+	info := func() wire.Session {
+		var s wire.Session
+		if err := c.call(t, wire.MethodSessionInfo, wire.SessionRef{ID: id}, &s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	// The program's cooked tty echoes what reached it, so the echo shows
+	// the replies went through the holder.
+	lt.ptmx.Write([]byte("\x1b[5;10R"))
+	lt.waitFor(t, "[5;10R")
+	lt.ptmx.Write([]byte("\x1b[I"))
+	lt.waitFor(t, "[I")
+	if s := info(); s.LastLocalInputAt != 0 || !s.Focused {
+		t.Fatalf("after replies and focus in: last_local_input_at %d, focused %v", s.LastLocalInputAt, s.Focused)
+	}
+	lt.ptmx.Write([]byte("\x1b[O"))
+	lt.waitFor(t, "[O")
+	if info().Focused {
+		t.Fatal("focused after focus out")
+	}
+
+	before := time.Now().UnixMilli()
+	lt.ptmx.Write([]byte("hi\r"))
+	lt.waitFor(t, "got")
+	s := info()
+	if s.LastLocalInputAt < before || s.LastLocalInputAt > time.Now().UnixMilli() {
+		t.Fatalf("last_local_input_at = %d after typing at %d", s.LastLocalInputAt, before)
+	}
+
+	// Client input is not the local terminal's.
+	time.Sleep(5 * time.Millisecond)
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "qz"}, nil)
+	lt.waitFor(t, "qz")
+	if got := info().LastLocalInputAt; got != s.LastLocalInputAt {
+		t.Fatalf("session.input moved last_local_input_at %d -> %d", s.LastLocalInputAt, got)
+	}
+
+	typed := s.LastLocalInputAt
+	a := dialHolder(t, l, id)
+	a.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "\x1b[I", Local: true}, nil)
+	if s := info(); !s.Focused || s.LastLocalInputAt != typed {
+		t.Fatalf("attach focus in: %+v", s)
+	}
+	time.Sleep(5 * time.Millisecond)
+	a.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "w", Local: true}, nil)
+	if s := info(); s.LastLocalInputAt <= typed {
+		t.Fatalf("attach typing left last_local_input_at at %d", s.LastLocalInputAt)
+	}
+	a.Close()
+	deadline := time.Now().Add(testTimeout)
+	for info().Focused {
+		if time.Now().After(deadline) {
+			t.Fatal("focus outlived the attach connection")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil)
+	select {
+	case err := <-exited:
+		if err != nil {
+			t.Fatalf("stagent run exited with %v", err)
+		}
+	case <-time.After(testTimeout):
+		cmd.Process.Kill()
+		t.Fatal("stagent run did not exit")
 	}
 }
 

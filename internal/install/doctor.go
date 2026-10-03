@@ -1,30 +1,50 @@
 package install
 
 import (
+	"encoding/json"
+	"maps"
+	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/logind"
+	"github.com/obutora/stagent/internal/notify"
 	"github.com/obutora/stagent/internal/version"
+	"github.com/obutora/stagent/internal/wire"
 )
 
 // DoctorReport is the output of `stagent doctor` (PROTOCOL.md).
 type DoctorReport struct {
-	Version      string            `json:"version"`
-	Protocol     int               `json:"protocol"`
-	OS           string            `json:"os"`
-	Arch         string            `json:"arch"`
-	Home         string            `json:"home"`
+	Version  string `json:"version"`
+	Protocol int    `json:"protocol"`
+	OS       string `json:"os"`
+	Arch     string `json:"arch"`
+	Home     string `json:"home"`
+	// HostID is the host's id (hostid); absent until stagent created it
+	// (install, the bridge's hello or the daemon). doctor never creates it.
+	HostID       string            `json:"host_id,omitempty"`
 	Layout       LayoutInfo        `json:"layout"`
 	Daemon       DaemonReport      `json:"daemon"`
 	Harnesses    []HarnessReport   `json:"harnesses"`
 	ShellWrapper ShellReport       `json:"shell_wrapper"`
 	Service      ServiceReport     `json:"service"`
 	Persistence  PersistenceReport `json:"persistence"`
-	Orphans      []Finding         `json:"orphans"`
-	Problems     []string          `json:"problems"`
+	// Terminal is Terminal.app's close confirmation (macOS; null
+	// elsewhere).
+	Terminal *TerminalReport `json:"terminal"`
+	// Notify comes from the daemon's last failures file, so it is there
+	// whether or not the daemon runs.
+	Notify wire.NotifyStatus `json:"notify"`
+	// Unwrapped: agents started without a stagent session that the
+	// running daemon saw (empty when it does not run).
+	Unwrapped []wire.UnwrappedLaunch `json:"unwrapped"`
+	Orphans   []Finding              `json:"orphans"`
+	Problems  []string               `json:"problems"`
 }
 
 type DaemonReport struct {
@@ -32,6 +52,12 @@ type DaemonReport struct {
 	PID      int    `json:"pid"`
 	Version  string `json:"version"`
 	Sessions int    `json:"sessions"`
+	// BootstrapSwapped is whether the running daemon moved itself to the
+	// per-user bootstrap port (macOS); null when it is not running, off
+	// macOS, or it is a version before 0.4.0. BootstrapError says why it
+	// failed; null otherwise.
+	BootstrapSwapped *bool   `json:"bootstrap_swapped"`
+	BootstrapError   *string `json:"bootstrap_error"`
 }
 
 type HarnessReport struct {
@@ -43,11 +69,26 @@ type HarnessReport struct {
 	Integrated     bool     `json:"integrated"`
 	HooksSupported bool     `json:"hooks_supported"`
 	Notes          []string `json:"notes"`
+	// RemoteControlAtStartup (claude only; other harnesses omit it) is
+	// remoteControlAtStartup in ~/.claude/settings.json: true, false or
+	// null when absent, not a boolean or unreadable.
+	RemoteControlAtStartup json.RawMessage `json:"remote_control_at_startup,omitempty"`
 }
 
 type ShellReport struct {
 	Installed bool     `json:"installed"`
 	Files     []string `json:"files"`
+	// LastRunAt is when `stagent run --handoff=auto` (a shell wrapper) last
+	// started a program on this host, unix ms; null when never.
+	LastRunAt *int64 `json:"last_run_at"`
+	// LastRunSurvivesLogout is whether that start, where it ended up after
+	// leaving the login session (Linux) or swapping its bootstrap port
+	// (macOS), outlives the user's logout; null when unknown or never
+	// recorded (before 0.4.0, Windows).
+	LastRunSurvivesLogout *bool `json:"last_run_survives_logout"`
+	// LastRunBootstrapError is why that start's swap failed (macOS); null
+	// otherwise.
+	LastRunBootstrapError *string `json:"last_run_bootstrap_error"`
 }
 
 type ServiceReport struct {
@@ -65,7 +106,23 @@ type PersistenceReport struct {
 	RunDirSurvivesLogout bool  `json:"run_dir_survives_logout"`
 	KillUserProcesses    *bool `json:"kill_user_processes"`
 	Linger               *bool `json:"linger"`
+	// LingerNeeded: agents started here end at logout unless lingering is
+	// turned on (lingerNeeded); null when unknown.
+	LingerNeeded *bool `json:"linger_needed"`
+	// LingerReason says why LingerNeeded is true (lingerReason* values);
+	// null otherwise.
+	LingerReason *string `json:"linger_reason"`
+	// LingerEnabledByStagent: the manifest records that `integrate
+	// --linger` turned lingering on.
+	LingerEnabledByStagent bool `json:"linger_enabled_by_stagent"`
 }
+
+// Values of PersistenceReport.LingerReason.
+const (
+	lingerReasonKill      = "kill_user_processes"
+	lingerReasonGraphical = "graphical_session"
+	lingerReasonLastRun   = "last_run"
+)
 
 // Finding names something stagent left on the host.
 type Finding struct {
@@ -129,6 +186,10 @@ func (e *env) inventory(uploads bool) []artifact {
 			add(levelUnhook, "schtasks:"+t, "scheduled task", t == schtasksDaemon, tracked)
 		}
 	}
+	if left := e.terminalLeft(); len(left) > 0 {
+		// Harmless without the binary, so never an orphan.
+		add(levelUnhook, terminalTarget, "stagent in noWarnProcesses of the Terminal profiles "+strings.Join(left, ", "), false, true)
+	}
 	if exists(e.l.Root) {
 		add(levelPurge, e.l.Root, "stagent installation (binary, manifest, state, logs)", false, true)
 	}
@@ -179,9 +240,10 @@ func (e *env) outsideDirs() []string {
 func (e *env) doctor() *DoctorReport {
 	r := &DoctorReport{
 		Version: version.Version, Protocol: version.Protocol,
-		OS: e.goos, Arch: runtime.GOARCH, Home: e.l.Home,
+		OS: e.goos, Arch: runtime.GOARCH, Home: e.l.Home, HostID: hostid.Read(e.l.HostID),
 		Layout:    layoutInfo(e.l),
 		Harnesses: []HarnessReport{},
+		Unwrapped: []wire.UnwrappedLaunch{},
 		Orphans:   []Finding{},
 		Problems:  []string{},
 	}
@@ -196,13 +258,20 @@ func (e *env) doctor() *DoctorReport {
 		r.Problems = append(r.Problems, "not installed: no manifest at "+e.l.Manifest+" (run `stagent install`)")
 	}
 	if st, err := e.daemon.Status(); err == nil {
-		r.Daemon = DaemonReport{Running: true, PID: st.PID, Version: st.Version, Sessions: st.Sessions}
+		r.Daemon = DaemonReport{Running: true, PID: st.PID, Version: st.Version, Sessions: st.Sessions, BootstrapSwapped: st.BootstrapSwapped}
+		if st.Unwrapped != nil {
+			r.Unwrapped = st.Unwrapped
+		}
 		if st.Version != version.Version {
 			r.Problems = append(r.Problems, "running daemon is version "+st.Version+", binary is "+version.Version+" (restart it with `stagent uninstall --level stop`)")
 		}
+		if st.BootstrapSwapped != nil && !*st.BootstrapSwapped {
+			r.Daemon.BootstrapError = &st.BootstrapError
+			r.Problems = append(r.Problems, "the daemon cannot reach the network after you log out of the GUI (push notifications fail): switching to the per-user bootstrap port failed: "+st.BootstrapError)
+		}
 	}
 
-	r.Harnesses = append(r.Harnesses, e.harnessReport(hClaude, e.claudeTarget()))
+	r.Harnesses = append(r.Harnesses, e.claudeReport())
 	r.Harnesses = append(r.Harnesses, e.codexReport())
 	r.Harnesses = append(r.Harnesses, e.harnessReport(hOmp, e.ompTarget()))
 
@@ -213,12 +282,35 @@ func (e *env) doctor() *DoctorReport {
 			r.ShellWrapper.Files = append(r.ShellWrapper.Files, t.path)
 		}
 	}
+	if rec, ok := e.l.ReadWrapperRun(); ok {
+		r.ShellWrapper.LastRunAt = &rec.At
+		r.ShellWrapper.LastRunSurvivesLogout = rec.SurvivesLogout
+		if rec.BootstrapError != "" {
+			r.ShellWrapper.LastRunBootstrapError = &rec.BootstrapError
+			r.Problems = append(r.Problems, "the tools of the last agent started through the shell wrapper cannot resolve host names after you log out of the GUI: switching to the per-user bootstrap port failed: "+rec.BootstrapError)
+		}
+	}
 	r.Service.Kind = e.serviceKind()
 	r.Service.Installed, r.Service.Running = e.serviceState()
 
-	r.Persistence = e.persistenceReport()
-	if p := r.Persistence; p.KillUserProcesses != nil && *p.KillUserProcesses && p.Linger != nil && !*p.Linger {
-		r.Problems = append(r.Problems, "detached sessions end when you log out: logind kills user processes (KillUserProcesses=yes) and lingering is off; run `loginctl enable-linger` (may require an administrator) to keep them running")
+	r.Persistence = e.persistenceReport(r.ShellWrapper.LastRunSurvivesLogout)
+	r.Terminal = e.terminalReport()
+	if p := r.Persistence; p.LingerNeeded != nil && *p.LingerNeeded {
+		const fix = "; run `loginctl enable-linger` (may require an administrator) to keep them running"
+		switch *p.LingerReason {
+		case lingerReasonKill:
+			r.Problems = append(r.Problems, "detached sessions end when you log out: logind kills user processes (KillUserProcesses=yes) and lingering is off"+fix)
+		case lingerReasonGraphical:
+			r.Problems = append(r.Problems, "agents started from a terminal of your graphical session end when you log out: they run under your systemd user manager and lingering is off"+fix)
+		default:
+			r.Problems = append(r.Problems, "the last agent started through the shell wrapper ends when you log out: lingering is off"+fix)
+		}
+	}
+
+	r.Notify.LastError, _ = notify.LoadFailures(e.l.NotifyErrors)
+	for _, ch := range slices.Sorted(maps.Keys(r.Notify.LastError)) {
+		f := r.Notify.LastError[ch]
+		r.Problems = append(r.Problems, "notify: the last push to "+ch+" failed at "+time.UnixMilli(f.At).Format(time.RFC3339)+": "+f.Error)
 	}
 
 	for _, a := range e.inventory(false) {
@@ -236,11 +328,11 @@ func (e *env) doctor() *DoctorReport {
 }
 
 // persistenceReport checks what ends detached sessions at logout on Linux:
-// a RunDir in $XDG_RUNTIME_DIR (deleted at the last logout) and logind's
-// KillUserProcesses without lingering (the bridge moves holders into the
-// user's service manager, which stops at the last logout unless lingering).
-func (e *env) persistenceReport() PersistenceReport {
-	p := PersistenceReport{RunDir: e.l.RunDir, RunDirSurvivesLogout: true}
+// a RunDir in $XDG_RUNTIME_DIR (deleted at the last logout), logind's
+// KillUserProcesses and lingering (see lingerNeeded). lastRun is
+// ShellReport.LastRunSurvivesLogout.
+func (e *env) persistenceReport(lastRun *bool) PersistenceReport {
+	p := PersistenceReport{RunDir: e.l.RunDir, RunDirSurvivesLogout: true, LingerEnabledByStagent: e.m.LingerEnabled}
 	if e.goos != "linux" {
 		return p
 	}
@@ -257,7 +349,55 @@ func (e *env) persistenceReport() PersistenceReport {
 	if v, ok := e.linger(); ok {
 		p.Linger = &v
 	}
+	e.lingerNeeded(&p, lastRun)
 	return p
+}
+
+// lingerNeeded sets LingerNeeded and LingerReason. Lingering is needed
+// when it is off and agents started here end at logout: as the last start
+// through a shell wrapper found (`stagent run` records where it ended up),
+// or, before any such start, when logind kills user processes (holders
+// leave the session for the user manager, which ends at the last logout)
+// or the user has a graphical session (its terminals run under the user
+// manager). Unknown when neither KillUserProcesses nor lingering can be
+// read.
+func (e *env) lingerNeeded(p *PersistenceReport, lastRun *bool) {
+	if p.KillUserProcesses == nil && p.Linger == nil {
+		return
+	}
+	needed, reason := false, ""
+	switch {
+	case p.Linger != nil && *p.Linger:
+	case lastRun != nil:
+		needed, reason = !*lastRun, lingerReasonLastRun
+	case p.KillUserProcesses != nil && *p.KillUserProcesses:
+		needed, reason = true, lingerReasonKill
+	case e.graphicalSession():
+		needed, reason = true, lingerReasonGraphical
+	}
+	p.LingerNeeded = &needed
+	if needed {
+		p.LingerReason = &reason
+	}
+}
+
+// graphicalSession reports whether the user has a login session of type
+// x11 or wayland now.
+func (e *env) graphicalSession() bool {
+	out, err := e.run.Run(cmdTimeout, "loginctl", "show-user", strconv.Itoa(e.uid), "--property=Sessions", "--value")
+	ids := strings.Fields(out)
+	if err != nil || len(ids) == 0 {
+		return false
+	}
+	// A session that ended in between fails the command; the others are
+	// still printed.
+	out, _ = e.run.Run(cmdTimeout, "loginctl", append(append([]string{"show-session"}, ids...), "--property=Type", "--value")...)
+	for _, t := range strings.Fields(out) {
+		if t == "x11" || t == "wayland" {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *env) harnessReport(id string, t *target) HarnessReport {
@@ -277,6 +417,23 @@ func (e *env) harnessReport(id string, t *target) HarnessReport {
 			if _, err := parseJSONDoc(cur); err != nil {
 				h.Notes = append(h.Notes, t.path+" is not valid JSON")
 			}
+		}
+	}
+	return h
+}
+
+// claudeReport adds the user's Remote Control setting to the claude item.
+// Only ~/.claude/settings.json is read: managed and project settings are
+// not guessed, and stagent never changes the setting.
+func (e *env) claudeReport() HarnessReport {
+	h := e.harnessReport(hClaude, e.claudeTarget())
+	h.RemoteControlAtStartup = json.RawMessage("null")
+	var s struct {
+		RemoteControlAtStartup json.RawMessage `json:"remoteControlAtStartup"`
+	}
+	if b, err := os.ReadFile(e.claudeSettings()); err == nil && json.Unmarshal(b, &s) == nil {
+		if v := string(s.RemoteControlAtStartup); v == "true" || v == "false" {
+			h.RemoteControlAtStartup = json.RawMessage(v)
 		}
 	}
 	return h

@@ -57,7 +57,7 @@ func stepActions(r *UninstallReport) string {
 func TestUninstallStopKeepsIntegrations(t *testing.T) {
 	te, _ := installed(t)
 	te.reload()
-	r := te.uninstall("stop", false)
+	r := te.uninstall("stop", false, false)
 	if got := stepActions(r); got != "stop-service,stop-daemon" {
 		t.Fatalf("steps = %s", got)
 	}
@@ -75,7 +75,7 @@ func TestUninstallStopKeepsIntegrations(t *testing.T) {
 func TestUninstallStopKillsUnresponsiveDaemon(t *testing.T) {
 	te := newTestEnv(t, "linux")
 	te.daemon.running, te.daemon.pid = true, 777 // ignores shutdown
-	r := te.uninstall("stop", false)
+	r := te.uninstall("stop", false, false)
 	if got := stepActions(r); got != "kill-daemon" {
 		t.Fatalf("steps = %s", got)
 	}
@@ -87,7 +87,7 @@ func TestUninstallStopKillsUnresponsiveDaemon(t *testing.T) {
 func TestUninstallUnhookRestoresConfigsAndRemovesService(t *testing.T) {
 	te, settings := installed(t)
 	te.reload()
-	r := te.uninstall("unhook", false)
+	r := te.uninstall("unhook", false, false)
 	for _, want := range []string{"stop-service", "stop-daemon", "restore", "disable-service"} {
 		if !strings.Contains(","+stepActions(r)+",", ","+want+",") {
 			t.Errorf("missing step %s in %s", want, stepActions(r))
@@ -118,7 +118,7 @@ func TestUninstallPurgeRemovesEverything(t *testing.T) {
 	writeFile(t, te.l.UploadsDir+"/photo.png", "x")
 	te.reload()
 	backups := append([]string(nil), te.m.Backups...)
-	r := te.uninstall("purge", true)
+	r := te.uninstall("purge", true, false)
 	if len(r.Failed) != 0 {
 		t.Fatalf("failed = %+v", r.Failed)
 	}
@@ -152,7 +152,7 @@ func TestUninstallRemovesWindowsTasks(t *testing.T) {
 		}
 		return "", nil
 	}
-	r := te.uninstall("unhook", false)
+	r := te.uninstall("unhook", false, false)
 	for _, want := range []string{`schtasks /Delete /TN \stagent\daemon /F`, `schtasks /Delete /TN \stagent\spawn-0a1b2c /F`} {
 		if !te.run.ran(want) {
 			t.Errorf("did not run %q; calls %v", want, te.run.calls)

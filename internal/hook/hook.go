@@ -1,8 +1,10 @@
 // Package hook is `stagent hook <harness> [event] [json]`, the command
-// harness hooks run. It forwards the hook payload to the daemon and, for
-// blocking permission requests, prints the decision the app made. It never
-// breaks a harness: every path exits 0, the daemon is never started from
-// here, and waiting is bounded.
+// harness hooks run. It forwards the hook payload to the daemon and prints
+// nothing: approvals are answered on the program's own screen. It never
+// breaks a harness: every path exits 0 and the daemon is never started from
+// here. Waiting is bounded except for claude's PermissionRequest, which the
+// daemon holds until its approval closes (the session's holder saw the
+// prompt leave the screen, or claude stopped the hook, or the turn ended).
 package hook
 
 import (
@@ -11,6 +13,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 
 	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/ptable"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -29,11 +33,8 @@ const (
 	stdinWait = 2 * time.Second
 	// dialTimeout: an absent daemon must not slow the harness down.
 	dialTimeout = 500 * time.Millisecond
-	// callTimeout bounds non-blocking events.
+	// callTimeout bounds every call but claude's PermissionRequest.
 	callTimeout = 3 * time.Second
-	// approvalMargin is added to the approval timeout for the blocking
-	// wait; the installer gives the harness hook approval timeout + 10s.
-	approvalMargin = 5 * time.Second
 
 	eventPermissionRequest = "PermissionRequest"
 	codexNotify            = "notify"
@@ -43,18 +44,99 @@ const (
 type procIO struct {
 	stdin     io.Reader
 	stdinTTY  bool
-	stdout    io.Writer
 	sessionID string
+	// remoteControl: $CLAUDE_CODE_BRIDGE_SESSION_ID is set (claude is
+	// connected to Remote Control).
+	remoteControl bool
+	// launch tells how the agent was started, for a hook outside any
+	// stagent session (see wire.HookEventParams).
+	launch func(harness string) launchInfo
+}
+
+// launchInfo is what a hook outside a stagent session tells the daemon
+// about the agent's start (wire.HookEventParams).
+type launchInfo struct {
+	shellWrapper bool
+	entrypoint   string
+	parentTTY    *bool
+	parentBatch  bool
 }
 
 // Main runs the hook command. It always returns 0.
 func Main(args []string) int {
 	return run(args, procIO{
-		stdin:     os.Stdin,
-		stdinTTY:  term.IsTerminal(int(os.Stdin.Fd())),
-		stdout:    os.Stdout,
-		sessionID: os.Getenv(wire.EnvSessionID),
+		stdin:         os.Stdin,
+		stdinTTY:      term.IsTerminal(int(os.Stdin.Fd())),
+		sessionID:     os.Getenv(wire.EnvSessionID),
+		remoteControl: os.Getenv(wire.EnvClaudeBridgeSessionID) != "",
+		launch:        osLaunch,
 	})
+}
+
+// osLaunch reads the launch facts from the environment and the harness
+// that runs the hook (harnessPID).
+func osLaunch(harness string) launchInfo {
+	li := launchInfo{
+		shellWrapper: os.Getenv(wire.EnvShellWrapper) != "",
+		entrypoint:   os.Getenv("CLAUDE_CODE_ENTRYPOINT"),
+	}
+	pid := harnessPID()
+	if tty, known := ptable.ReadsTerminal(pid); known {
+		li.parentTTY = &tty
+	}
+	if argv, err := ptable.Argv(pid); err == nil {
+		li.parentBatch = batchArgs(harness, argv)
+	}
+	return li
+}
+
+// hookShells are the shells harnesses run hook commands with. The
+// installed codex command (`[ -x … ] && … hook codex || true`) keeps `sh -c`
+// as the hook's parent, its stdin the payload pipe.
+var hookShells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true, "ash": true, "ksh": true, "busybox": true}
+
+// harnessPID is the hook's nearest ancestor that is not one of hookShells.
+func harnessPID() int {
+	pid := os.Getppid()
+	for range 3 {
+		p, ok := ptable.Process(pid)
+		if !ok || !hookShells[p.Name] || p.PPID <= 1 {
+			break
+		}
+		pid = p.PPID
+	}
+	return pid
+}
+
+// batchArgs reports whether a harness command line (argv[0] first) asks for
+// a non-interactive run, by the shell wrapper's rule: claude -p / --print;
+// codex exec / e as the first argument; omp -p / --print or --mode other
+// than text. omp runs under its JavaScript runtime, so every argument is
+// looked at.
+func batchArgs(harness string, argv []string) bool {
+	if len(argv) < 2 {
+		return false
+	}
+	args := argv[1:]
+	switch harness {
+	case wire.HarnessCodex:
+		return args[0] == "exec" || args[0] == "e"
+	case wire.HarnessClaude, wire.HarnessOmp:
+	default:
+		return false
+	}
+	omp := harness == wire.HarnessOmp
+	for i, a := range args {
+		switch {
+		case a == "-p" || a == "--print":
+			return true
+		case omp && a == "--mode" && i+1 < len(args) && args[i+1] != "text":
+			return true
+		case omp && strings.HasPrefix(a, "--mode=") && a != "--mode=text":
+			return true
+		}
+	}
+	return false
 }
 
 func run(args []string, pio procIO) (code int) {
@@ -102,74 +184,29 @@ func run(args []string, pio procIO) (code int) {
 	client := rpc.NewClient(conn, nil)
 	defer client.Close()
 
-	blocking := event == eventPermissionRequest
-	timeout := callTimeout
-	if blocking {
-		timeout = approvalTimeout(l) + approvalMargin
+	// claude shows its prompt while the hook runs, so the daemon may hold
+	// it until the prompt is answered (it answers at once outside stagent
+	// sessions). Codex shows its prompt only after the hook returned.
+	ctx := context.Background()
+	if harness != wire.HarnessClaude || event != eventPermissionRequest {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, callTimeout)
+		defer cancel()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	var res wire.HookEventResult
-	err = client.Call(ctx, wire.MethodHookEvent, wire.HookEventParams{
-		Harness:   harness,
-		Event:     event,
-		SessionID: pio.sessionID,
-		Payload:   payload,
-	}, &res)
-	if err != nil || !blocking {
-		return 0
+	params := wire.HookEventParams{
+		Harness:       harness,
+		Event:         event,
+		SessionID:     pio.sessionID,
+		Payload:       payload,
+		RemoteControl: pio.remoteControl,
 	}
-	if out := permissionOutput(harness, res); out != nil {
-		pio.stdout.Write(out)
+	if pio.sessionID == "" && pio.launch != nil {
+		li := pio.launch(harness)
+		params.ShellWrapper, params.Entrypoint = li.shellWrapper, li.entrypoint
+		params.ParentTTY, params.ParentBatch = li.parentTTY, li.parentBatch
 	}
+	client.Call(ctx, wire.MethodHookEvent, params, nil)
 	return 0
-}
-
-// permissionDecision is hookSpecificOutput.decision of a PermissionRequest
-// hook, the same shape for Claude Code and Codex.
-type permissionDecision struct {
-	Behavior string `json:"behavior"` // allow | deny
-	Message  string `json:"message,omitempty"`
-}
-
-// permissionOutput renders the app's decision for the harness, or nil when
-// there is none (the harness then asks in the terminal as usual).
-//
-// Claude Code and Codex both read
-// {"hookSpecificOutput":{"hookEventName":"PermissionRequest",
-// "decision":{"behavior":"allow"|"deny","message":"..."}}}; Codex rejects
-// unknown fields (updatedInput, updatedPermissions, interrupt fail closed),
-// so only behavior and, for deny, message are sent.
-func permissionOutput(harness string, res wire.HookEventResult) []byte {
-	if harness != wire.HarnessClaude && harness != wire.HarnessCodex {
-		return nil
-	}
-	if res.Decision != wire.DecisionAllow && res.Decision != wire.DecisionDeny {
-		return nil
-	}
-	dec := permissionDecision{Behavior: res.Decision}
-	if res.Decision == wire.DecisionDeny {
-		dec.Message = res.Message
-	}
-	b, err := json.Marshal(map[string]any{
-		"hookSpecificOutput": map[string]any{
-			"hookEventName": eventPermissionRequest,
-			"decision":      dec,
-		},
-	})
-	if err != nil {
-		return nil
-	}
-	return append(b, '\n')
-}
-
-// approvalTimeout reads approval_timeout_sec from config.json (default 60s).
-func approvalTimeout(l *paths.Layout) time.Duration {
-	var c wire.Config
-	if b, err := os.ReadFile(l.Config); err == nil {
-		_ = json.Unmarshal(b, &c) // unreadable config: defaults
-	}
-	return time.Duration(c.WithDefaults().ApprovalTimeoutSec) * time.Second
 }
 
 // lockedBuf collects what the stdin reader saw, up to maxPayload+1 bytes.

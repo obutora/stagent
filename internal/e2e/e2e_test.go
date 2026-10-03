@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/rpc"
@@ -205,7 +208,8 @@ func TestBridgeEndToEnd(t *testing.T) {
 
 	var hello wire.HelloResult
 	a.call(t, wire.MethodHello, wire.HelloParams{Protocol: version.Protocol, Client: "e2e"}, &hello)
-	if hello.Protocol != version.Protocol || hello.Home != home || !slices.Contains(hello.Capabilities, wire.CapSpawn) {
+	if hello.Protocol != version.Protocol || hello.Home != home || !slices.Contains(hello.Capabilities, wire.CapSpawn) ||
+		!hostid.Valid(hello.HostID) || hostid.Read(l.HostID) != hello.HostID {
 		t.Fatalf("hello = %+v", hello)
 	}
 	var watch wire.WatchResult
@@ -308,13 +312,52 @@ func TestBridgeEndToEnd(t *testing.T) {
 		return m.Method == wire.NotifyClosed && json.Unmarshal(m.Params, &c) == nil && c.ID == s2.ID
 	})
 
-	// --- notifications
+	// --- notifications: nothing is sent before a channel is enabled.
+	var we *wire.Error
+	if err := a.Call(t.Context(), wire.MethodNotifyTest, nil, nil); !errors.As(err, &we) || we.Code != wire.ErrNotConfigured {
+		t.Fatalf("notify.test without a channel: %v, want not_configured", err)
+	}
+	pushes := make(chan wire.NotificationData, 4)
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var n wire.NotificationData
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &n)
+		pushes <- n
+	}))
+	defer hook.Close()
+	a.call(t, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{"notify": {"host_label": "e2e", "webhook": {"enabled": true, "url": "` + hook.URL + `"}}}`)}, nil)
 	a.call(t, wire.MethodNotifyTest, nil, nil)
 	a.waitFor(t, "test notification event", func(m *wire.Msg) bool {
 		ev, ok := eventOf(m, wire.EventNotification, "")
 		var nd wire.NotificationData
-		return ok && json.Unmarshal(ev.Data, &nd) == nil && nd.Reason == "test"
+		return ok && json.Unmarshal(ev.Data, &nd) == nil && nd.Reason == "test" && nd.Title == "SSH Term"
 	})
+	select {
+	case n := <-pushes:
+		if n.Title != "e2e · SSH Term" {
+			t.Fatalf("test push titled %q", n.Title)
+		}
+	case <-time.After(waitLong):
+		t.Fatal("no test push")
+	}
+
+	// The test push links to this host (the id hello returned), with no
+	// session and no sequence ID.
+	clicks := make(chan http.Header, 4)
+	ntfy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clicks <- r.Header.Clone()
+	}))
+	defer ntfy.Close()
+	a.call(t, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{"notify": {"click_base": "sshtermx://open", "webhook": null, "ntfy": {"enabled": true, "server": "` + ntfy.URL + `", "topic": "t"}}}`)}, nil)
+	a.call(t, wire.MethodNotifyTest, nil, nil)
+	select {
+	case h := <-clicks:
+		if h.Get("Click") != "sshtermx://open?h="+hello.HostID || h.Get("X-Sequence-ID") != "" {
+			t.Fatalf("test push Click %q X-Sequence-ID %q", h.Get("Click"), h.Get("X-Sequence-ID"))
+		}
+	case <-time.After(waitLong):
+		t.Fatal("no ntfy test push")
+	}
 
 	// --- shutdown: daemon through a direct IPC client, bridge on stdin EOF.
 	if err := shutdownDaemon(l); err != nil {

@@ -21,7 +21,7 @@ Envelope (JSON-RPC 2.0 shape without the `jsonrpc` member):
 
 Error codes: `bad_request`, `unknown_method`, `not_found`, `unsupported`,
 `internal`, `unavailable`, `version_mismatch`, `session_ended`,
-`not_size_owner`, `approval_closed`.
+`not_size_owner`, `not_configured`.
 
 Requests on one connection are processed in order (input keystrokes keep
 their order). Notifications may arrive at any time between responses.
@@ -37,15 +37,39 @@ their order). Notifications may arrive at any time between responses.
 The first request must be `hello`. If `result.protocol` differs from the
 app's protocol, the app offers an update of the binary.
 
+### Versions and compatibility
+
+- The app pins one stagent release (`stagent_release.dart`); that version
+  is the minimum for every feature of the app. A host whose `hello.version`
+  is older is updated as a whole (the binary, then `stagent install`); the
+  app never offers part of its features to an older host.
+- `protocol` stays 1. Raising it would make every app already released
+  treat a newer host as needing an install it cannot do (the host's
+  version is newer than its pin), so those apps could no longer open it.
+- While `protocol` is 1, stagent only adds keys and methods. Something may
+  be removed only when no released app uses it; `approval.respond` and
+  `config.set` replacing the whole config qualify.
+- Capabilities are reserved for what depends on the host OS. Linux and
+  macOS keep relying on `persist`. Whether a key is present is checked
+  only for `host_id`.
+
 ## Methods
 
 ### Bridge
 
 | method | params | result |
 |---|---|---|
-| `hello` | `{protocol, client}` | `{protocol, version, os, arch, home, capabilities[]}` |
+| `hello` | `{protocol, client}` | `{protocol, version, os, arch, home, capabilities[], host_id?}` |
 | `ping` | – | `{}` |
 | `session.spawn` | `{command[]?, shell?, cwd?, cols, rows, env?{}}` | `{session}` — a detached session; app owns its size |
+
+`host_id` (32 lowercase hex chars) is 128 random bits stagent creates the
+first time it runs (`stagent install`, the bridge's `hello` or the daemon)
+and keeps in `<root>/host-id`, apart from `config.json`: `config.set` and
+removing `notify` never change it; only `uninstall --level purge` removes
+it. The app maps it to the saved connection it last used for this host,
+to open notification links (`notify.click_base`). It is absent when it
+could not be read or created, and from stagent versions before 0.4.0.
 
 `session.spawn` starts the command with the environment of the user's login
 shell (`$SHELL -l -i`, then `$SHELL -l`, captured once per bridge), not the
@@ -62,14 +86,11 @@ empty or absent (`bad_request` otherwise); on Windows the request fails with
 `unsupported`. This is how a terminal tab runs its shell in a persistent
 session: it outlives the SSH connection and is re-attached later.
 
-On Linux, when logind kills a login session's processes as it ends
-(`KillUserProcesses=yes`) and `systemd-run` exists, holders are started
-through `systemd-run --user --scope --collect --quiet -- <stagent> run
---detached …` so they leave the bridge's SSH login session; if that start
-fails before the holder answers, the holder is started directly and the
-bridge stops using the scope. Without lingering (`loginctl enable-linger`)
-the user's service manager, and with it the scope, still ends at the last
-logout; `stagent doctor` reports that case.
+On Linux a holder that must leave the login session it was started from
+(here the bridge's SSH session) to outlive it moves itself into a new scope
+of the user's service manager as the first thing `stagent run` does — see
+"Leaving the login session" under Command-line tools. The bridge starts
+holders directly.
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
 `persist`. `persist` announces everything this document marks with it:
@@ -85,7 +106,7 @@ relies on them treats a bridge without `persist` as needing an update.
 | `session.info` | `{id}` | `Session` |
 | `session.attach` | `{id, mode: "raw"\|"screen", fps?, since?}` | `{cols, rows, mode, offset, resumed}` then `output` / `resize` / `closed` notifications |
 | `session.detach` | `{id}` | `{}` |
-| `session.input` | `{id, text?, paste?, keys?[], submit?}` | `{}` |
+| `session.input` | `{id, text?, paste?, keys?[], submit?, local?}` | `{}` |
 | `session.resize` | `{id, cols, rows, force?}` | `{}`; `not_size_owner` for a passthrough session without `force` |
 | `session.scrollback` | `{id, before?, max_bytes?}` | `{data, start, end, first}` |
 | `session.signal` | `{id, signal: "interrupt"\|"terminate"\|"kill"\|"hangup"}` | `{}` |
@@ -145,6 +166,14 @@ sends SIGTERM (Windows: Ctrl-Break, then TerminateProcess after a grace
 period), `kill` SIGKILL / TerminateProcess, and `hangup` (`persist`)
 SIGHUP — what closing a terminal does; a shell exits on it, which is how
 the app ends a persistent shell session (Windows: same as `terminate`).
+The holder records a `hangup` (on every OS): the session ends with
+`session_ended {hung_up: true}` and its exit is not an abnormal one,
+whatever the exit code (see "Push notifications").
+
+`session.input` `local: true` is what `stagent attach` sends: keyboard
+input of a terminal on the host. It counts as `last_local_input_at`, and
+the focus reports in its `text` (`ESC [ I`, `ESC [ O`) set `focused` for as
+long as its connection lasts. The app never sets it.
 
 A passthrough session started with `stagent run --handoff` changes its
 `mode` to `detached` when its local terminal hangs up (see "Command-line
@@ -173,26 +202,139 @@ max 1 MiB.
 
 | method | params | result |
 |---|---|---|
-| `watch` | `{since}` | `{sessions[], approvals[], seq, missed[], truncated}` then `event` / `session.updated` / `session.removed` notifications |
+| `watch` | `{since}` | `{sessions[], approvals[], unwrapped[], seq, missed[], truncated}` then `event` / `session.updated` / `session.removed` / `unwrapped.updated` notifications |
 | `sessions.list` | – | `{sessions[]}` |
 | `conversations.list` | `{harness?[], limit?}` | `{conversations[]}` |
 | `transcript.get` | `{session_id? \| harness+conversation_id? \| path?, limit?, before?}` | `{path, harness, messages[], cursor}` |
 | `transcript.subscribe` | `{session_id? \| path?}` | `{}` then `transcript` notifications |
 | `transcript.unsubscribe` | same | `{}` |
 | `approvals.list` | – | `{approvals[]}` |
-| `approval.respond` | `{request_id, decision: "allow"\|"deny", message?}` | `{}`; `approval_closed` if it already timed out |
-| `config.get` | – | `{config}` |
-| `config.set` | `{config}` | `{config}` (with defaults applied) |
-| `notify.test` | – | `{}`; emits a `notification` event (reason `test`) and pushes to enabled channels |
+| `config.get` | – | `{config, notify: {last_error}}` |
+| `config.set` | `{config}` — a JSON Merge Patch (RFC 7396) of `Config` | `{config, notify: {last_error}}` (the effective config, with defaults applied) |
+| `notify.test` | – | `{}`; pushes a test to the enabled channels right away and emits a `notification` event (reason `test`); `not_configured` (nothing sent, no event) when no channel is enabled; `unavailable` with the failure when a channel failed |
+| `presence.set` | `{foreground}` | `{}`; the app is (not) in the foreground (see "Push notifications") |
+
+Nothing in the protocol answers an approval: the program's own screen does
+(the PC, Claude's Remote Control, or a client typing the option's key with
+`session.input`). `approvals.list`, `watch`'s `approvals[]` and the
+`approval_*` events are for lists, notifications and summaries (see
+`Approval` below). Daemons before 0.4.0 also had `approval.respond`; it is
+now `unknown_method`.
 
 `watch {since}` returns the events after `since` in `missed` (oldest first)
 and `truncated: true` when retention already dropped some of them. Store
 the highest `seq` seen and pass it on the next connection.
 
+`unwrapped` lists the agents started interactively on this host without a
+stagent session (`UnwrappedLaunch`, newest `last_activity_at` first; GLOSSARY
+このホストの agent に出ない起動 — the app calls them ここに出ない agent), and
+`unwrapped.updated` replaces the whole list whenever it changes. See
+"Agents without a stagent session" under Harness hooks for what is recorded
+and for how long. A stagent before 0.4.0 omits the field.
+
+`config.set` applies its `config` merge patch to `config.json` as stored:
+only the keys present in the patch change, `null` deletes a key, nested
+objects merge member by member and any other value replaces the stored
+one. Keys the patch does not name — including keys this stagent version
+does not know — stay as they are, and defaults are never written to the
+file (it holds only explicitly set values; `config.json` is mode 0600). The
+merged document must still be a valid `Config` (for example a webhook URL
+must be http(s)); otherwise the call fails with `bad_request` and nothing
+is written. The result, like `config.get`, is the effective config with
+defaults filled in. Example: `{"config": {"disable_handoff": true}}`
+turns handoff off for `stagent run --handoff=auto` without touching any
+other setting.
+
+Every push (ntfy, webhook, including `notify.test`) is titled with the
+host it comes from: `notify.host_label`, or the host name when it is empty
+(no prefix when that is unknown too). A single notification reads
+`<label> · <title>` (e.g. `開発機 · claude · api`), a digest
+`<label>: <title>`. The in-app `notification` event keeps the plain title.
+
+A notification about one session carries its `session_id`. On ntfy its
+sequence ID (`X-Sequence-ID`) is the session id — or, for an id outside
+ntfy's rule (1–64 of `[A-Za-z0-9_-]`; stagent's never are), the first 32
+hex digits of its SHA-256: a newer notification of the session replaces
+the older one. When `notify.click_base` is set, ntfy pushes carry a
+`Click` link: `click_base` with `h=<host_id>` and, for a session,
+`s=<session id>` added to its query (e.g.
+`sshtermx://open?h=<host_id>&s=<session id>`). A digest and `notify.test`
+link to the host only (`h`) and have no sequence ID. Nothing else goes
+into the link; an empty `click_base` (or a host without `host_id`) sends
+no `Click`. stagent knows no app scheme: the app sets `click_base`.
+
+#### Push notifications
+
+Every notification is a `notification` event for the app. It is also
+pushed (ntfy, webhook) only when all of these hold:
+
+- It is about a session started through stagent. Hooks of programs that
+  were not (an IDE, `claude -p`, the SDK; no `STAGENT_SESSION_ID` and no
+  known conversation) stay in-app.
+- `notify.reasons` selects its reason. By default `needs_approval`,
+  `waiting_input`, `turn_complete` and abnormal `exited` (level `warn`:
+  an exit code other than 0, or a lost session — not a session a client
+  hung up) are pushed; a normal `exited` and `terminal` are not (before
+  0.4.0 everything was).
+- Not `notify.skip_when_claude_app_notifies` with a session whose latest
+  hook ran with `CLAUDE_CODE_BRIDGE_SESSION_ID` (claude connected to
+  Remote Control: the Claude app notifies too). Claude's own settings are
+  not read.
+- No app in the foreground watching this host: a connection that has a
+  `watch` and last sent `presence.set {foreground: true}`. A closed
+  connection is not in the foreground, and a live `watch` alone never
+  means it is (the app keeps its connection in the background). The
+  bridge restores the app's foreground together with its watch after a
+  daemon restart.
+- Nobody present at the session (在席): no keystroke at a terminal on the
+  host (`last_local_input_at`: the passthrough session's own terminal or
+  `stagent attach`) within the last 60 s, nor within the last 10 min while
+  that terminal has the focus (`focused`; terminals that send no focus
+  reports count by keystrokes alone), and no file at the holder's
+  `$CLAUDE_CLIENT_PRESENCE_FILE` (`presence_file`; it applies to every
+  session, handed-off ones included). A handed-off session without such
+  input counts as absent.
+
+A push of a `passthrough` session waits 15 s first. These 60 s, 10 min
+and 15 s are fixed. Presence and the foreground are checked when the push
+goes out (after the wait).
+
+A session settles what its notifications are about when its approval
+closes (answered anywhere, or the turn moved on), when it goes back to
+`working` — by a hook (a prompt was submitted) for what a hook raised, by
+the terminal for what the terminal raised — or when it ends. Its pushes
+still waiting (or in the digest window) are then dropped, and the one
+already pushed is cleared on ntfy (`PUT <topic>/<sequence id>/clear`:
+marked read and removed from the notification drawer; replacing and
+clearing work on Android). Nothing is deleted. A server without
+sequence IDs or clear (ntfy before 2.16) gets plain notifications: the
+daemon logs one line (once for replacing, per failed clear) and keeps
+going; it never checks the server's version and adds no cooldown beyond
+`debounce_ms` and the digest. A failed clear is not a failed push
+(`last_error`).
+
+`notify.lang` (`en` default, `ja`, `ko`, `zh`) is the language of the
+fixed phrases stagent writes — notification bodies such as `Turn
+complete`, digest titles and the `notify.test` body — in events and
+pushes alike. `reason` never changes; the app can build its own text from
+it.
+
+`notify.last_error` (in the `config.get` / `config.set` result and in
+`stagent doctor`) holds, per channel (`ntfy`, `webhook`), the last failed
+push: `{at (unix ms), status? (HTTP status; absent for a connection
+error), error}`. A successful push to the channel removes its entry;
+channels without a failure are absent and `last_error` is `{}` when none
+failed. `error` is the HTTP status line (`429 Too Many Requests`) or the
+connection error, never the ntfy topic or the webhook URL; `notify.test`'s
+`unavailable` message is built the same way. Queued pushes and
+`notify.test` both count. The daemon keeps the entries in
+`state/notify-errors.json` (mode 0600), so they survive its restarts.
+
 If the daemon restarts while the bridge is connected, daemon requests in
 flight fail with `unavailable` and the bridge restores the watch itself:
 events the app missed arrive as `event`, every current session as
-`session.updated`, and sessions that disappeared as `session.removed`. The
+`session.updated`, sessions that disappeared as `session.removed`, and the
+current `unwrapped` list (empty after a restart) as `unwrapped.updated`. The
 app needs no daemon-restart handling. Session requests go to the holders
 directly and are unaffected.
 
@@ -207,31 +349,122 @@ directly and are unaffected.
 | `resize` | `{id, cols, rows}` |
 | `closed` | `{id, exit_code}` |
 | `transcript` | `{session_id?, path, messages[]}` |
+| `unwrapped.updated` | `{unwrapped[]}` (the whole current list of `UnwrappedLaunch`; replaces the previous one) |
 
 ## Objects
 
 `Session`: `id, harness (claude|codex|omp|other), command[], cwd, pid,
-holder_pid, mode (passthrough|detached), state (working|idle|waiting_input|
-needs_approval|exited), state_source (hook|terminal|activity|process),
-title?, conversation_id?, transcript_path?, last_message?, cols, rows,
-started_at, last_activity_at, exit_code?`. `mode` is fixed for the life of
-a session except for one transition (`persist`): a `passthrough` session
-started with `--handoff` becomes `detached` when its local terminal hangs
-up.
+holder_pid, mode (passthrough|detached), attached, state (working|idle|
+waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
+process), title?, conversation_id?, transcript_path?, last_message?, cols,
+rows, started_at, last_activity_at, last_local_input_at?, focused?,
+presence_file?, exit_code?`.
+`mode` is fixed for the life of a session except for one transition
+(`persist`): a `passthrough` session started with `--handoff` becomes
+`detached` when its local terminal hangs up.
+
+`attached` (always present) is true while at least one client is attached
+to the session through `session.attach`, in either mode — an app tab,
+`stagent attach`. A passthrough session's own local terminal is not a
+client and does not count. The holder reports each change between no
+client and some at once (`session.updated`, not held back like
+`last_activity_at`); an ended session is never attached. The app shows a
+session as connected to a terminal when `mode == passthrough || attached`.
+
+`last_local_input_at` (unix ms) is when a terminal on the host last typed
+or pasted anything into the session — the session's own local terminal
+(that of a `passthrough` session, a PC's or an SSH tab's) or a `stagent
+attach` (`session.input` with `local`); it is omitted until one has.
+Bytes those terminals send on their own do not count:
+replies to the program's queries (cursor position, device attributes, mode,
+status and window reports, OSC/DCS/APC strings such as color replies and
+XTVERSION) and focus and mouse reports. A read from the terminal counts when
+anything is left once those are removed, so a bracketed paste counts. The
+app's input (`session.input` without `local`) never touches it. The
+holder reports it at most once per second, the first keystroke after a
+quiet second at once, and watchers get each change at once
+(`session.updated`, not held back like `last_activity_at`); `session.info`
+on the holder has the current value. The app treats a keystroke within the
+last 5 s as "typing at the PC" and holds back typing a prompt into the
+agent meanwhile; presence (see "Push notifications") uses the same value.
+
+`focused` is true while one of those terminals last reported focus in
+(`ESC [ I`, sent once the program turned focus reporting on) and not focus
+out since; a `stagent attach` that goes away and a local terminal that
+hangs up lose it. `presence_file` is the holder's
+`$CLAUDE_CLIENT_PRESENCE_FILE`, when set.
+
+`harness` starts as the program the session runs (`other` for a shell).
+Hooks of an agent running inside the session (by `STAGENT_SESSION_ID`)
+set it to that agent along with `conversation_id` and `transcript_path`.
+For a session that started as `other`, the daemon then checks every 2 s
+whether that agent still runs in the session's foreground — recognized as
+`stagent follow --session` does, anywhere in the session's process tree on
+Windows — and once it does not, sets `harness` back to `other`, clears
+`conversation_id`, `transcript_path` and `last_message`, drops the
+hook-derived state (the terminal/activity state remains), cancels the
+session's pending approvals (`approval_resolved` `by: cancelled`) and sends
+`session.updated`. An agent the daemon never recognizes is given up after
+five checks. The agent's next hook sets the harness again.
 
 `Event`: `seq, time, session_id?, kind, data`. Kinds and `data`:
 
 | kind | data |
 |---|---|
 | `session_started` | `{harness, command[], cwd, mode}` |
-| `session_ended` | `{exit_code}` |
+| `session_ended` | `{exit_code, hung_up?}` — `hung_up`: a client ended it with `session.signal hangup` |
 | `state_changed` | `{from, to, source}` |
-| `notification` | `{title, body, level (info\|warn), reason, count?}` — reason `waiting_input\|needs_approval\|turn_complete\|exited\|terminal\|test\|digest` |
+| `notification` | `{title, body, level (info\|warn), reason, count?, session_id?}` — reason `waiting_input\|needs_approval\|turn_complete\|exited\|terminal\|test\|digest`; `session_id` names the session it is about (absent for a digest, `notify.test` and approvals of no session); webhooks post this object |
 | `approval_requested` | `Approval` |
-| `approval_resolved` | `{request_id, decision, by (app\|timeout\|cancelled)}` |
+| `approval_resolved` | `{request_id, by: "cancelled"}` |
 
-`Approval`: `request_id, session_id?, harness, tool_name?, summary,
-created_at, expires_at`.
+`Approval`: `request_id, session_id, harness, tool_name?, summary,
+created_at`. Only programs running in a stagent session raise approvals,
+from their PermissionRequest hook; elsewhere (an IDE, `claude -p`, the
+SDK) the hook returns at once and nothing is registered or pushed. claude's
+hook is held, with no time limit, while its prompt is open. claude does not
+stop the hook when the prompt is answered (it runs until the approved tool
+finished), so the session's holder watches its screen (local IPC only):
+while a claude approval of the session holds its hook, the daemon sends
+the holder `holder.prompt_watch {id, gen, on: true}` (a new `gen` with
+every approval; `on: false` once none holds its hook, again to a holder
+that re-registers). The holder takes the claude permission menu — numbered
+options starting with `1. Yes`, one under the `❯` cursor, a key hint below
+them, plan approval included — that is on the screen during the watch as
+the watch's menu, identified by the dialog's text above the options (from
+its top rule: title, command or file with its preview, question; the
+cursor, the options and the transcript above do not count). Once no menu
+of that text has been on the screen for 400 ms — none, or another
+prompt's — it sends `holder.prompt_gone {id, gen}`, once per `gen`.
+claude shows parallel tool calls' prompts one after the other, so a watch
+whose menu is still up when the next one starts keeps being watched (the
+next one does not take that menu) and is reported when it goes. The
+session's approvals registered up to that watch then close and their hooks
+return; one registered later (the next prompt) stays. A holder that never
+saw the menu (a resize forgets it until it is seen again at the new size)
+and one started before 0.4.0 (it ignores the notification) report nothing,
+and a watch that saw no menu when the next one started is left to the
+next one's report: the approval then closes with a later watch's report,
+when claude stops the hook (the tool finished, or claude was interrupted)
+or at Stop. Two prompts in a row for the very same command or file text
+look alike: the first closes when the second is answered, the second when
+claude stops its hook or at Stop. Codex shows its prompt only after the
+hook returned, so its hook returns at once and the approval closes on the
+next output activity (1 s after the hook or later) or at Stop. Any
+approval also closes at Stop, UserPromptSubmit and when the agent leaves
+the session. When a session's last approval closes, its hook-derived
+`needs_approval` goes and the terminal/activity state shows again.
+
+`UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp), cwd, reason
+(old_terminal|bypassed|ide), first_seen_at, last_activity_at` (unix ms, host
+clock: the first and the latest hook of the conversation). `reason`:
+`old_terminal` — the shell lacks the wrapper's `STAGENT_SHELL_WRAPPER`
+marker: a terminal opened before このホストの準備, or one that does not read
+the shell's rc files (open a new terminal); `bypassed` — the shell has the
+wrapper but the start went around it (`command claude`, a full path; start
+`claude` as it is); `ide` — an IDE extension or the desktop app (Claude
+Code's `CLAUDE_CODE_ENTRYPOINT` is neither `cli` nor `sdk-*`; cannot be
+shown).
 
 `Message`: `role (user|assistant|tool|system), text, tool_name?, time?`.
 
@@ -239,9 +472,26 @@ created_at, expires_at`.
 live_session_id?`.
 
 `Config`: see `wire.Config` — `notify {ntfy {enabled, server, topic,
-token?}, webhook {enabled, url, headers?}, debounce_ms, digest_window_ms},
-retention {events_days, events_max, scrollback_days, scrollback_total_mib,
-scrollback_session_mib}, approval_timeout_sec, idle_after_ms`.
+token?}, webhook {enabled, url, headers?}, debounce_ms, digest_window_ms,
+host_label, click_base, reasons {needs_approval, waiting_input,
+turn_complete, exited, terminal}, lang, skip_when_claude_app_notifies},
+retention {events_days, events_max, scrollback_days,
+scrollback_total_mib, scrollback_session_mib}, idle_after_ms,
+disable_handoff`. `disable_handoff` (default false) makes
+`stagent run --handoff=auto` — what the shell wrappers run — end the
+program with its terminal unless `STAGENT_HANDOFF` decides otherwise;
+holders read it at every start, so it applies from the next start on, also
+in shells that are already open. `notify.host_label` (no default: empty
+means the host name) names this host in the title of every push (see
+`notify.test`); the app sets it to the connection's name. `notify.click_base`
+(no default: empty means no link) is the link a push opens when tapped
+(see `notify.test`); it must be an absolute URL. `notify.reasons` selects
+what is pushed (see "Push notifications"): booleans, defaults `true`,
+`true`, `true` and `terminal` `false`; `exited` is `off`, `error`
+(default: abnormal exits only) or `all`. `notify.lang` is `en` (default),
+`ja`, `ko` or `zh`; the app sets it to its own language.
+`notify.skip_when_claude_app_notifies` defaults to false. Missing keys take
+their defaults; another `exited` or `lang` is `bad_request`.
 
 ## `stagent follow` (terminal chat view, follow protocol 1)
 
@@ -457,12 +707,120 @@ success (non-zero with `{"error": "..."}` on failure).
 
 | command | output |
 |---|---|
-| `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, notes[]}` — creates directories and the manifest; idempotent |
+| `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, replaced_daemon?, changes[], notes[]}` — creates directories and the manifest and completes an update (below); idempotent |
 | `stagent doctor --json` | `DoctorReport` |
-| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--remove claude,codex,omp,shell-wrapper,service]` | `{applied, changes[{id, target, action (create\|modify\|delete), summary, diff}], notes[]}` |
-| `stagent uninstall --json --level stop\|unhook\|purge [--uploads]` | `{level, steps[{action, target, ok, error?}], removed[], failed[{path, reason, sessions[]}], remaining[]}` |
+| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--linger] [--terminal] [--remove claude,codex,omp,shell-wrapper,service,linger,terminal]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[]}` |
+| `stagent uninstall --json --level stop\|unhook\|purge [--uploads] [--linger]` | `{level, steps[{action, target, ok, error?}], removed[], failed[{path, reason, sessions[]}], remaining[]}` |
 
 Levels are cumulative: `unhook` includes `stop`, `purge` includes `unhook`.
+
+`--linger` (Linux) turns on lingering, `loginctl --no-ask-password
+enable-linger <uid>`, so the user's service manager — and with it the
+scopes holders and the daemon move into — keeps running after the last
+logout. It is the change `{id: "linger", target: "loginctl:linger",
+action: "create", diff: ""}`, absent when lingering is on already; applied,
+it is recorded in the manifest (`doctor`'s
+`persistence.linger_enabled_by_stagent`). Off Linux it is a `skip`.
+`--remove linger` (`action: "delete"`, `loginctl disable-linger`) and
+`uninstall --level purge --linger` (step `disable-linger`) turn lingering
+off only when the manifest records that stagent turned it on; otherwise
+they do nothing, and lingering that was on before is never touched.
+`unhook` and `purge` without `--linger` leave lingering as it is.
+
+`--terminal` (macOS) adds `{ProcessName = stagent;}` to `noWarnProcesses`
+of every Terminal.app profile (`Window Settings` of `com.apple.Terminal`)
+that lacks it, so Terminal does not ask before closing a window running an
+agent through the shell wrapper, nor at logout; the agent is handed off.
+Terminal counts only `login`, the shell and `stagent` as a window's
+processes (the agent runs on stagent's PTY). A profile without the key gets
+Terminal's default list along (`screen`, `tmux`), since writing the key
+replaces it. The preferences are read and written through cfprefsd
+(`defaults export` / `defaults import`), not the plist file. A running
+Terminal keeps the profiles it loaded at launch: the change applies once
+Terminal is quit and opened again (at the latest at the next login), and
+quitting does not write the old list back; when Terminal runs, `notes`
+says so. It is the
+change `{id: "terminal", target: "com.apple.Terminal", action: "modify"}`
+whose `diff` shows each touched profile's list before and after; absent
+when every profile has it or Terminal has no saved profiles; off macOS a
+`skip`. The manifest records each profile stagent added to (`doctor`'s
+`terminal.added_by_stagent`). `--remove terminal` and `uninstall --level
+unhook` take out only those entries; a list the user changed since keeps
+the change, a key stagent created that holds just the default list again
+is removed, and a `stagent` entry stagent did not add stays. With nothing
+recorded `--remove terminal` does nothing, on any OS.
+
+`--service` on macOS writes `~/Library/LaunchAgents/com.obutora.stagent.plist`
+with `LimitLoadToSessionType` `Background` and `ProcessType` `Standard`
+and bootstraps it into the user domain, `launchctl bootstrap user/<uid>`
+(a load of an earlier version in `gui/<uid>`, which ends at logout, is
+booted out first). The daemon keeps running after a logout either way
+(see "Leaving the login session"); whether the user domain starts the
+agent after a restart before anyone has logged in has not been verified.
+
+`integrate` plans (default, `--plan`) or applies (`--apply`) per target
+file. Its output, in both modes:
+
+- `changes[]`: one entry per file that changes. A target that cannot be
+  planned is a change with `action: "skip"`, empty `diff`, and `error` /
+  `error_code`; nothing is written to it and the other targets go on. A
+  change that fails while applying keeps its planned `action` and gets
+  `error` / `error_code`. Files already in the wanted state produce no
+  entry.
+- `error` is the raw message; `error_code` classifies it:
+  `not_writable` (permission denied creating, writing or renaming),
+  `read_only_fs` (read-only file system), `utf16_profile` (a PowerShell
+  profile saved as UTF-16; skipped, add the wrapper by hand),
+  `unmanaged_file` (the file exists but its content is not something
+  stagent edits safely: an owned target with foreign content, settings
+  that are not valid JSON or have an unexpected `hooks` layout, a Codex
+  `features` inline table), `linger_denied` (polkit refused
+  `set-self-linger`: an administrator has to run `sudo loginctl
+  enable-linger <user>`; `error` is loginctl's message), `io_error`
+  (anything else).
+- `result`: `nothing_to_do` when `--shell-wrapper` was asked for and no
+  supported shell (bash, zsh, fish, PowerShell) was found (takes
+  precedence); otherwise `ok` without any error (also when everything is
+  already in place and `changes` is empty), `failed` when there are errors
+  and no target was planned/applied cleanly or already in place, and
+  `partial` in between. Files written successfully are not rolled back.
+- `login_shell`: the base name of `$SHELL` (`""` when unset), e.g. for
+  telling the user which shell was found when the result is
+  `nothing_to_do`.
+- `applied` is true when `--apply` wrote every change (and the manifest).
+
+`--shell-wrapper` writes the wrapper block to `~/.bashrc` (when it exists
+or bash is the login shell), `$ZDOTDIR/.zshrc` (same for zsh), a fish file
+in `~/.config/fish/conf.d/` (fish login shell or `~/.config/fish`
+present) and, on Windows, the Windows PowerShell and PowerShell 7
+profiles. On Linux and macOS, when bash is wrapped and `~/.bash_profile`
+exists, the block also goes there (id `shell-bash-profile`): a login bash,
+as macOS Terminal starts, reads only that file. New PowerShell profiles are
+written as UTF-8 without BOM (an existing file keeps its encoding); the
+block names stagent as `Join-Path $env:USERPROFILE
+'.ssh-term\agent\bin\stagent.exe'`, so it is ASCII. Only when stagent lies
+outside `%USERPROFILE%` is the path written literally, and if it has
+non-ASCII characters and the profile has no BOM, `notes` warns that
+Windows PowerShell 5.1 would misread it. `--remove shell-wrapper` and
+`uninstall --level unhook` take the block out of every one of these files.
+
+`install` completes an update of the binary (the app runs it after
+placing a new one):
+
+- The shell wrapper blocks already in place are rewritten to this
+  version's block; where bash has the block, an existing `~/.bash_profile`
+  gets it too. A host without the wrapper gets none. Each rewritten file is
+  an entry of `changes[]` in `integrate`'s form (with `error` /
+  `error_code` when it could not be written); a second `install` has
+  nothing to change.
+- A running daemon of another version is stopped as `uninstall --level
+  stop` stops it (holders take it as deliberate) and started again from
+  this binary: through the login service when one is installed (`systemctl
+  --user restart`, `launchctl kickstart -k`, `schtasks /Run`), detached
+  otherwise or when the service manager refuses. The holders keep their
+  sessions and register them with the new daemon. `replaced_daemon` is the
+  version replaced, once the new daemon answers; a failure is a note, and
+  `doctor` keeps reporting the mismatch.
 
 Sockets live in `run_dir`. On Linux (without `STAGENT_HOME`) that is
 `<TMPDIR or /tmp>/stagent-<uid>`, not `$XDG_RUNTIME_DIR`, which logind
@@ -483,56 +841,184 @@ in tmp when socket paths would be too long there.
 ```json
 {
   "version": "0.1.0", "protocol": 1, "os": "linux", "arch": "amd64", "home": "/home/u",
+  "host_id": "0123456789abcdef0123456789abcdef",
   "layout": {"root": "...", "bin": "...", "run_dir": "...", "data_dir": "...", "data_on_network_fs": false},
-  "daemon": {"running": true, "pid": 123, "version": "0.1.0", "sessions": 2},
+  "daemon": {"running": true, "pid": 123, "version": "0.1.0", "sessions": 2,
+             "bootstrap_swapped": null, "bootstrap_error": null},
   "harnesses": [
     {"id": "claude", "found": true, "path": "/usr/bin/claude", "version": "2.1.284",
      "config_path": "/home/u/.claude/settings.json", "integrated": true,
-     "hooks_supported": true, "notes": []}
+     "hooks_supported": true, "notes": [], "remote_control_at_startup": null}
   ],
-  "shell_wrapper": {"installed": false, "files": []},
+  "shell_wrapper": {"installed": false, "files": [], "last_run_at": null, "last_run_survives_logout": null,
+                    "last_run_bootstrap_error": null},
   "service": {"kind": "systemd|launchd|schtasks|none", "installed": false, "running": false},
   "persistence": {"run_dir": "/tmp/stagent-1000", "run_dir_survives_logout": true,
-                  "kill_user_processes": false, "linger": true},
+                  "kill_user_processes": false, "linger": true,
+                  "linger_needed": false, "linger_reason": null, "linger_enabled_by_stagent": false},
+  "terminal": null,
+  "notify": {"last_error": {"ntfy": {"at": 1767225600000, "status": 429, "error": "429 Too Many Requests"}}},
+  "unwrapped": [{"conversation_id": "…", "harness": "claude", "cwd": "/home/u/api", "reason": "old_terminal",
+                 "first_seen_at": 1767225600000, "last_activity_at": 1767225900000}],
   "orphans": [{"target": "/home/u/.claude/settings.json", "detail": "..."}],
   "problems": []
 }
 ```
 
+`shell_wrapper.files` lists the files that hold the wrapper block, and
+`last_run_at` (unix ms, `null` when never) is when `stagent run
+--handoff=auto` — which only the shell wrappers pass — last started a
+program on this host, i.e. the last start through a wrapper.
+`last_run_survives_logout` is whether that start, where it ended up after
+leaving the login session (see "Leaving the login session"), outlives the
+user's logout — on macOS, whether it swapped to the per-user bootstrap
+port, so that the programs the agent starts can still use the network
+after a logout from the GUI: `null` when it cannot be told, on Windows, or
+the start was recorded by stagent before 0.4.0.
+`last_run_bootstrap_error` is why that swap failed (macOS), `null`
+otherwise; a failure adds a `problems` line.
+
+`daemon.bootstrap_swapped` is whether the running daemon swapped to the
+per-user bootstrap port when it started (macOS), with
+`daemon.bootstrap_error` saying why not (`null` otherwise; a failure adds a
+`problems` line). Both are `null` when no daemon runs, off macOS, or the
+daemon is a version before 0.4.0 (it does not report it).
+
+`terminal` (macOS; `null` elsewhere) is Terminal.app's close confirmation
+(`integrate --terminal`): `{"profiles": 3, "no_warn": false,
+"added_by_stagent": false}`. `profiles` is the number of saved Terminal
+profiles (0 when none or unreadable), `no_warn` whether every one has
+`stagent` in `noWarnProcesses`, and `added_by_stagent` whether the
+manifest records profiles stagent added it to.
+
+`host_id` is the host's id (see `hello`), absent until stagent created it;
+`doctor` only reads it.
+
+`unwrapped` is the running daemon's list of agents started without a
+stagent session (`UnwrappedLaunch`, the same as `watch`'s); `[]` when the
+daemon does not run.
+
+The `claude` item (only it; the others omit the key) has
+`remote_control_at_startup`: the value of `remoteControlAtStartup` in the
+user's `~/.claude/settings.json` — `true`, `false`, or `null` when the key
+is absent, not a boolean, or the file is missing or unreadable. Managed
+and project settings are not read, and stagent never changes the setting.
+
 `persistence` tells whether detached sessions outlive the user's logout:
 `run_dir_survives_logout` is false when `run_dir` is below
 `$XDG_RUNTIME_DIR` (always true off Linux); `kill_user_processes` is
 logind's `KillUserProcesses` and `linger` whether lingering is enabled for
-the user (`null` when unknown or off Linux). When `kill_user_processes` is
-true and `linger` false, `problems` says that detached sessions end at
-logout and suggests `loginctl enable-linger`.
+the user (`null` when unknown or off Linux).
+
+`linger_needed` says whether agents started on this host end at logout
+unless lingering is turned on (`integrate --linger`). It is false when
+lingering is on; otherwise, once a start through a wrapper recorded
+`last_run_survives_logout`, it is the opposite of that (`linger_reason`
+`last_run`); before that, true when `kill_user_processes` is true
+(`kill_user_processes`) or the user has a login session of type `x11` or
+`wayland` now, whose terminals run under the user's service manager
+(`graphical_session`). It is `null` when neither `kill_user_processes`
+nor `linger` can be read (and off Linux; macOS needs no lingering).
+`linger_reason` is `null` unless `linger_needed` is true; then `problems`
+says so and suggests
+`loginctl enable-linger`. `linger_enabled_by_stagent` is true when the
+manifest records that `integrate --linger` turned lingering on. `hello`
+reports none of this (it would ask logind at every connection).
+
+`notify.last_error` is the daemon's last push failure per channel (see
+`config.get`), read from its file, so it is reported whether or not the
+daemon runs; `{}` when none. Each failing channel adds a `problems` line
+(`notify: the last push to ntfy failed at <RFC 3339 time>: <error>`).
 
 ## Command-line tools
 
 These run in a terminal on the server; the app does not use them.
 
-`stagent run [--detached | --handoff] [--id ID] [--cols N --rows N] [--cwd
-DIR] -- <cmd> [args...]` runs `<cmd>` as a session. Without `--detached`
-it is mirrored on the terminal it was started in (passthrough), which owns
-the size; when that terminal hangs up the program gets SIGHUP. With
-`--handoff` (`persist`; passthrough only, a usage error with `--detached`)
-the hangup — SIGHUP to `stagent run`, or its terminal input failing with
-EOF/EIO — does not reach the program: mirroring stops, the session's `mode`
-becomes `detached` (`holder.update`, so watchers get `session.updated`), the
-holder starts answering terminal queries, the local size is no longer
-followed and `session.resize` works without `force`. Later hangups are
-ignored. The shell wrappers (`integrate --shell-wrapper`) run `stagent run
---handoff -- …` instead of `stagent run -- …` when the environment has
-`STAGENT_HANDOFF=1` (exactly `1`). A handed-off session stays in the login
-session it was started from, so where logind kills a session's processes
-at its end (`KillUserProcesses=yes`) it ends with that login session. On
-Windows a closing console still ends the process, so a handoff only happens
-when console input reaches EOF.
+`stagent run [--detached | --handoff[=auto]] [--id ID] [--cols N --rows N]
+[--cwd DIR] -- <cmd> [args...]` runs `<cmd>` as a session. Without
+`--detached` it is mirrored on the terminal it was started in
+(passthrough), which owns the size; when that terminal hangs up the
+program gets SIGHUP. With `--handoff` (`persist`; passthrough only, a usage
+error with `--detached`) the hangup — SIGHUP to `stagent run`, or its
+terminal input failing with EOF/EIO — does not reach the program:
+mirroring stops, the session's `mode` becomes `detached` (`holder.update`,
+so watchers get `session.updated`), the holder starts answering terminal
+queries, the local size is no longer followed and `session.resize` works
+without `force`. Later hangups are ignored. A handed-off session stays
+where `stagent run` started (see below). On Windows a closing console
+still ends the process, so a handoff only happens when console input
+reaches EOF.
+
+`--handoff=auto` (also passthrough only) decides at every start, in this
+order: the environment variable `STAGENT_HANDOFF` when it is exactly `0`
+(no handoff) or `1` (handoff) — any other value is ignored; else
+`config.json`'s `disable_handoff` (true: no handoff); else handoff. Plain
+`--handoff` always hands off and no flag never does, whatever the
+environment and config say. Each `--handoff=auto` start is recorded for
+`doctor` (`shell_wrapper.last_run_at`, `last_run_survives_logout`,
+`last_run_bootstrap_error`).
+
+Leaving the login session (Linux): before it starts anything (the daemon,
+the program), `stagent run` — and likewise `stagent daemon` — moves itself
+into a new transient scope of the user's systemd service manager, with the
+D-Bus call `systemd-run --user --scope` makes (`StartTransientUnit` of
+`stagent-run-<pid>-<random>.scope` / `stagent-daemon-…` with its own pid),
+and waits until `/proc/self/cgroup` has changed. It does so only when
+logind's `KillUserProcesses` is yes (a login session's processes are killed
+when it ends) or lingering is on (the service manager outlives every
+logout); with `KillUserProcesses=no` and no lingering the login session
+outlives the last logout while the service manager does not, so it stays.
+A process already in a service unit (the daemon of `integrate --service`)
+stays too. If the call fails the process runs on where it is. Everything
+it starts inherits the scope. A wrapper start then records whether it
+outlives logout from its cgroup: in a login session's scope unless
+`KillUserProcesses` is yes, under the service manager when lingering is
+on, and outside the user's slice always.
+
+Leaving the GUI session's bootstrap namespace (macOS): a process started
+from a terminal of the GUI login session keeps running after the user logs
+out of the GUI, but the session's Mach bootstrap port it inherited no
+longer reaches services such as configd, so programs it starts later
+cannot resolve host names. So before it starts anything, `stagent run`
+(passthrough, `--handoff`, `--detached`) and `stagent daemon` make the
+three calls tmux makes (`bootstrap_get_root`,
+`bootstrap_look_up_per_user` for the user, `task_set_bootstrap_port`) and
+update libSystem's `bootstrap_port`, always. Everything they start
+inherits the per-user port: the agent, its tools, hooks and a daemon a
+holder starts. While the user is logged in the keychain stays reachable.
+If a call fails the process runs on with the port it had: a detached
+holder writes the reason to its log, the daemon to `daemon.log`, a wrapper
+start records it (`last_run_bootstrap_error`) and the daemon reports it
+(`daemon.bootstrap_error`). The calls go through `ebitengine/purego`, so
+the binary stays `CGO_ENABLED=0`.
+
+In a terminal (not `--detached`), just before the program starts, `stagent
+run` prints one line to stderr when the daemon holds agent sessions on the
+host — harness other than `other`, not ended, `mode` `detached` and no
+client attached — naming their number and `stagent ls`, e.g. ``stagent: 2
+agent sessions are held on this host; `stagent ls` lists them``. It prints
+this whatever the handoff choice, and nothing when there are none or the
+daemon does not answer within a fraction of a second (it is not started
+for this).
+
+The shell wrappers (`integrate --shell-wrapper`; bash/zsh block, fish file,
+PowerShell profile block) define functions `claude`, `codex` and `omp`
+that run the real command as `stagent run --handoff=auto -- <name>
+<args…>` when the shell is interactive, stdin and stdout are terminals, the
+shell is not already inside a stagent session (`STAGENT_SESSION_ID` unset)
+and the stagent binary exists. Non-interactive invocations run the real
+command directly: claude with `-p` / `--print` anywhere in its arguments,
+codex whose first argument is `exec` / `e`, omp with `-p` / `--print` or a
+`--mode` (`--mode X` or `--mode=X`) other than `text`. The block also
+exports `STAGENT_SHELL_WRAPPER=1`, marking shells that have the wrapper.
+The wrapper itself does not look at `STAGENT_HANDOFF`; `stagent run
+--handoff=auto` does.
 
 `stagent ls [--json]` lists the daemon's sessions (`sessions.list`), most
 recent `last_activity_at` first: a table of ID, MODE, STATE, LAST ACTIVITY
-(relative), COMMAND and TITLE/CWD (the title the program set, else the
-working directory), or with `--json` the `{sessions[]}` result on one line.
+(relative), PC INPUT (`last_local_input_at`, relative; `-` when unset),
+COMMAND and TITLE/CWD (the title the program set, else the working
+directory), or with `--json` the `{sessions[]}` result on one line.
 Without a running daemon the list is empty and the exit status 0.
 
 `stagent attach [ID | --last] [--detach-key ctrl-X]` attaches the terminal
@@ -573,3 +1059,40 @@ JSON as its last argument. The omp extension runs `stagent hook omp` with
 using Claude's event names (`SessionStart`, `UserPromptSubmit`, `Stop`,
 `SessionEnd`). A hook never fails the harness: when the daemon is
 unreachable it exits 0 without output.
+A hook run with `CLAUDE_CODE_BRIDGE_SESSION_ID` set (claude connected to
+Remote Control) tells the daemon so (`notify.skip_when_claude_app_notifies`).
+
+### Agents without a stagent session
+
+Outside a stagent session (`STAGENT_SESSION_ID` unset) `stagent hook` also
+tells the daemon how the agent was started (`hook.event` params, local IPC
+only):
+
+| param | value |
+|---|---|
+| `shell_wrapper` | `STAGENT_SHELL_WRAPPER` is set: the shell has the wrapper's rc block |
+| `entrypoint` | `CLAUDE_CODE_ENTRYPOINT` (Claude Code: `cli`, `sdk-cli`, `sdk-ts`, `claude-vscode`, …) |
+| `parent_tty` | the harness — the hook's nearest ancestor that is not a shell (the installed Codex command keeps `sh -c` in between) — reads a terminal: its stdin (`/proc/<pid>/fd/0`) on Linux, its controlling terminal (as `ps -o tty=`) on macOS; absent when unknown (Windows) |
+| `parent_batch` | the harness's command line asks for a non-interactive run by the shell wrapper's rule (`claude -p` / `--print`; `codex exec` / `e` as the first argument; `omp -p` / `--print` or `--mode` other than `text`) |
+
+`parent_batch` covers what the terminal cannot tell: `codex exec` or `omp
+-p` typed in a terminal read it like an interactive start.
+
+A hook the daemon finds no session for is recorded per conversation (the
+payload's `session_id`; none without it) as an `UnwrappedLaunch`, in memory
+only, and the watchers get `unwrapped.updated`:
+
+| hook | `reason` |
+|---|---|
+| Claude Code `entrypoint` `sdk-*` | not recorded (non-interactive) |
+| Claude Code `entrypoint` other than `cli` | `ide` |
+| codex / omp (and Claude Code without `entrypoint`) with `parent_tty` false or `parent_batch` | not recorded (non-interactive) |
+| otherwise, `shell_wrapper` set | `bypassed` |
+| otherwise | `old_terminal` |
+
+Every hook of a recorded conversation updates `last_activity_at` (watchers
+get it at most once a minute unless something else changed). The record
+goes away at the conversation's `SessionEnd` (Claude Code; omp's
+`session_shutdown`), 12 hours after its last hook (Codex sends no end), when
+a stagent session carries the conversation, and with the daemon; nothing is
+written to disk. Recording changes nothing else about the hook.

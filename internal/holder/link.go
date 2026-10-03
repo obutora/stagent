@@ -27,8 +27,9 @@ type queuedNote struct {
 
 // daemonLink keeps the holder registered with the daemon: it registers the
 // full session, then sends coalesced holder.update patches, holder.notify
-// for program notifications and finally holder.ended. It redials with
-// backoff (re-registering) whenever the daemon goes away; the session keeps
+// for program notifications, holder.prompt_gone for the prompt watch the
+// daemon asked for, and finally holder.ended. It redials with backoff
+// (re-registering) whenever the daemon goes away; the session keeps
 // running meanwhile. Nothing here is ever waited on by the output path.
 type daemonLink struct {
 	h    *Holder
@@ -43,11 +44,14 @@ type daemonLink struct {
 	wakeCh  chan struct{}
 	endCh   chan struct{}
 	endOnce sync.Once
-	code    int // exit code, set before endCh closes
+	code    int  // exit code, set before endCh closes
+	hungUp  bool // a client hung the program up, set before endCh closes
 	done    chan struct{}
 
 	mu    sync.Mutex
 	notes []queuedNote
+	// goneGen is a holder.prompt_gone waiting to be sent (0: none).
+	goneGen int64
 
 	failing bool // logging: only transitions are logged
 }
@@ -78,11 +82,21 @@ func (l *daemonLink) notify(p wire.HolderNotifyParams) {
 	l.wake()
 }
 
-// end reports the exit and makes run return after sending holder.ended (or
-// right away when no daemon is connected).
-func (l *daemonLink) end(code int) {
+// promptGone queues holder.prompt_gone for watch gen. Reports not sent yet
+// fold into the newest one: it covers the approvals the older ones did.
+func (l *daemonLink) promptGone(gen int64) {
+	l.mu.Lock()
+	l.goneGen = max(l.goneGen, gen)
+	l.mu.Unlock()
+	l.wake()
+}
+
+// end reports the exit (hungUp: after a client's session.signal hangup)
+// and makes run return after sending holder.ended (or right away when no
+// daemon is connected).
+func (l *daemonLink) end(code int, hungUp bool) {
 	l.endOnce.Do(func() {
-		l.code = code
+		l.code, l.hungUp = code, hungUp
 		close(l.endCh)
 	})
 }
@@ -134,9 +148,21 @@ func (l *daemonLink) run() {
 // session registers over conn and serves it until the connection drops
 // (error) or the session ended and holder.ended was sent (nil).
 func (l *daemonLink) session(conn net.Conn) (registered bool, err error) {
+	// A prompt watch belongs to the connection that asked for it: a daemon
+	// that restarted has none, one we reconnect to asks again.
+	l.h.prompt.stop()
+	l.mu.Lock()
+	l.goneGen = 0
+	l.mu.Unlock()
 	c := rpc.NewClient(conn, func(m *wire.Msg) {
-		if m.Method == wire.MethodDaemonStopping {
+		switch m.Method {
+		case wire.MethodDaemonStopping:
 			l.stopped.Store(true)
+		case wire.MethodHolderPromptWatch:
+			var p wire.HolderPromptWatchParams
+			if rpc.Decode(m, &p) == nil && p.ID == l.h.id {
+				l.h.prompt.set(p.Gen, p.On)
+			}
 		}
 	})
 	defer c.Close()
@@ -170,7 +196,7 @@ func (l *daemonLink) session(conn net.Conn) (registered bool, err error) {
 			if err := l.flush(c, &sent); err != nil {
 				return true, err
 			}
-			if err := c.Notify(wire.MethodHolderEnded, wire.ClosedParams{ID: l.h.id, ExitCode: l.code}); err != nil {
+			if err := c.Notify(wire.MethodHolderEnded, wire.ClosedParams{ID: l.h.id, ExitCode: l.code, HungUp: l.hungUp}); err != nil {
 				return true, err
 			}
 			return true, nil
@@ -196,6 +222,8 @@ func (l *daemonLink) flush(c *rpc.Client, sent *wire.Session) error {
 	l.mu.Lock()
 	notes := l.notes
 	l.notes = nil
+	goneGen := l.goneGen
+	l.goneGen = 0
 	l.mu.Unlock()
 	for _, n := range notes {
 		if time.Since(n.at) > noteMaxAge {
@@ -204,6 +232,9 @@ func (l *daemonLink) flush(c *rpc.Client, sent *wire.Session) error {
 		if err := c.Notify(wire.MethodHolderNotify, n.p); err != nil {
 			return err
 		}
+	}
+	if goneGen != 0 {
+		return c.Notify(wire.MethodHolderPromptGone, wire.HolderPromptGoneParams{ID: l.h.id, Gen: goneGen})
 	}
 	return nil
 }
@@ -223,12 +254,24 @@ func sessionPatch(old, cur *wire.Session) (wire.SessionPatch, bool) {
 		p.LastActivityAt = &cur.LastActivityAt
 		changed = true
 	}
+	if old.LastLocalInputAt != cur.LastLocalInputAt {
+		p.LastLocalInputAt = &cur.LastLocalInputAt
+		changed = true
+	}
 	if old.Cols != cur.Cols || old.Rows != cur.Rows {
 		p.Cols, p.Rows = &cur.Cols, &cur.Rows
 		changed = true
 	}
 	if old.Mode != cur.Mode {
 		p.Mode = &cur.Mode
+		changed = true
+	}
+	if old.Attached != cur.Attached {
+		p.Attached = &cur.Attached
+		changed = true
+	}
+	if old.Focused != cur.Focused {
+		p.Focused = &cur.Focused
 		changed = true
 	}
 	return p, changed

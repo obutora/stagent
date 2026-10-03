@@ -22,26 +22,37 @@ func list() ([]Proc, error) {
 	}
 	out := make([]Proc, 0, len(kps))
 	for i := range kps {
-		k := &kps[i]
-		name := k.Proc.P_comm[:]
-		if n := bytes.IndexByte(name, 0); n >= 0 {
-			name = name[:n]
-		}
-		p := Proc{
-			PID:   int(k.Proc.P_pid),
-			PPID:  int(k.Eproc.Ppid),
-			Name:  string(name),
-			Pgrp:  int(k.Eproc.Pgid),
-			Tpgid: int(k.Eproc.Tpgid),
-			Start: time.Unix(k.Proc.P_starttime.Sec, int64(k.Proc.P_starttime.Usec)*1000),
-		}
-		// NODEV (-1) without a controlling terminal.
-		if k.Eproc.Tdev != -1 {
-			p.TTY = uint64(uint32(k.Eproc.Tdev))
-		}
-		out = append(out, p)
+		out = append(out, kinfoProc(&kps[i]))
 	}
 	return out, nil
+}
+
+func get(pid int) (Proc, bool) {
+	k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil || int(k.Proc.P_pid) != pid {
+		return Proc{}, false
+	}
+	return kinfoProc(k), true
+}
+
+func kinfoProc(k *unix.KinfoProc) Proc {
+	name := k.Proc.P_comm[:]
+	if n := bytes.IndexByte(name, 0); n >= 0 {
+		name = name[:n]
+	}
+	p := Proc{
+		PID:   int(k.Proc.P_pid),
+		PPID:  int(k.Eproc.Ppid),
+		Name:  string(name),
+		Pgrp:  int(k.Eproc.Pgid),
+		Tpgid: int(k.Eproc.Tpgid),
+		Start: time.Unix(k.Proc.P_starttime.Sec, int64(k.Proc.P_starttime.Usec)*1000),
+	}
+	// NODEV (-1) without a controlling terminal.
+	if k.Eproc.Tdev != -1 {
+		p.TTY = uint64(uint32(k.Eproc.Tdev))
+	}
+	return p
 }
 
 type osSource struct{}
@@ -107,6 +118,14 @@ func (osSource) Owner(pid int) (string, error) {
 		return "", errMixedUIDs
 	}
 	return strconv.FormatUint(uint64(e.Ucred.Uid), 10), nil
+}
+
+// ReadsTerminal reports whether pid has a controlling terminal, what `ps
+// -o tty=` shows: another process's stdin is only reachable through
+// libproc, which needs cgo. known is false when pid cannot be looked up.
+func ReadsTerminal(pid int) (tty, known bool) {
+	p, ok := get(pid)
+	return p.TTY != 0, ok
 }
 
 // ttyGuess names a pseudo-terminal from its device number: /dev/ttys<nnn>

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/proc"
@@ -82,6 +83,8 @@ type env struct {
 	// daemonAt reaches a daemon listening at another address (one started
 	// by an earlier version with a different layout).
 	daemonAt func(addr string) daemonAPI
+	// spawnDaemon starts this binary's daemon detached (no login service).
+	spawnDaemon func() error
 
 	lookPath func(string) (string, error)
 	getenv   func(string) string
@@ -109,19 +112,20 @@ func newEnv() (*env, error) {
 		return nil, err
 	}
 	e := &env{
-		l:        l,
-		goos:     runtime.GOOS,
-		run:      execRunner{},
-		daemon:   ipcDaemon{l.DaemonAddr},
-		daemonAt: func(addr string) daemonAPI { return ipcDaemon{addr} },
-		lookPath: exec.LookPath,
-		getenv:   os.Getenv,
-		now:      time.Now,
-		uid:      os.Getuid(),
-		kill:     killProcess,
-		alive:    proc.Alive,
-		settle:   3 * time.Second,
-		sid:      currentSID(),
+		l:           l,
+		goos:        runtime.GOOS,
+		run:         execRunner{},
+		daemon:      ipcDaemon{l.DaemonAddr},
+		daemonAt:    func(addr string) daemonAPI { return ipcDaemon{addr} },
+		spawnDaemon: func() error { return daemonclient.StartDaemon(l) },
+		lookPath:    exec.LookPath,
+		getenv:      os.Getenv,
+		now:         time.Now,
+		uid:         os.Getuid(),
+		kill:        killProcess,
+		alive:       proc.Alive,
+		settle:      3 * time.Second,
+		sid:         currentSID(),
 	}
 	e.loadManifest()
 	return e, nil

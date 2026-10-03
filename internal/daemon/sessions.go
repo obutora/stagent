@@ -1,11 +1,11 @@
 package daemon
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/obutora/stagent/internal/notify"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -29,15 +29,43 @@ type session struct {
 	pendingSince time.Time
 
 	lastTerminal time.Time // rate limit of holder.notify
+
+	// base is the harness the session registered with. A session started
+	// as another program (a shell) is promoted by hooks to the agent that
+	// runs in it, and returns to base once that agent is gone (probe.go).
+	base string
+	// hookGen counts the hooks applied to the session; a probe result
+	// taken before a newer hook is stale.
+	hookGen int
+	// agentSeen: a probe found the promoted agent running; missed counts
+	// the probes that did not since the promotion.
+	agentSeen bool
+	missed    int
+
+	// promptGen is the session holder's current prompt watch (0: none),
+	// kept while a claude approval of the session holds its hook.
+	promptGen int64
+
+	// Pushes (push.go). remoteControl: the session's latest hook ran
+	// connected to Claude's Remote Control. graceTimers hold pushes back
+	// (passthrough); pushGen voids them when the session settles. pushed:
+	// a push of the session may be on the phone (cleared when it
+	// settles); pushFromHook: its latest push came from a hook-derived
+	// state.
+	remoteControl bool
+	graceTimers   []*time.Timer
+	pushGen       int
+	pushed        bool
+	pushFromHook  bool
 }
 
 func (s *session) stopTimers() {
-	for _, t := range []*time.Timer{s.gone, s.remove, s.debounce} {
+	for _, t := range append([]*time.Timer{s.gone, s.remove, s.debounce}, s.graceTimers...) {
 		if t != nil {
 			t.Stop()
 		}
 	}
-	s.gone, s.remove, s.debounce = nil, nil, nil
+	s.gone, s.remove, s.debounce, s.graceTimers = nil, nil, nil, nil
 }
 
 func nowMs() int64 { return time.Now().UnixMilli() }
@@ -64,6 +92,7 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 	res := wire.HolderRegisterResult{IdleAfterMs: d.eff.IdleAfterMs}
 
 	if s := d.sessions[ws.ID]; s != nil && !s.ended {
+		s.base = ws.Harness
 		if s.gone != nil {
 			s.gone.Stop()
 			s.gone = nil
@@ -88,12 +117,17 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 		s.track = s.track.holderReport(ws.State, ws.StateSource, now)
 		d.recomputeLocked(s, true)
 		d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+		// A holder that reconnected while an approval was pending
+		// watches for its prompt again.
+		if s.promptGen != 0 {
+			d.sendPromptWatchLocked(s, true)
+		}
 		return res, nil
 	}
 	if old := d.sessions[ws.ID]; old != nil {
 		old.stopTimers()
 	}
-	s := &session{s: ws, holder: cs}
+	s := &session{s: ws, holder: cs, base: ws.Harness}
 	s.track = stateTrack{}.holderReport(ws.State, ws.StateSource, now)
 	s.s.State, s.s.StateSource = s.track.merged()
 	s.logged = s.s.State
@@ -140,6 +174,12 @@ func (d *Daemon) holderUpdate(cs *connState, p wire.SessionPatch) {
 	if p.LastActivityAt != nil && *p.LastActivityAt != s.s.LastActivityAt {
 		s.s.LastActivityAt, activity = *p.LastActivityAt, true
 	}
+	// Keystrokes at the session's own terminal are what the app checks
+	// before typing into the agent, so they go out at once; the holder
+	// already sends them at most once per second.
+	if p.LastLocalInputAt != nil && *p.LastLocalInputAt != s.s.LastLocalInputAt {
+		s.s.LastLocalInputAt, changed = *p.LastLocalInputAt, true
+	}
 	if p.Cols != nil && *p.Cols != s.s.Cols {
 		s.s.Cols, changed = *p.Cols, true
 	}
@@ -148,6 +188,12 @@ func (d *Daemon) holderUpdate(cs *connState, p wire.SessionPatch) {
 	}
 	if p.Mode != nil && *p.Mode != s.s.Mode {
 		s.s.Mode, changed = *p.Mode, true
+	}
+	if p.Attached != nil && *p.Attached != s.s.Attached {
+		s.s.Attached, changed = *p.Attached, true
+	}
+	if p.Focused != nil && *p.Focused != s.s.Focused {
+		s.s.Focused, changed = *p.Focused, true
 	}
 	if p.State != nil {
 		source := ""
@@ -187,6 +233,7 @@ func (d *Daemon) holderNotify(cs *connState, p wire.HolderNotifyParams) {
 		return
 	}
 	s.lastTerminal = now
+	lang := d.eff.Notify.Lang
 	body := strings.TrimSpace(p.Body)
 	if t := strings.TrimSpace(p.Title); t != "" {
 		if body != "" {
@@ -196,20 +243,20 @@ func (d *Daemon) holderNotify(cs *connState, p wire.HolderNotifyParams) {
 		}
 	}
 	if body == "" {
-		body = "Bell"
+		body = notify.Text(lang, notify.PhraseBell)
 	}
 	n := wire.NotificationData{Title: sessionLabel(s.s.Harness, s.s.Cwd), Body: clipLine(body, 200), Level: wire.LevelInfo, Reason: reasonTerminal}
 	// The program's text stays in the app; pushes carry a fixed phrase.
 	push := n
-	push.Body = "Terminal notification"
-	d.notifyLocked(s.s.ID, n, &push)
+	push.Body = notify.Text(lang, notify.PhraseTerminal)
+	d.notifyLocked(s, n, &push)
 }
 
 func (d *Daemon) holderEnded(cs *connState, p wire.ClosedParams) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if s := d.liveSessionLocked(cs, p.ID); s != nil {
-		d.endLocked(s, p.ExitCode, false)
+		d.endLocked(s, p.ExitCode, false, p.HungUp)
 	}
 }
 
@@ -232,28 +279,34 @@ func (d *Daemon) holderGoneLocked(cs *connState) {
 			return
 		}
 		s.gone = nil
-		d.endLocked(s, -1, true)
+		d.endLocked(s, -1, true, false)
 	})
 }
 
 // endLocked records the end of a session: final state, session_ended, an
-// exited notification, and removal from the list after EndedLinger.
-func (d *Daemon) endLocked(s *session, exitCode int, lost bool) {
+// exited notification, and removal from the list after EndedLinger. An
+// exit is abnormal when the session was lost or its code is not 0, unless
+// a client hung it up (hungUp: the app ending a kept shell).
+func (d *Daemon) endLocked(s *session, exitCode int, lost, hungUp bool) {
 	s.ended = true
 	code := exitCode
 	s.s.ExitCode = &code
+	s.s.Attached = false // its holder and clients are gone
+	s.s.Focused = false
 	s.track = s.track.exited()
 	d.recomputeLocked(s, true)
 	d.settleLocked(s) // the final transition is recorded right away
-	d.emitLocked(s.s.ID, wire.EventSessionEnded, wire.SessionEndedData{ExitCode: exitCode})
-	n := wire.NotificationData{Title: sessionLabel(s.s.Harness, s.s.Cwd), Level: wire.LevelInfo, Reason: reasonExited, Body: "Exited"}
+	d.settlePushLocked(s)
+	d.emitLocked(s.s.ID, wire.EventSessionEnded, wire.SessionEndedData{ExitCode: exitCode, HungUp: hungUp})
+	lang := d.eff.Notify.Lang
+	n := wire.NotificationData{Title: sessionLabel(s.s.Harness, s.s.Cwd), Level: wire.LevelInfo, Reason: reasonExited, Body: notify.Text(lang, notify.PhraseExited)}
 	switch {
 	case lost:
-		n.Level, n.Body = wire.LevelWarn, "Session lost (its holder stopped)"
-	case exitCode != 0:
-		n.Level, n.Body = wire.LevelWarn, fmt.Sprintf("Exited with code %d", exitCode)
+		n.Level, n.Body = wire.LevelWarn, notify.Text(lang, notify.PhraseSessionLost)
+	case exitCode != 0 && !hungUp:
+		n.Level, n.Body = wire.LevelWarn, notify.Text(lang, notify.PhraseExitedCode, exitCode)
 	}
-	d.notifyLocked(s.s.ID, n, nil)
+	d.notifyLocked(s, n, nil)
 	d.broadcastLocked(wire.NotifySessionUpdated, s.s)
 	s.remove = time.AfterFunc(d.opts.EndedLinger, func() {
 		d.mu.Lock()
@@ -269,8 +322,10 @@ func (d *Daemon) endLocked(s *session, exitCode int, lost bool) {
 
 // recomputeLocked derives the session state from its track. On a change it
 // updates the session, cancels approvals the terminal already answered
-// (when cancelApprovals) and (re)starts the debounce of state_changed. It
-// reports whether the state changed; the caller broadcasts.
+// (when cancelApprovals) and (re)starts the debounce of state_changed; a
+// hook saying the agent works again (a prompt was submitted) settles the
+// session's pushes. It reports whether the state changed; the caller
+// broadcasts.
 func (d *Daemon) recomputeLocked(s *session, cancelApprovals bool) bool {
 	state, source := s.track.merged()
 	if state == s.s.State && source == s.s.StateSource {
@@ -279,6 +334,9 @@ func (d *Daemon) recomputeLocked(s *session, cancelApprovals bool) bool {
 	s.s.State, s.s.StateSource = state, source
 	if cancelApprovals && (state == wire.StateWorking || state == wire.StateExited) {
 		d.cancelApprovalsLocked(s.s.ID)
+	}
+	if state == wire.StateWorking && source == wire.SourceHook {
+		d.settlePushLocked(s)
 	}
 	d.debounceLocked(s)
 	return true
@@ -324,18 +382,25 @@ func (d *Daemon) settleLocked(s *session) {
 	}
 	s.logged = to
 	d.emitLocked(s.s.ID, wire.EventStateChanged, wire.StateChangedData{From: from, To: to, Source: s.s.StateSource})
+	// Back to working on the terminal's word settles what the session's
+	// terminal-derived notifications were about; hook-derived ones wait
+	// for the hooks (recomputeLocked, approvals), as a redraw is output too.
+	if to == wire.StateWorking && s.s.StateSource != wire.SourceHook && !s.pushFromHook {
+		d.settlePushLocked(s)
+	}
+	lang := d.eff.Notify.Lang
 	switch notifyReasonForTransition(from, to) {
 	case reasonWaitingInput:
-		d.notifyLocked(s.s.ID, wire.NotificationData{
-			Title: sessionLabel(s.s.Harness, s.s.Cwd), Body: "Waiting for input",
+		d.notifyLocked(s, wire.NotificationData{
+			Title: sessionLabel(s.s.Harness, s.s.Cwd), Body: notify.Text(lang, notify.PhraseWaitingInput),
 			Level: wire.LevelInfo, Reason: reasonWaitingInput,
 		}, nil)
 	case reasonNeedsApproval:
-		body := "Needs approval"
+		body := notify.Text(lang, notify.PhraseNeedsApproval)
 		if ap := d.firstApprovalLocked(s.s.ID); ap != nil && ap.a.ToolName != "" {
 			body += ": " + ap.a.ToolName
 		}
-		d.notifyLocked(s.s.ID, wire.NotificationData{
+		d.notifyLocked(s, wire.NotificationData{
 			Title: sessionLabel(s.s.Harness, s.s.Cwd), Body: body,
 			Level: wire.LevelInfo, Reason: reasonNeedsApproval,
 		}, nil)

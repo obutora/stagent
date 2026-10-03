@@ -22,20 +22,28 @@ const EnvHome = "STAGENT_HOME"
 
 // Layout is the resolved file-system layout of one installation.
 type Layout struct {
-	Home       string // user home (or STAGENT_HOME)
-	Root       string // <Home>/.ssh-term/agent
-	BinDir     string // <Root>/bin
-	Bin        string // <BinDir>/stagent[.exe]
-	Manifest   string // <Root>/manifest.json
-	Config     string // <Root>/config.json
-	StateDir   string // <Root>/state
-	EventLog   string // <StateDir>/events.log (segments get a numeric suffix)
-	Index      string // <StateDir>/index.json — conversation list cache
-	DataDir    string // per-session scrollback segments; local disk even when Home is on NFS
-	LogDir     string // <Root>/log — stderr of detached processes
-	RunDir     string // sockets (unix) / lock and pid files (all OSes), 0700
-	DaemonAddr string // IPC address of the daemon
-	UploadsDir string // <Home>/.ssh-term/uploads — files sent from the app
+	Home     string // user home (or STAGENT_HOME)
+	Root     string // <Home>/.ssh-term/agent
+	BinDir   string // <Root>/bin
+	Bin      string // <BinDir>/stagent[.exe]
+	Manifest string // <Root>/manifest.json
+	Config   string // <Root>/config.json
+	HostID   string // <Root>/host-id — the host's random id (hostid)
+	StateDir string // <Root>/state
+	EventLog string // <StateDir>/events.log (segments get a numeric suffix)
+	Index    string // <StateDir>/index.json — conversation list cache
+	// WrapperRun records the last start of `stagent run --handoff=auto`,
+	// which only the shell wrappers pass (WrapperRunRecord):
+	// <StateDir>/wrapper-run
+	WrapperRun string
+	// NotifyErrors holds the last failed push per channel:
+	// <StateDir>/notify-errors.json
+	NotifyErrors string
+	DataDir      string // per-session scrollback segments; local disk even when Home is on NFS
+	LogDir       string // <Root>/log — stderr of detached processes
+	RunDir       string // sockets (unix) / lock and pid files (all OSes), 0700
+	DaemonAddr   string // IPC address of the daemon
+	UploadsDir   string // <Home>/.ssh-term/uploads — files sent from the app
 	// DataOnNetworkFS reports that Home is on a network file system and
 	// DataDir was moved to local disk.
 	DataOnNetworkFS bool
@@ -76,6 +84,7 @@ func resolve(home string, isolated bool) (*Layout, error) {
 		Bin:        filepath.Join(root, "bin", exe),
 		Manifest:   filepath.Join(root, "manifest.json"),
 		Config:     filepath.Join(root, "config.json"),
+		HostID:     filepath.Join(root, "host-id"),
 		StateDir:   filepath.Join(root, "state"),
 		LogDir:     filepath.Join(root, "log"),
 		UploadsDir: filepath.Join(home, ".ssh-term", "uploads"),
@@ -83,6 +92,8 @@ func resolve(home string, isolated bool) (*Layout, error) {
 	}
 	l.EventLog = filepath.Join(l.StateDir, "events.log")
 	l.Index = filepath.Join(l.StateDir, "index.json")
+	l.WrapperRun = filepath.Join(l.StateDir, "wrapper-run")
+	l.NotifyErrors = filepath.Join(l.StateDir, "notify-errors.json")
 	l.DataDir = filepath.Join(l.StateDir, "sessions")
 	if !isolated && isNetworkFS(home) {
 		l.DataOnNetworkFS = true

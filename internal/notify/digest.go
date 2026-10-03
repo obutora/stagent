@@ -1,7 +1,7 @@
 package notify
 
 import (
-	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -9,12 +9,11 @@ import (
 	"github.com/obutora/stagent/internal/wire"
 )
 
-// Digester folds the notifications arriving within one window into a single
-// push: the first notification opens a window, and when it closes the
-// collected notifications are flushed as one (unchanged if it was alone,
-// otherwise a "digest" with Count).
+// Digester collects the notifications arriving within one window: the
+// first notification opens a window, and when it closes the collected
+// notifications are flushed together (the caller folds them, see Fold).
 type Digester struct {
-	flush     func(wire.NotificationData)
+	flush     func([]wire.NotificationData)
 	afterFunc func(time.Duration, func()) func() bool // returns stop
 
 	mu      sync.Mutex
@@ -22,8 +21,9 @@ type Digester struct {
 	stop    func() bool
 }
 
-// NewDigester calls flush for every closed window, from a timer goroutine.
-func NewDigester(flush func(wire.NotificationData)) *Digester {
+// NewDigester calls flush for every closed window that still holds
+// notifications, from a timer goroutine.
+func NewDigester(flush func([]wire.NotificationData)) *Digester {
 	return &Digester{
 		flush: flush,
 		afterFunc: func(d time.Duration, f func()) func() bool {
@@ -43,6 +43,16 @@ func (d *Digester) Add(n wire.NotificationData, window time.Duration) {
 	}
 }
 
+// Drop removes the notifications of sessionID from the current window:
+// the session settled what they were about before they went out.
+func (d *Digester) Drop(sessionID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.pending = slices.DeleteFunc(d.pending, func(n wire.NotificationData) bool {
+		return n.SessionID == sessionID
+	})
+}
+
 // Flush closes the current window now (shutdown).
 func (d *Digester) Flush() {
 	d.mu.Lock()
@@ -59,7 +69,7 @@ func (d *Digester) fire() {
 	d.pending, d.stop = nil, nil
 	d.mu.Unlock()
 	if len(ns) > 0 {
-		d.flush(Fold(ns))
+		d.flush(ns)
 	}
 }
 
@@ -68,8 +78,8 @@ const digestItems = 5
 
 // Fold combines notifications into one. A single notification is returned
 // unchanged; several become reason "digest" with Count set, level warn if
-// any was a warning.
-func Fold(ns []wire.NotificationData) wire.NotificationData {
+// any was a warning, titled in lang.
+func Fold(ns []wire.NotificationData, lang string) wire.NotificationData {
 	if len(ns) == 1 {
 		return ns[0]
 	}
@@ -98,19 +108,19 @@ func Fold(ns []wire.NotificationData) wire.NotificationData {
 		}
 	}
 	if len(ns) > digestItems {
-		lines = append(lines, fmt.Sprintf("…and %d more", len(ns)-digestItems))
+		lines = append(lines, Text(lang, PhraseDigestMore, len(ns)-digestItems))
 	}
-	title := fmt.Sprintf("%d agent notifications", count)
+	title := Text(lang, PhraseDigest, count)
 	if uniform {
 		switch reason {
 		case "turn_complete":
-			title = fmt.Sprintf("%d agents finished their turn", count)
+			title = Text(lang, PhraseDigestTurnComplete, count)
 		case "needs_approval":
-			title = fmt.Sprintf("%d approvals requested", count)
+			title = Text(lang, PhraseDigestNeedsApproval, count)
 		case "waiting_input":
-			title = fmt.Sprintf("%d agents waiting for input", count)
+			title = Text(lang, PhraseDigestWaitingInput, count)
 		case "exited":
-			title = fmt.Sprintf("%d sessions exited", count)
+			title = Text(lang, PhraseDigestExited, count)
 		}
 	}
 	return wire.NotificationData{

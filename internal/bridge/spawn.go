@@ -111,37 +111,14 @@ func loginShell(env []string) string {
 }
 
 // startHolder starts `exe args` as a detached holder and waits until it
-// answers. Where holders must leave the login session to survive it (see
-// holderScope) the start goes through systemd-run first; if that process
-// exits before the holder answers (systemd-run failed, e.g. no user manager
-// reachable), the holder is started plainly, and when that works this
-// bridge stops using the scope.
+// answers. The holder leaves the bridge's login session itself where that
+// is needed (logind.Escape in `stagent run`).
 func (b *Bridge) startHolder(id, exe string, args, env []string, logPath string) (*wire.Session, error) {
-	b.scopeOnce.Do(func() { b.scope = b.scopeArgv() })
-	if b.scope == nil {
-		return b.startPlain(id, exe, args, env, logPath)
-	}
-	argv := append(append(slices.Clone(b.scope[1:]), exe), args...)
-	if pid, err := b.spawnProc(b.scope[0], argv, b.l.Home, env, logPath); err == nil {
-		s, exited, err := b.awaitHolder(id, pid, logPath)
-		if !exited {
-			return s, err
-		}
-	}
-	s, err := b.startPlain(id, exe, args, env, logPath)
-	if err == nil {
-		b.scope = nil
-	}
-	return s, err
-}
-
-func (b *Bridge) startPlain(id, exe string, args, env []string, logPath string) (*wire.Session, error) {
 	pid, err := b.spawnProc(exe, args, b.l.Home, env, logPath)
 	if err != nil {
 		return nil, fmt.Errorf("start holder: %w", err)
 	}
-	s, _, err := b.awaitHolder(id, pid, logPath)
-	return s, err
+	return b.awaitHolder(id, pid, logPath)
 }
 
 // sessionEnv is the environment detached sessions start from: the login
@@ -160,9 +137,8 @@ func (b *Bridge) sessionEnv() []string {
 
 // awaitHolder waits until the new holder answers session.info and keeps
 // that connection for later session requests. pid is 0 when the platform
-// could not report it (Windows Task Scheduler fallback). The bool reports
-// that the process ended before answering.
-func (b *Bridge) awaitHolder(id string, pid int, logPath string) (*wire.Session, bool, error) {
+// could not report it (Windows Task Scheduler fallback).
+func (b *Bridge) awaitHolder(id string, pid int, logPath string) (*wire.Session, error) {
 	ctx, cancel := context.WithTimeout(b.ctx, b.spawnWait)
 	defer cancel()
 	for {
@@ -171,21 +147,21 @@ func (b *Bridge) awaitHolder(id string, pid int, logPath string) (*wire.Session,
 			var s wire.Session
 			if err := c.Call(ctx, wire.MethodSessionInfo, wire.SessionRef{ID: id}, &s); err == nil {
 				if _, err := b.adoptHolder(id, c); err != nil {
-					return nil, false, err
+					return nil, err
 				}
-				return &s, false, nil
+				return &s, nil
 			}
 			c.Close()
 		}
 		if pid > 0 && !proc.Alive(pid) {
-			return nil, true, wire.Errorf(wire.ErrInternal, "holder exited during start%s", logTail(logPath))
+			return nil, wire.Errorf(wire.ErrInternal, "holder exited during start%s", logTail(logPath))
 		}
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return nil, false, wire.Errorf(wire.ErrUnavailable, "holder did not answer within %s%s", b.spawnWait, logTail(logPath))
+				return nil, wire.Errorf(wire.ErrUnavailable, "holder did not answer within %s%s", b.spawnWait, logTail(logPath))
 			}
-			return nil, false, ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(20 * time.Millisecond):
 		}
 	}

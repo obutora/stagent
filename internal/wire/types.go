@@ -51,6 +51,7 @@ type Session struct {
 	PID            int      `json:"pid"` // child (agent) pid
 	HolderPID      int      `json:"holder_pid"`
 	Mode           string   `json:"mode"`
+	Attached       bool     `json:"attached"` // a session.attach client is attached (not passthrough's own terminal)
 	State          string   `json:"state"`
 	StateSource    string   `json:"state_source"`
 	Title          string   `json:"title,omitempty"` // OSC 0/2 window title
@@ -61,7 +62,20 @@ type Session struct {
 	Rows           int      `json:"rows"`
 	StartedAt      int64    `json:"started_at"`       // unix ms
 	LastActivityAt int64    `json:"last_activity_at"` // unix ms, last PTY output
-	ExitCode       *int     `json:"exit_code,omitempty"`
+	// LastLocalInputAt is when a terminal on the host last typed anything
+	// into the session, unix ms: the passthrough session's own terminal or
+	// a `stagent attach` (session.input with local); 0 (omitted) until one
+	// has. Terminal replies, focus and mouse reports do not count, nor does
+	// the app's session.input.
+	LastLocalInputAt int64 `json:"last_local_input_at,omitempty"`
+	// Focused: one of those terminals last reported focus in (ESC [ I,
+	// sent once the program enabled focus reporting) and not focus out
+	// since. Terminals that report no focus leave it false.
+	Focused bool `json:"focused,omitempty"`
+	// PresenceFile is the holder's $CLAUDE_CLIENT_PRESENCE_FILE (omitted
+	// when unset): while that file exists, someone is at the session.
+	PresenceFile string `json:"presence_file,omitempty"`
+	ExitCode     *int   `json:"exit_code,omitempty"`
 }
 
 // NewSessionID returns a random 16-hex-char id (paths.sessionIDLen).
@@ -92,6 +106,14 @@ func DetectHarness(argv []string) string {
 // EnvSessionID is exported to the agent process so hooks can name the PTY
 // session they belong to.
 const EnvSessionID = "STAGENT_SESSION_ID"
+
+// Environment variables claude sets (stagent only reads them): the
+// session's Remote Control connection, seen by its hooks, and a file whose
+// existence says that a client is at the session.
+const (
+	EnvClaudeBridgeSessionID = "CLAUDE_CODE_BRIDGE_SESSION_ID"
+	EnvClaudePresenceFile    = "CLAUDE_CLIENT_PRESENCE_FILE"
+)
 
 // ---------------------------------------------------------------------------
 // Events (persisted in the event log, replayed with `since`)
@@ -126,6 +148,9 @@ type SessionStartedData struct {
 // SessionEndedData is Event.Data for session_ended.
 type SessionEndedData struct {
 	ExitCode int `json:"exit_code"`
+	// HungUp: the program ended after a client's session.signal hangup
+	// (the app ending a kept shell), which is not an abnormal exit.
+	HungUp bool `json:"hung_up,omitempty"`
 }
 
 // StateChangedData is Event.Data for state_changed.
@@ -152,9 +177,14 @@ type NotificationData struct {
 	Reason string `json:"reason"`
 	// Count > 1 for a digest folding several notifications together.
 	Count int `json:"count,omitempty"`
+	// SessionID is the session the notification is about; absent for a
+	// digest, notify.test and approvals of no session. ntfy's sequence ID
+	// and the s= of the Click link are both made from it.
+	SessionID string `json:"session_id,omitempty"`
 }
 
-// Approval is a pending permission request raised by a blocking hook.
+// Approval is a pending permission request reported by a harness hook. It
+// is answered on the program's own screen; stagent only tracks it.
 type Approval struct {
 	RequestID string `json:"request_id"`
 	SessionID string `json:"session_id,omitempty"`
@@ -162,22 +192,43 @@ type Approval struct {
 	ToolName  string `json:"tool_name,omitempty"`
 	Summary   string `json:"summary"` // human readable, e.g. the command line
 	CreatedAt int64  `json:"created_at"`
-	ExpiresAt int64  `json:"expires_at"`
 }
-
-// Approval decisions.
-const (
-	DecisionAllow = "allow"
-	DecisionDeny  = "deny"
-	DecisionNone  = "none" // no decision: the harness asks in the terminal
-)
 
 // ApprovalResolvedData is Event.Data for approval_resolved.
 type ApprovalResolvedData struct {
 	RequestID string `json:"request_id"`
-	Decision  string `json:"decision"`
-	By        string `json:"by"` // "app" | "timeout" | "cancelled"
+	By        string `json:"by"` // always "cancelled": answered on screen or the turn moved on
 }
+
+// UnwrappedLaunch is an agent started interactively on this host without
+// a stagent session (GLOSSARY: このホストの agent に出ない起動), seen
+// through its hooks. The daemon keeps these in memory only, one per
+// conversation.
+type UnwrappedLaunch struct {
+	ConversationID string `json:"conversation_id"`
+	Harness        string `json:"harness"`
+	Cwd            string `json:"cwd"`
+	Reason         string `json:"reason"`           // Unwrapped* below
+	FirstSeenAt    int64  `json:"first_seen_at"`    // unix ms, the first hook
+	LastActivityAt int64  `json:"last_activity_at"` // unix ms, the latest hook
+}
+
+// Why a launch has no stagent session (UnwrappedLaunch.Reason).
+const (
+	// UnwrappedOldTerminal: the shell lacks the wrapper's marker, i.e. a
+	// terminal opened before the wrapper was installed (or one that does
+	// not read the shell's rc files).
+	UnwrappedOldTerminal = "old_terminal"
+	// UnwrappedBypassed: the shell has the wrapper but it was bypassed
+	// (`command claude`, a full path).
+	UnwrappedBypassed = "bypassed"
+	// UnwrappedIDE: an IDE extension or the desktop app (Claude Code's
+	// CLAUDE_CODE_ENTRYPOINT is neither cli nor sdk-*).
+	UnwrappedIDE = "ide"
+)
+
+// EnvShellWrapper is the marker the shell wrapper's rc block exports.
+const EnvShellWrapper = "STAGENT_SHELL_WRAPPER"
 
 // ---------------------------------------------------------------------------
 // Transcripts
@@ -208,10 +259,12 @@ type Conversation struct {
 type Config struct {
 	Notify    NotifyConfig    `json:"notify"`
 	Retention RetentionConfig `json:"retention"`
-	// ApprovalTimeoutSec bounds how long a blocking hook waits for the app.
-	ApprovalTimeoutSec int `json:"approval_timeout_sec"`
 	// IdleAfterMs: quiet time after which output activity counts as idle.
 	IdleAfterMs int `json:"idle_after_ms"`
+	// DisableHandoff makes `stagent run --handoff=auto` (the shell
+	// wrappers) end the program with its terminal unless STAGENT_HANDOFF
+	// says otherwise.
+	DisableHandoff bool `json:"disable_handoff"`
 }
 
 // NotifyConfig configures offline push channels.
@@ -222,6 +275,70 @@ type NotifyConfig struct {
 	DebounceMs int `json:"debounce_ms"`
 	// DigestWindowMs: notifications within this window fold into one digest.
 	DigestWindowMs int `json:"digest_window_ms"`
+	// HostLabel prefixes the title of every push so the user can tell the
+	// hosts apart; empty means the host name (no default is filled in).
+	HostLabel string `json:"host_label"`
+	// ClickBase is the link a push opens when tapped (ntfy's Click), with
+	// h=<host_id> and, for one session, s=<session id> added to its query;
+	// empty means no link. The app sets it; stagent knows no app scheme.
+	ClickBase string `json:"click_base"`
+	// Reasons selects what is pushed; in-app notification events are not
+	// affected. Missing keys take the defaults (WithDefaults).
+	Reasons NotifyReasons `json:"reasons"`
+	// Lang is the language of the fixed phrases and digest titles that
+	// stagent writes: en | ja | ko | zh (default en). Reasons stay as they
+	// are.
+	Lang string `json:"lang"`
+	// SkipWhenClaudeAppNotifies: no pushes for a session whose latest hook
+	// ran with CLAUDE_CODE_BRIDGE_SESSION_ID (the claude is connected to
+	// Remote Control, so the Claude app notifies too).
+	SkipWhenClaudeAppNotifies bool `json:"skip_when_claude_app_notifies"`
+}
+
+// NotifyReasons selects the notification reasons that are pushed. A nil
+// bool or an empty Exited means the default.
+type NotifyReasons struct {
+	NeedsApproval *bool `json:"needs_approval,omitempty"` // default true
+	WaitingInput  *bool `json:"waiting_input,omitempty"`  // default true
+	TurnComplete  *bool `json:"turn_complete,omitempty"`  // default true
+	// Exited: off | error (only abnormal exits: a code other than 0 or a
+	// lost session; default) | all.
+	Exited   string `json:"exited,omitempty"`
+	Terminal *bool  `json:"terminal,omitempty"` // default false
+}
+
+// NotifyReasons.Exited values.
+const (
+	ExitedOff   = "off"
+	ExitedError = "error"
+	ExitedAll   = "all"
+)
+
+// Languages of notify.lang.
+const (
+	LangEn = "en"
+	LangJa = "ja"
+	LangKo = "ko"
+	LangZh = "zh"
+)
+
+// ValidLang reports whether lang is a notify.lang value ("" = default).
+func ValidLang(lang string) bool {
+	switch lang {
+	case "", LangEn, LangJa, LangKo, LangZh:
+		return true
+	}
+	return false
+}
+
+// ValidExited reports whether v is a notify.reasons.exited value ("" =
+// default).
+func ValidExited(v string) bool {
+	switch v {
+	case "", ExitedOff, ExitedError, ExitedAll:
+		return true
+	}
+	return false
 }
 
 // NtfyConfig is an ntfy.sh (or self-hosted ntfy) topic.
@@ -239,6 +356,20 @@ type WebhookConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// Push channel names (keys of NotifyStatus.LastError).
+const (
+	ChannelNtfy    = "ntfy"
+	ChannelWebhook = "webhook"
+)
+
+// NotifyFailure is the last failed push to one channel. Error never
+// contains the ntfy topic or the webhook URL.
+type NotifyFailure struct {
+	At     int64  `json:"at"`               // unix ms
+	Status int    `json:"status,omitempty"` // HTTP status; 0 for a transport error
+	Error  string `json:"error"`
+}
+
 // RetentionConfig bounds on-disk data.
 type RetentionConfig struct {
 	EventsDays         int `json:"events_days"`
@@ -251,9 +382,6 @@ type RetentionConfig struct {
 
 // WithDefaults fills zero fields with the documented defaults.
 func (c Config) WithDefaults() Config {
-	if c.ApprovalTimeoutSec <= 0 {
-		c.ApprovalTimeoutSec = 60
-	}
 	if c.IdleAfterMs <= 0 {
 		c.IdleAfterMs = 3000
 	}
@@ -265,6 +393,22 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.Notify.DigestWindowMs <= 0 {
 		c.Notify.DigestWindowMs = 5000
+	}
+	if c.Notify.Lang == "" {
+		c.Notify.Lang = LangEn
+	}
+	nr := &c.Notify.Reasons
+	for _, f := range []struct {
+		p   **bool
+		def bool
+	}{{&nr.NeedsApproval, true}, {&nr.WaitingInput, true}, {&nr.TurnComplete, true}, {&nr.Terminal, false}} {
+		if *f.p == nil {
+			v := f.def
+			*f.p = &v
+		}
+	}
+	if nr.Exited == "" {
+		nr.Exited = ExitedError
 	}
 	r := &c.Retention
 	if r.EventsDays <= 0 {

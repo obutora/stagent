@@ -21,9 +21,10 @@ import (
 
 const usage = `usage: stagent <command> [args]
 
-  run [--detached | --handoff] [--cols N --rows N] [--cwd DIR] -- <cmd> [args...]
+  run [--detached | --handoff[=auto]] [--cols N --rows N] [--cwd DIR] -- <cmd> [args...]
                       run a program under a PTY holder (agent session);
-                      --handoff keeps it running detached when this terminal closes
+                      --handoff keeps it running detached when this terminal closes;
+                      --handoff=auto does unless STAGENT_HANDOFF=0 or disable_handoff
   ls [--json]         list sessions, most recently active first
   attach [ID | --last] [--detach-key ctrl-]]
                       attach this terminal to a session (Ctrl-] detaches)
@@ -36,7 +37,8 @@ const usage = `usage: stagent <command> [args]
   hook <harness> [event]
                       entry point for harness hooks (reads the payload on stdin)
   install             create the layout and manifest (after the binary is placed)
-  integrate           plan or apply harness hooks, shell wrappers, login service
+  integrate           plan or apply harness hooks, shell wrappers, login service,
+                      lingering (Linux), Terminal.app's close confirmation (macOS)
   uninstall           stop / unhook / purge
   doctor              report installation state as JSON
   version             print the version

@@ -227,10 +227,11 @@ func (a *attached) notifyCall(method string, params any) {
 	a.c.Go(method, b, func(*wire.Msg) {})
 }
 
-// input sends keyboard bytes. They travel as a JSON string, so bytes that
-// are not UTF-8 (8-bit meta keys) arrive as U+FFFD.
+// input sends keyboard bytes, marked as typed at a terminal on the host
+// (presence, last_local_input_at). They travel as a JSON string, so bytes
+// that are not UTF-8 (8-bit meta keys) arrive as U+FFFD.
 func (a *attached) input(text []byte) {
-	a.notifyCall(wire.MethodSessionInput, wire.InputParams{ID: a.id, Text: string(text)})
+	a.notifyCall(wire.MethodSessionInput, wire.InputParams{ID: a.id, Text: string(text), Local: true})
 }
 
 // finish stops terminal output, resets the modes the program may have

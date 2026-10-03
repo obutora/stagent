@@ -31,10 +31,10 @@ const (
 	MethodTranscriptSubscribe   = "transcript.subscribe"
 	MethodTranscriptUnsubscribe = "transcript.unsubscribe"
 	MethodApprovalsList         = "approvals.list"
-	MethodApprovalRespond       = "approval.respond"
 	MethodConfigGet             = "config.get"
 	MethodConfigSet             = "config.set"
 	MethodNotifyTest            = "notify.test"
+	MethodPresenceSet           = "presence.set"
 
 	// Notifications (server → app).
 	NotifyEvent          = "event"           // Event
@@ -44,14 +44,17 @@ const (
 	NotifyResize         = "resize"          // ResizeParams
 	NotifyClosed         = "closed"          // ClosedParams
 	NotifyTranscript     = "transcript"      // TranscriptParams
+	// NotifyUnwrappedUpdated carries the whole current list.
+	NotifyUnwrappedUpdated = "unwrapped.updated" // UnwrappedUpdatedParams
 )
 
 // DaemonMethods are forwarded by the bridge to the daemon.
 var DaemonMethods = map[string]bool{
 	MethodWatch: true, MethodSessionsList: true, MethodConversationsList: true,
 	MethodTranscriptGet: true, MethodTranscriptSubscribe: true, MethodTranscriptUnsubscribe: true,
-	MethodApprovalsList: true, MethodApprovalRespond: true,
-	MethodConfigGet: true, MethodConfigSet: true, MethodNotifyTest: true,
+	MethodApprovalsList: true,
+	MethodConfigGet:     true, MethodConfigSet: true, MethodNotifyTest: true,
+	MethodPresenceSet: true,
 }
 
 // HolderMethods are forwarded by the bridge to the session's holder.
@@ -85,6 +88,9 @@ type HelloResult struct {
 	Arch         string   `json:"arch"` // amd64 | arm64
 	Home         string   `json:"home"`
 	Capabilities []string `json:"capabilities"`
+	// HostID is the host's random id (hostid); absent when it could not be
+	// read or created. Older stagent versions never send it.
+	HostID string `json:"host_id,omitempty"`
 }
 
 // SessionRef names a session.
@@ -101,10 +107,18 @@ type WatchParams struct {
 type WatchResult struct {
 	Sessions  []Session  `json:"sessions"`
 	Approvals []Approval `json:"approvals"`
-	Seq       int64      `json:"seq"` // latest seq at subscription time
-	Missed    []Event    `json:"missed"`
+	// Unwrapped: agents started without a stagent session, newest
+	// last_activity_at first; unwrapped.updated replaces the list.
+	Unwrapped []UnwrappedLaunch `json:"unwrapped"`
+	Seq       int64             `json:"seq"` // latest seq at subscription time
+	Missed    []Event           `json:"missed"`
 	// Truncated: events between Since and Missed[0] were dropped by retention.
 	Truncated bool `json:"truncated"`
+}
+
+// UnwrappedUpdatedParams is the unwrapped.updated notification.
+type UnwrappedUpdatedParams struct {
+	Unwrapped []UnwrappedLaunch `json:"unwrapped"`
 }
 
 type SessionsListResult struct {
@@ -162,6 +176,9 @@ type ResizeParams struct {
 type ClosedParams struct {
 	ID       string `json:"id"`
 	ExitCode int    `json:"exit_code"`
+	// HungUp (holder.ended only): the program ended after a client's
+	// session.signal hangup.
+	HungUp bool `json:"hung_up,omitempty"`
 }
 
 // InputParams is applied in order: Text (raw), Paste (bracketed when the
@@ -172,6 +189,10 @@ type InputParams struct {
 	Paste  string   `json:"paste,omitempty"`
 	Keys   []string `json:"keys,omitempty"` // names from KeySequences
 	Submit bool     `json:"submit,omitempty"`
+	// Local marks keyboard input of a terminal on the host (`stagent
+	// attach`): it counts as Session.LastLocalInputAt and its focus
+	// reports set Session.Focused. The app never sets it.
+	Local bool `json:"local,omitempty"`
 }
 
 // KeySequences maps session.input key names to the bytes sent to the PTY.
@@ -275,18 +296,31 @@ type ApprovalsListResult struct {
 	Approvals []Approval `json:"approvals"`
 }
 
-type ApprovalRespondParams struct {
-	RequestID string `json:"request_id"`
-	Decision  string `json:"decision"` // allow | deny
-	Message   string `json:"message,omitempty"`
+// PresenceSetParams tells the daemon whether the app is in the
+// foreground. While a connection with a live watch says so, the host
+// pushes nothing (the app shows the events itself); a closed connection
+// is not in the foreground.
+type PresenceSetParams struct {
+	Foreground bool `json:"foreground"`
 }
 
 type ConfigResult struct {
-	Config Config `json:"config"`
+	Config Config       `json:"config"`
+	Notify NotifyStatus `json:"notify"`
 }
 
+// NotifyStatus reports the push channels' health (config.get / config.set,
+// `stagent doctor`).
+type NotifyStatus struct {
+	// LastError holds, per channel ("ntfy", "webhook"), the last failed
+	// push; a successful push to the channel removes it. Never null.
+	LastError map[string]NotifyFailure `json:"last_error"`
+}
+
+// ConfigSetParams carries a JSON Merge Patch (RFC 7396) for config.json:
+// only the keys it names change, null deletes a key.
 type ConfigSetParams struct {
-	Config Config `json:"config"`
+	Config json.RawMessage `json:"config"`
 }
 
 // ---------------------------------------------------------------------------
@@ -298,9 +332,15 @@ const (
 	MethodHolderUpdate   = "holder.update"   // notification, SessionPatch
 	MethodHolderNotify   = "holder.notify"   // notification, HolderNotifyParams
 	MethodHolderEnded    = "holder.ended"    // notification, ClosedParams
+	// notification, HolderPromptGoneParams: the claude permission menu the
+	// daemon asked to watch for (holder.prompt_watch) left the screen.
+	MethodHolderPromptGone = "holder.prompt_gone"
 
 	// hook → daemon (one request per connection)
-	MethodHookEvent = "hook.event" // HookEventParams → HookEventResult
+	// Answers {} once the daemon applied the event; a PermissionRequest of a
+	// claude running in a stagent session is answered only when its approval
+	// closes (the hook stays open until then, with no decision).
+	MethodHookEvent = "hook.event" // HookEventParams → {}
 
 	// install / doctor → daemon
 	MethodDaemonStatus   = "daemon.status"   // → DaemonStatus
@@ -309,10 +349,30 @@ const (
 	// (daemon.shutdown, SIGTERM): holders keep retrying but stop
 	// auto-starting the daemon, so `uninstall --level stop` sticks.
 	MethodDaemonStopping = "daemon.stopping"
+	// daemon → holder notification, HolderPromptWatchParams: watch the
+	// screen for claude's permission menu while a claude approval of the
+	// session holds its hook (on), or stop (off). Holders before 0.4.0
+	// ignore it, like any notification they do not know.
+	MethodHolderPromptWatch = "holder.prompt_watch"
 )
 
 type HolderRegisterResult struct {
 	IdleAfterMs int `json:"idle_after_ms"`
+}
+
+// HolderPromptWatchParams starts (on) or ends a prompt watch. Gen names
+// the watch; a new one starts with every claude approval registered.
+type HolderPromptWatchParams struct {
+	ID  string `json:"id"`
+	Gen int64  `json:"gen"`
+	On  bool   `json:"on"`
+}
+
+// HolderPromptGoneParams reports that the permission menu watch Gen saw
+// is no longer on the screen: the prompt was answered somewhere.
+type HolderPromptGoneParams struct {
+	ID  string `json:"id"`
+	Gen int64  `json:"gen"`
 }
 
 // SessionPatch updates a registered session; nil fields are unchanged.
@@ -322,9 +382,14 @@ type SessionPatch struct {
 	StateSource    *string `json:"state_source,omitempty"`
 	Title          *string `json:"title,omitempty"`
 	LastActivityAt *int64  `json:"last_activity_at,omitempty"`
-	Cols           *int    `json:"cols,omitempty"`
-	Rows           *int    `json:"rows,omitempty"`
-	Mode           *string `json:"mode,omitempty"` // passthrough → detached on handoff
+	// LastLocalInputAt is pushed to watchers at once (the holder sends it at
+	// most once per second), unlike last_activity_at.
+	LastLocalInputAt *int64  `json:"last_local_input_at,omitempty"`
+	Cols             *int    `json:"cols,omitempty"`
+	Rows             *int    `json:"rows,omitempty"`
+	Mode             *string `json:"mode,omitempty"` // passthrough → detached on handoff
+	Attached         *bool   `json:"attached,omitempty"`
+	Focused          *bool   `json:"focused,omitempty"`
 }
 
 // HolderNotifyParams is a notification the program itself emitted (OSC 9 /
@@ -341,17 +406,36 @@ type HookEventParams struct {
 	Event     string          `json:"event"`                // harness-native event name
 	SessionID string          `json:"session_id,omitempty"` // $STAGENT_SESSION_ID
 	Payload   json.RawMessage `json:"payload,omitempty"`    // hook stdin (or notify argv JSON)
-}
+	// RemoteControl: the hook ran with $CLAUDE_CODE_BRIDGE_SESSION_ID, set
+	// while claude is connected to Remote Control.
+	RemoteControl bool `json:"remote_control,omitempty"`
 
-type HookEventResult struct {
-	Decision string `json:"decision,omitempty"` // allow | deny | none (permission events)
-	Message  string `json:"message,omitempty"`
+	// How the agent was started, sent when SessionID is empty (see
+	// UnwrappedLaunch). ShellWrapper: $STAGENT_SHELL_WRAPPER is set.
+	// Entrypoint: $CLAUDE_CODE_ENTRYPOINT. ParentTTY: the harness (the
+	// hook's nearest ancestor that is not a shell) reads a terminal — its
+	// stdin on Linux, its controlling terminal on macOS; nil when unknown
+	// (Windows). ParentBatch:
+	// the harness's command line asks for a non-interactive run, by the
+	// shell wrapper's rule (claude -p / --print; codex exec / e; omp -p /
+	// --print or --mode other than text).
+	ShellWrapper bool   `json:"shell_wrapper,omitempty"`
+	Entrypoint   string `json:"entrypoint,omitempty"`
+	ParentTTY    *bool  `json:"parent_tty,omitempty"`
+	ParentBatch  bool   `json:"parent_batch,omitempty"`
 }
 
 type DaemonStatus struct {
-	PID       int    `json:"pid"`
-	Version   string `json:"version"`
-	StartedAt int64  `json:"started_at"`
-	Sessions  int    `json:"sessions"`
-	Bridges   int    `json:"bridges"`
+	PID       int               `json:"pid"`
+	Version   string            `json:"version"`
+	StartedAt int64             `json:"started_at"`
+	Sessions  int               `json:"sessions"`
+	Bridges   int               `json:"bridges"`
+	Unwrapped []UnwrappedLaunch `json:"unwrapped"`
+	// BootstrapSwapped (macOS only; absent elsewhere): the daemon moved
+	// itself to the user's per-user bootstrap port at start, so it and what
+	// it starts reach the network after the user logs out of the GUI.
+	BootstrapSwapped *bool `json:"bootstrap_swapped,omitempty"`
+	// BootstrapError is why that failed.
+	BootstrapError string `json:"bootstrap_error,omitempty"`
 }

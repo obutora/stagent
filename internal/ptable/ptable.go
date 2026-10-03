@@ -83,6 +83,14 @@ func Take() (*Snapshot, error) {
 	return New(procs, osSource{}), nil
 }
 
+// Argv reads the command line of one process without a snapshot.
+func Argv(pid int) ([]string, error) { return osSource{}.Argv(pid) }
+
+// Process reads one process without a snapshot: its pid, parent, name,
+// process group and terminal (Start may be zero). ok is false when it
+// cannot be read, and always on Windows.
+func Process(pid int) (p Proc, ok bool) { return get(pid) }
+
 // New builds a snapshot of procs whose lazy details come from src.
 //
 // A parent that started after its child is a recycled pid — Windows keeps

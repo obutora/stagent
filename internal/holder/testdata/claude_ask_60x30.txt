@@ -1,0 +1,31 @@
+|
+|
+|● Write(a.txt)
+|  ⎿  Wrote 1 line to a.txt
+|      1 hi
+|  
+|● /tmp/chatcap/claude1/a.txt を作成し、中身を hi
+|  にしました。
+|
+|✻ Baked for 3s · done 10:50
+|     
+|❯ Use the AskUserQuestion tool to ask me which color I      
+|  prefer, options Red, Green, Blue. Then reply with my      
+|  answer only.                                              
+|────────────────────────────────────────────────────────────
+| ☐ Color 
+|     
+|どの色が好みですか？
+|
+|❯ 1. Red
+|     赤
+|  2. Green
+|     緑
+|  3. Blue
+|     青
+|  4. Type something.
+|────────────────────────────────────────────────────────────
+|  5. Chat about this
+|
+|Enter to select · ↑/↓ to navigate · Esc to cancel
+cursor=0,19 alt=true appCursor=false bracketed=true

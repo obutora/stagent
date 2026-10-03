@@ -50,30 +50,58 @@ closing the app — without tmux. On the server this runs:
   (`~/.ssh-term/agent/state/sessions/<id>/`, 8 MiB per session by default),
   and serves the app over a socket only your user can open. It runs your
   login shell (`$SHELL -l`) and exits when the shell exits.
-- `stagent daemon`, the session list, started on demand.
+- `stagent daemon`, the session list, started on demand. While a coding
+  agent started inside a shell session runs, it reads that session's
+  process tree every 2 s to notice when the agent quits, so the list shows
+  the session as a plain shell again.
 
 When the app reconnects it re-attaches the tab and receives only the output
 it missed (or a redraw of the screen when that is not possible). Sessions
 can be listed, re-opened and ended from the app, and from any terminal on
 the server:
 
-- `stagent ls [--json]` lists the sessions.
+- `stagent ls [--json]` lists the sessions with their state, last
+  activity and when someone last typed in a passthrough session's own
+  terminal.
 - `stagent attach [ID | --last] [--detach-key ctrl-]]` attaches your
   terminal to a session; Ctrl-] detaches (press it twice to send it).
 - `stagent run --handoff -- <command>` runs a command in your terminal as a
   session that survives that terminal: when the terminal closes, the
-  session continues detached and the app can pick it up. Shell wrappers
-  installed with `stagent integrate --shell-wrapper` add `--handoff` when
-  the environment has `STAGENT_HANDOFF=1`.
+  session continues detached and the app can pick it up. Before the
+  command starts, `stagent run` tells you in one line how many agent
+  sessions are held on the host (see `stagent ls`), if any.
+- Shell wrappers installed with `stagent integrate --shell-wrapper` make
+  `claude`, `codex` and `omp` typed in an interactive terminal run as
+  `stagent run --handoff=auto -- …`, so they survive the terminal by
+  default. Non-interactive runs (`claude -p`, `codex exec`, `omp -p`,
+  `omp --mode json`) are left alone. To have the agent end with the
+  terminal instead, set `STAGENT_HANDOFF=0` in that shell, or turn on
+  `disable_handoff` in `config.json` (what the app's switch sets);
+  `STAGENT_HANDOFF=1` overrides the config.
 
 Sessions also survive logging out. On Linux their sockets live in
 `/tmp/stagent-<uid>` (mode 0700), not in `$XDG_RUNTIME_DIR`, which is
 removed at logout. On systems where logind kills a user's processes at
-logout (`KillUserProcesses=yes`) the bridge starts holders through
-`systemd-run --user --scope` so they leave the SSH login session; they
-then still end with your last logout unless lingering is enabled
-(`loginctl enable-linger`). `stagent doctor` reports this under
-`persistence`.
+logout (`KillUserProcesses=yes`), or where lingering is on, `stagent run`
+and `stagent daemon` first move themselves into a new scope of your
+systemd user manager (the D-Bus call `systemd-run --user --scope` makes),
+so they and the agent leave the login session. That scope still ends with
+your last logout unless lingering is enabled (`loginctl enable-linger`,
+or `stagent integrate --linger`), and so do agents started from a
+terminal of a graphical (GNOME etc.) session. `stagent doctor` reports
+whether lingering is needed under `persistence.linger_needed`.
+
+On macOS, sessions started from a terminal survive logging out of the GUI
+as they are, but the GUI session's Mach bootstrap port they inherit stops
+working then, and the tools an agent starts afterwards (`curl`, `git`,
+MCP servers) could no longer resolve host names. So `stagent run` and
+`stagent daemon` first switch to your per-user bootstrap port, as tmux
+does; the keychain stays usable while you are logged in. If that fails
+they start anyway and `stagent doctor` says why
+(`shell_wrapper.last_run_bootstrap_error`, `daemon.bootstrap_error`).
+`stagent integrate --terminal` keeps Terminal.app from asking before it
+closes a window running an agent, or at logout (`stagent` in each
+profile's `noWarnProcesses`; removing it takes out only that entry).
 
 ## Installation and removal
 
@@ -81,6 +109,13 @@ The app installs the binary to `~/.ssh-term/agent/bin/stagent` the first time
 the chat view is opened: the server downloads the asset for its OS/arch from
 this repository's Releases page (or the app downloads and uploads it over
 SFTP) and it is verified against the SHA-256 pinned inside the app.
+
+An app that pins a newer release updates the binary the same way: silently
+on a host prepared for it (shell wrapper in place), otherwise when you tap
+the host's button in the app. `stagent install`, which the app runs after
+placing the binary, then rewrites the shell wrapper blocks already in place
+and replaces a running daemon of the old version; the sessions keep
+running and stay listed.
 
 Remove it from the chat view's menu (**Remove stagent from the server**), or
 on the server:

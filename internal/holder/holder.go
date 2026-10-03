@@ -33,6 +33,7 @@ import (
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/pty"
+	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/screen"
 	"github.com/obutora/stagent/internal/scrollback"
 	"github.com/obutora/stagent/internal/wire"
@@ -93,19 +94,31 @@ type Holder struct {
 	local *localTerm // nil when detached
 	// stopLocalSize ends following the local terminal's size (handoff).
 	stopLocalSize context.CancelFunc
+	// prompt watches the screen for claude's permission menu while the
+	// daemon asks (holder.prompt_watch).
+	prompt *promptWatch
 
 	sbWarned         bool
 	lastActivityWake int64 // pump goroutine only
 
-	// mu guards sess, atts, ended, handedOff and the stream positions. It
-	// is held while output goes into the screen and the raw attachment
-	// queues, so a snapshot taken under it lines up exactly with the byte
-	// stream that follows.
+	// mu guards sess, atts, ended, handedOff, hungUp, focus,
+	// lastLocalTypeWake and the stream positions. It is held while output
+	// goes into the screen and the raw attachment queues, so a snapshot
+	// taken under it lines up exactly with the byte stream that follows.
 	mu        sync.Mutex
 	sess      wire.Session
 	atts      map[*attachment]struct{}
 	ended     bool
 	handedOff bool // passthrough whose local terminal hung up (Options.Handoff)
+	// hungUp: a client hung the program up (session.signal hangup), as the
+	// app does to end a kept shell; the daemon does not take the exit for
+	// an abnormal one.
+	hungUp bool
+	// focus holds the terminals on the host (the local terminal, `stagent
+	// attach` connections) whose last focus report was focus in;
+	// sess.Focused is whether there is any.
+	focus             map[any]struct{}
+	lastLocalTypeWake int64
 	// pos counts the program output fanned out so far. The pump writes each
 	// chunk to the scrollback just before fanning it out, so the scrollback
 	// holds every byte before pos.
@@ -139,7 +152,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 	} else if !validID(id) {
 		return ExitUsage, fmt.Errorf("invalid session id %q (want 16 lowercase hex characters)", id)
 	}
-	h := &Holder{o: o, layout: l, id: id, atts: map[*attachment]struct{}{}, sizePos: -1}
+	h := &Holder{o: o, layout: l, id: id, atts: map[*attachment]struct{}{}, focus: map[any]struct{}{}, sizePos: -1}
 
 	if !o.Detached {
 		lt, err := openLocal()
@@ -182,6 +195,11 @@ func Run(ctx context.Context, o Options) (int, error) {
 	if env == nil {
 		env = os.Environ()
 	}
+	if !o.Detached {
+		if n := heldSessions(l); n > 0 {
+			fmt.Fprintln(os.Stderr, heldNotice(n))
+		}
+	}
 	p, err := pty.Start(o.Command, dir, buildEnv(env, id, o.Detached), cols, rows)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
@@ -195,11 +213,13 @@ func Run(ctx context.Context, o Options) (int, error) {
 	if o.Detached {
 		mode = wire.ModeDetached
 	}
+	presenceFile, _ := lookupEnv(env, wire.EnvClaudePresenceFile)
 	h.sess = wire.Session{
 		ID: id, Harness: wire.DetectHarness(o.Command), Command: o.Command, Cwd: dir,
 		PID: p.Pid(), HolderPID: os.Getpid(), Mode: mode,
 		State: wire.StateWorking, StateSource: wire.SourceActivity,
 		Cols: cols, Rows: rows, StartedAt: now, LastActivityAt: now,
+		PresenceFile: presenceFile,
 	}
 
 	if infraErr == nil {
@@ -223,6 +243,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 		respond = h.in.tryPush
 	}
 	h.scr = screen.New(cols, rows, respond)
+	h.prompt = newPromptWatch(h.scr.Lines, h.link.promptGone)
 	// vt.NewEmulator allocates a 4 MiB parser buffer and 10,000-line
 	// scrollbacks that screen.New immediately shrinks; hand those pages back
 	// now instead of carrying them in RSS for the life of the session.
@@ -289,7 +310,7 @@ func (h *Holder) run(ctx context.Context, ln net.Listener) (int, error) {
 		}
 		sizeCtx, stopSize := context.WithCancel(srvCtx)
 		h.stopLocalSize = stopSize
-		go h.local.copyInput(srvCtx, h.in, h.det, lost)
+		go h.local.copyInput(srvCtx, h.in, h.det, func(b []byte) { h.localInput(h.local, b) }, lost)
 		go h.local.watchSize(sizeCtx, h.followLocalSize)
 	}
 	sigs := make(chan os.Signal, 4)
@@ -348,9 +369,11 @@ wait:
 // (bounded) for both.
 func (h *Holder) finish(code int) {
 	h.det.Exited()
+	h.prompt.stop()
 	h.mu.Lock()
 	h.ended = true
 	h.sess.ExitCode = &code
+	hungUp := h.hungUp
 	atts := make([]*attachment, 0, len(h.atts))
 	for a := range h.atts {
 		atts = append(atts, a)
@@ -360,7 +383,7 @@ func (h *Holder) finish(code int) {
 	for _, a := range atts {
 		a.closeWith(code)
 	}
-	h.link.end(code)
+	h.link.end(code, hungUp)
 	deadline := time.After(attachDrain)
 	for _, a := range atts {
 		select {
@@ -425,12 +448,74 @@ func (h *Holder) output(b []byte) {
 		titleChanged = true
 	}
 	h.mu.Unlock()
+	h.prompt.output()
 
 	// Activity timestamps reach the daemon at most once per second.
 	if titleChanged || now-h.lastActivityWake >= 1000 {
 		h.lastActivityWake = now
 		h.link.wake()
 	}
+}
+
+// localInput records a read b from a terminal on the host (src: the local
+// terminal or a `stagent attach` connection): a keystroke sets
+// last_local_input_at, a focus report the terminal's focus. The time
+// reaches the daemon at most once per second; the first keystroke after a
+// quiet second and every change of focus go out at once.
+func (h *Holder) localInput(src any, b []byte) {
+	typing := isTyping(b)
+	focused, reported := focusReport(b)
+	if !typing && !reported {
+		return
+	}
+	now := time.Now().UnixMilli()
+	wake := false
+	h.mu.Lock()
+	if typing {
+		h.sess.LastLocalInputAt = now
+		if now-h.lastLocalTypeWake >= 1000 {
+			h.lastLocalTypeWake = now
+			wake = true
+		}
+	}
+	if reported {
+		wake = h.setFocusLocked(src, focused) || wake
+	}
+	h.mu.Unlock()
+	if wake {
+		h.link.wake()
+	}
+}
+
+// setFocusLocked records src's focus and reports whether sess.Focused
+// changed.
+func (h *Holder) setFocusLocked(src any, focused bool) bool {
+	if focused {
+		h.focus[src] = struct{}{}
+	} else {
+		delete(h.focus, src)
+	}
+	was := h.sess.Focused
+	h.sess.Focused = len(h.focus) > 0
+	return was != h.sess.Focused
+}
+
+// dropFocus forgets the focus of a terminal that went away.
+func (h *Holder) dropFocus(src any) {
+	h.mu.Lock()
+	changed := h.setFocusLocked(src, false)
+	h.mu.Unlock()
+	if changed {
+		h.link.wake()
+	}
+}
+
+// focusReport returns the focus the last focus report in b (ESC [ I in,
+// ESC [ O out) says, and whether b holds one.
+func focusReport(b []byte) (focused, reported bool) {
+	in := bytes.LastIndex(b, []byte("\x1b[I"))
+	out := bytes.LastIndex(b, []byte("\x1b[O"))
+	return in > out, in >= 0 || out >= 0
 }
 
 func (h *Holder) onState(state, source string) {
@@ -475,6 +560,7 @@ func (h *Holder) applySize(cols, rows int) {
 		a.pushResize(rp)
 	}
 	h.mu.Unlock()
+	h.prompt.resized()
 	h.link.wake()
 }
 
@@ -504,6 +590,7 @@ func (h *Holder) localOwnsSize() bool {
 // signalled; it keeps running as if nothing happened.
 func (h *Holder) handoff() {
 	h.local.disable()
+	h.dropFocus(h.local)
 	h.mu.Lock()
 	if h.handedOff || h.ended {
 		h.mu.Unlock()
@@ -601,6 +688,44 @@ func loadConfig(l *paths.Layout) wire.Config {
 		json.Unmarshal(b, &c)
 	}
 	return c.WithDefaults()
+}
+
+const (
+	heldDialTimeout = 200 * time.Millisecond
+	heldCallTimeout = 500 * time.Millisecond
+)
+
+// heldSessions counts the agent sessions held on this host — detached with
+// no client attached, not ended, harness not "other" — for the line a
+// terminal session prints before its program starts. A daemon that does
+// not answer quickly counts as none; it is not started for this.
+func heldSessions(l *paths.Layout) int {
+	conn, err := daemonclient.Dial(l, heldDialTimeout)
+	if err != nil {
+		return 0
+	}
+	c := rpc.NewClient(conn, nil)
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), heldCallTimeout)
+	defer cancel()
+	var res wire.SessionsListResult
+	if c.Call(ctx, wire.MethodSessionsList, nil, &res) != nil {
+		return 0
+	}
+	n := 0
+	for _, s := range res.Sessions {
+		if s.Harness != wire.HarnessOther && s.Mode == wire.ModeDetached && !s.Attached && s.State != wire.StateExited {
+			n++
+		}
+	}
+	return n
+}
+
+func heldNotice(n int) string {
+	if n == 1 {
+		return "stagent: 1 agent session is held on this host; `stagent ls` lists it"
+	}
+	return fmt.Sprintf("stagent: %d agent sessions are held on this host; `stagent ls` lists them", n)
 }
 
 // maxHolderLog bounds the shared passthrough log; it is truncated when

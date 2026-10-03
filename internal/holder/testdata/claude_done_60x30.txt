@@ -1,0 +1,31 @@
+|
+|● OK
+|
+|✻ Cooked for 2s · done 10:49
+|
+|❯ Run the shell command: sleep 8 && echo finished           
+|
+|  Ran 1 shell command 
+|
+|● コマンドは 8 秒待ったあと finished
+|  と出力して終了しました。
+|
+|✻ Worked for 11s · done 10:50
+|
+|❯ Use the Write tool to create a.txt containing hi          
+|
+|● Write(a.txt)
+|  ⎿  Wrote 1 line to a.txt
+|      1 hi
+|  
+|● /tmp/chatcap/claude1/a.txt を作成し、中身を hi
+|  にしました。
+|
+|✻ Baked for 3s · done 10:50
+|                                        ◐ medium · /effort
+|────────────────────────────────────────────────────────────
+|❯ 
+|────────────────────────────────────────────────────────────
+|  ctx:40k(4%) …/claude1 
+|  ⏸ manual mode on · ← for agents
+cursor=2,26 alt=true appCursor=false bracketed=true

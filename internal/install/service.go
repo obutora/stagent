@@ -106,6 +106,10 @@ func xmlEscape(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;").Replace(s)
 }
 
+// launchdPlistText is the LaunchAgent of the daemon, for the user domain
+// (user/<uid>): LimitLoadToSessionType=Background, so launchd loads it
+// there, outside any GUI session and past its logout, and ProcessType
+// Standard, since Background throttles the CPU 10–30 times.
 func (e *env) launchdPlistText() string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!-- ` + serviceMarker + ` -->
@@ -126,8 +130,10 @@ func (e *env) launchdPlistText() string {
     <key>SuccessfulExit</key>
     <false/>
   </dict>
-  <key>ProcessType</key>
+  <key>LimitLoadToSessionType</key>
   <string>Background</string>
+  <key>ProcessType</key>
+  <string>Standard</string>
   <key>StandardErrorPath</key>
   <string>` + xmlEscape(filepath.Join(e.l.LogDir, "daemon.log")) + `</string>
 </dict>
@@ -195,7 +201,7 @@ func (e *env) ownedFileTarget(id, path, content string, afterRemove func() error
 		identify: "whole file (" + marker + ")",
 		add: func(cur []byte) (addResult, error) {
 			if cur != nil && !strings.Contains(string(cur), marker) {
-				return addResult{}, errors.New(path + " exists and is not managed by stagent; left unchanged")
+				return addResult{}, unmanagedFile(path + " exists and is not managed by stagent; left unchanged")
 			}
 			return addResult{after: []byte(content), summary: "install the login service definition"}, nil
 		},
@@ -250,9 +256,12 @@ func (e *env) waitDaemonGone(pid int) bool {
 	}
 }
 
+// launchdDomains are the domains our LaunchAgent may be loaded in: the user
+// domain it is bootstrapped into, then the GUI domain of versions before
+// 0.4.0, so that stopping and removing finds an older load too.
 func (e *env) launchdDomains() []string {
 	u := strconv.Itoa(e.uid)
-	return []string{"gui/" + u, "user/" + u}
+	return []string{"user/" + u, "gui/" + u}
 }
 
 // serviceAddChanges plans installing and starting the service.
@@ -318,7 +327,7 @@ func (e *env) serviceAddChanges() ([]*Change, error) {
 			e.note("systemd stops user services when your last session ends unless lingering is enabled: run `loginctl enable-linger` (may require an administrator) to keep the daemon running after logout.")
 		}
 	} else {
-		c.Summary = "install the LaunchAgent and load it with `launchctl bootstrap`"
+		c.Summary = "install the LaunchAgent and load it into the user domain with `launchctl bootstrap user/<uid>`"
 		c.apply = func() error {
 			if err := write(); err != nil {
 				return err
@@ -326,18 +335,12 @@ func (e *env) serviceAddChanges() ([]*Change, error) {
 			e.m.setService(ServiceEntry{Kind: kind, Name: launchdLabel, Path: t.path})
 			e.dirty = true
 			e.stopRunningDaemon()
-			var errs []error
 			for _, d := range e.launchdDomains() {
 				e.run.Run(cmdTimeout, "launchctl", "bootout", d+"/"+launchdLabel)
-				err := e.runCmd("launchctl", "bootstrap", d, t.path)
-				if err == nil {
-					return nil
-				}
-				errs = append(errs, err)
 			}
-			return errors.Join(errs...)
+			return e.runCmd("launchctl", "bootstrap", e.launchdDomains()[0], t.path)
 		}
-		e.note("A LaunchAgent is loaded into your GUI login session; over SSH without a GUI login it falls back to the user domain and starts at the next login.")
+		e.note("The LaunchAgent runs in your user domain (user/<uid>), outside the GUI session, so the daemon keeps running after you log out; agents do not need it for that. Whether it starts after a restart before anyone has logged in has not been verified.")
 	}
 	return []*Change{c}, nil
 }

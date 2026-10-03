@@ -1,0 +1,31 @@
+|
+|❯ Run the shell command: sleep 8 && echo     
+|  finished                                   
+|
+|  Ran 1 shell command 
+|
+|● コマンドを実行しました。8秒待機したあとに
+|  finished と出力されました。
+|
+|✻ Crunched for 12s · done 10:54
+|
+|❯ Use the Write tool to create a.txt         
+|  containing hi                              
+|
+|● Write(a.txt)
+|
+|─────────────────────────────────────────────
+| Create file
+| a.txt
+|╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+|  1 hi
+|╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+| Do you want to create a.txt?
+| ❯ 1. Yes
+|   2. Yes, and switch to accept edits 
+|      (auto-approve file edits and common 
+|      file commands) for this session
+|   3. Nohift+tab)
+|
+| Esc to cancel · Tab to amend
+cursor=1,23 alt=true appCursor=false bracketed=true

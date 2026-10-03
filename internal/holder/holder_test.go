@@ -415,10 +415,11 @@ func TestSlowRawClientIsResynchronized(t *testing.T) {
 
 // fakeDaemon records what holders send and answers holder.register.
 type fakeDaemon struct {
-	mu    sync.Mutex
-	msgs  []*wire.Msg
-	conns []net.Conn
-	cond  *sync.Cond
+	mu      sync.Mutex
+	msgs    []*wire.Msg
+	conns   []net.Conn
+	holders []*rpc.Conn // connections a holder registered on
+	cond    *sync.Cond
 }
 
 func startFakeDaemon(t *testing.T, l *paths.Layout) *fakeDaemon {
@@ -443,9 +444,12 @@ func startFakeDaemon(t *testing.T, l *paths.Layout) *fakeDaemon {
 			d.mu.Lock()
 			d.conns = append(d.conns, c)
 			d.mu.Unlock()
-			go rpc.Serve(ctx, c, func(_ context.Context, _ *rpc.Conn, m *wire.Msg) (any, error) {
+			go rpc.Serve(ctx, c, func(_ context.Context, rc *rpc.Conn, m *wire.Msg) (any, error) {
 				d.mu.Lock()
 				d.msgs = append(d.msgs, m)
+				if m.Method == wire.MethodHolderRegister {
+					d.holders = append(d.holders, rc)
+				}
 				d.cond.Broadcast()
 				d.mu.Unlock()
 				if m.Method == wire.MethodHolderRegister {
@@ -494,7 +498,35 @@ func (d *fakeDaemon) dropConnections() {
 	for _, c := range d.conns {
 		c.Close()
 	}
-	d.conns = nil
+	d.conns, d.holders = nil, nil
+}
+
+// notifyHolders sends a daemon → holder notification on every connection
+// a holder registered on.
+func (d *fakeDaemon) notifyHolders(t *testing.T, method string, params any) {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, c := range d.holders {
+		if err := c.Notify(method, params); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// promptGones returns the holder.prompt_gone messages from from on.
+func (d *fakeDaemon) promptGones(from int) []wire.HolderPromptGoneParams {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []wire.HolderPromptGoneParams
+	for _, m := range d.msgs[min(from, len(d.msgs)):] {
+		if m.Method == wire.MethodHolderPromptGone {
+			var p wire.HolderPromptGoneParams
+			json.Unmarshal(m.Params, &p)
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func isPatch(check func(p wire.SessionPatch) bool) func(*wire.Msg) bool {
@@ -563,4 +595,164 @@ func TestDaemonLinkReportsLifecycleAndReregisters(t *testing.T) {
 	if r := waitExit(t, done); r.code != 3 {
 		t.Fatalf("Run = %d, %v", r.code, r.err)
 	}
+}
+
+// A program a client hung up ends with holder.ended hung_up (the app ending
+// a kept shell is no abnormal exit); one that exits on its own does not.
+// The holder reports its $CLAUDE_CLIENT_PRESENCE_FILE.
+func TestHangupIsRecordedAndPresenceFileReported(t *testing.T) {
+	l := isolate(t)
+	d := startFakeDaemon(t, l)
+	presence := filepath.Join(t.TempDir(), "present")
+	t.Setenv(wire.EnvClaudePresenceFile, presence)
+	ended := func(from *int) wire.ClosedParams {
+		em := d.waitFor(t, from, "holder.ended", func(m *wire.Msg) bool { return m.Method == wire.MethodHolderEnded })
+		var p wire.ClosedParams
+		json.Unmarshal(em.Params, &p)
+		return p
+	}
+
+	from := 0
+	id, done := startDetached(t, l, 80, 24, "sh", "-c", "read x")
+	reg := d.waitFor(t, &from, "holder.register", func(m *wire.Msg) bool { return m.Method == wire.MethodHolderRegister })
+	var s wire.Session
+	json.Unmarshal(reg.Params, &s)
+	if s.PresenceFile != presence {
+		t.Fatalf("registered presence_file %q, want %q", s.PresenceFile, presence)
+	}
+	c := dialHolder(t, l, id)
+	if err := c.call(t, wire.MethodSessionSignal, wire.SignalParams{ID: id, Signal: wire.SignalHangup}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if p := ended(&from); p.ID != id || !p.HungUp {
+		t.Fatalf("holder.ended after hangup %+v", p)
+	}
+	waitExit(t, done)
+
+	id, done = startDetached(t, l, 80, 24, "sh", "-c", "read x; exit 1")
+	c = dialHolder(t, l, id)
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil)
+	if p := ended(&from); p.ID != id || p.HungUp || p.ExitCode != 1 {
+		t.Fatalf("holder.ended of an exit %+v", p)
+	}
+	waitExit(t, done)
+}
+
+// attached follows the clients attached through session.attach: the
+// daemon learns each change between none and some, session.info and a
+// re-registration carry the current value, and replacing an attachment or
+// detaching one of two clients does not report a detach.
+func TestAttachedFollowsClients(t *testing.T) {
+	l := isolate(t)
+	d := startFakeDaemon(t, l)
+	id, done := startDetached(t, l, 80, 24, "sh", "-c", "read x")
+	isRegister := func(m *wire.Msg) bool { return m.Method == wire.MethodHolderRegister }
+	attachedPatch := func(want bool) func(*wire.Msg) bool {
+		return isPatch(func(p wire.SessionPatch) bool { return p.ID == id && p.Attached != nil && *p.Attached == want })
+	}
+	info := func(c *testClient) wire.Session {
+		t.Helper()
+		var s wire.Session
+		if err := c.call(t, wire.MethodSessionInfo, wire.SessionRef{ID: id}, &s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	attach := func(c *testClient) {
+		t.Helper()
+		if err := c.call(t, wire.MethodSessionAttach, wire.AttachParams{ID: id}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	from := 0
+	var s wire.Session
+	json.Unmarshal(d.waitFor(t, &from, "holder.register", isRegister).Params, &s)
+	a := dialHolder(t, l, id)
+	if s.Attached || info(a).Attached {
+		t.Fatal("attached before any client attached")
+	}
+
+	attach(a)
+	d.waitFor(t, &from, "attached patch", attachedPatch(true))
+	attachedAt := from
+	if !info(a).Attached {
+		t.Fatal("session.info not attached")
+	}
+	b := dialHolder(t, l, id)
+	attach(b)
+	attach(a) // replaces a's attachment
+	if err := a.call(t, wire.MethodSessionDetach, wire.SessionRef{ID: id}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !info(a).Attached {
+		t.Fatal("not attached while b is")
+	}
+
+	// The daemon restarts: the holder registers as attached.
+	d.dropConnections()
+	json.Unmarshal(d.waitFor(t, &from, "re-registration", isRegister).Params, &s)
+	if !s.Attached {
+		t.Fatalf("re-registered session %+v", s)
+	}
+
+	// The last client goes away without detaching.
+	b.Close()
+	d.waitFor(t, &from, "detached patch", attachedPatch(false))
+	if info(a).Attached {
+		t.Fatal("session.info still attached")
+	}
+	d.mu.Lock()
+	for _, m := range d.msgs[attachedAt : from-1] {
+		if attachedPatch(false)(m) {
+			d.mu.Unlock()
+			t.Fatalf("reported detached while a client was attached: %s", m.Params)
+		}
+	}
+	d.mu.Unlock()
+
+	a.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil)
+	waitExit(t, done)
+}
+
+// While the daemon asks (holder.prompt_watch), the holder reports once
+// that claude's permission menu it saw left the screen; a watch whose menu
+// never showed reports nothing. No client is attached: the holder keeps
+// the screen regardless.
+func TestPromptWatchReportsMenuGone(t *testing.T) {
+	l := isolate(t)
+	d := startFakeDaemon(t, l)
+	fixture, err := filepath.Abs("testdata/claude_permission_60x30.ansi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, done := startDetached(t, l, 60, 30, "sh", "-c",
+		`cat "$0"; read a; printf '\033[2J\033[H● Write(a.txt)\r\n  ⎿  Wrote 1 line\r\n'; read b; echo more; read c`, fixture)
+	from := 0
+	d.waitFor(t, &from, "holder.register", func(m *wire.Msg) bool { return m.Method == wire.MethodHolderRegister })
+	d.notifyHolders(t, wire.MethodHolderPromptWatch, wire.HolderPromptWatchParams{ID: id, Gen: 5, On: true})
+
+	time.Sleep(4 * promptEvalEvery) // the menu is up
+	if g := d.promptGones(0); len(g) != 0 {
+		t.Fatalf("prompt_gone while the menu is up: %+v", g)
+	}
+	c := dialHolder(t, l, id)
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil) // answered
+	m := d.waitFor(t, &from, "holder.prompt_gone", func(m *wire.Msg) bool { return m.Method == wire.MethodHolderPromptGone })
+	var p wire.HolderPromptGoneParams
+	json.Unmarshal(m.Params, &p)
+	if p != (wire.HolderPromptGoneParams{ID: id, Gen: 5}) {
+		t.Fatalf("prompt_gone %+v", p)
+	}
+
+	// A new watch whose menu never shows reports nothing, and the old one
+	// does not report again.
+	d.notifyHolders(t, wire.MethodHolderPromptWatch, wire.HolderPromptWatchParams{ID: id, Gen: 6, On: true})
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil)
+	time.Sleep(4*promptEvalEvery + 2*promptGoneAfter)
+	if g := d.promptGones(0); len(g) != 1 {
+		t.Fatalf("prompt_gone reports %+v, want only the first", g)
+	}
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil)
+	waitExit(t, done)
 }

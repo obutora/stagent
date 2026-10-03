@@ -45,16 +45,16 @@ func (e *Error) Error() string { return e.Code + ": " + e.Message }
 
 // Stable error codes.
 const (
-	ErrBadRequest     = "bad_request"
-	ErrUnknownMethod  = "unknown_method"
-	ErrNotFound       = "not_found"
-	ErrUnsupported    = "unsupported"
-	ErrInternal       = "internal"
-	ErrUnavailable    = "unavailable"
-	ErrVersion        = "version_mismatch"
-	ErrSessionEnded   = "session_ended"
-	ErrNotSizeOwner   = "not_size_owner"
-	ErrApprovalClosed = "approval_closed"
+	ErrBadRequest    = "bad_request"
+	ErrUnknownMethod = "unknown_method"
+	ErrNotFound      = "not_found"
+	ErrUnsupported   = "unsupported"
+	ErrInternal      = "internal"
+	ErrUnavailable   = "unavailable"
+	ErrVersion       = "version_mismatch"
+	ErrSessionEnded  = "session_ended"
+	ErrNotSizeOwner  = "not_size_owner"
+	ErrNotConfigured = "not_configured"
 )
 
 // Errorf builds an *Error.

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/proc"
@@ -81,9 +82,6 @@ type Bridge struct {
 	// Detached holder starts (see startHolder); used by the spawn worker
 	// only, one spawn at a time.
 	spawnProc func(exe string, args []string, dir string, env []string, logPath string) (int, error)
-	scopeArgv func() []string // replaceable in tests; default holderScope
-	scopeOnce sync.Once
-	scope     []string // argv prefix moving holders into a systemd scope; nil = plain
 
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
@@ -103,6 +101,9 @@ type Bridge struct {
 	lastSeq   int64
 	known     map[string]bool
 	watchLost bool // the app's watch died with a daemon connection
+	// foreground is the app's last presence.set, restored with the watch
+	// (the daemon forgets it with the connection).
+	foreground bool
 }
 
 // daemonConn is one connection to the daemon.
@@ -138,7 +139,6 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		return captureLoginEnv(exe)
 	}
 	b.spawnProc = proc.SpawnDetached
-	b.scopeArgv = holderScope
 	return b
 }
 
@@ -271,6 +271,10 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	}
 	// A protocol mismatch is still answered with ours: the app decides
 	// whether to offer an update.
+	hostID, err := hostid.Ensure(b.l.HostID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stagent bridge: host id:", err)
+	}
 	return wire.HelloResult{
 		Protocol: version.Protocol,
 		Version:  version.Version,
@@ -280,6 +284,7 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 		Capabilities: []string{
 			wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush, wire.CapPersist,
 		},
+		HostID: hostID,
 	}, nil
 }
 
@@ -486,6 +491,14 @@ func (b *Bridge) forwardDaemon(m *wire.Msg) {
 		// A lost watch comes back before the request that reconnected.
 		b.rewatch(dc)
 	}
+	if m.Method == wire.MethodPresenceSet {
+		var p wire.PresenceSetParams
+		if rpc.Decode(m, &p) == nil {
+			b.mu.Lock()
+			b.foreground = p.Foreground
+			b.mu.Unlock()
+		}
+	}
 	b.forward(dc.c, m, wire.Errorf(wire.ErrUnavailable, "daemon connection lost"), onResult)
 }
 
@@ -607,6 +620,12 @@ func (b *Bridge) noteWatch(dc *daemonConn, result json.RawMessage, publish bool)
 	for _, id := range gone {
 		b.out.Notify(wire.NotifySessionRemoved, wire.SessionRef{ID: id})
 	}
+	// The list may have changed meanwhile (a restarted daemon forgets it).
+	unwrapped := res.Unwrapped
+	if unwrapped == nil {
+		unwrapped = []wire.UnwrappedLaunch{}
+	}
+	b.out.Notify(wire.NotifyUnwrappedUpdated, wire.UnwrappedUpdatedParams{Unwrapped: unwrapped})
 }
 
 // resubscribe restores the app's watch after the daemon connection dropped
@@ -669,6 +688,13 @@ func (b *Bridge) rewatch(dc *daemonConn) bool {
 			done <- true
 		default:
 			b.noteWatch(dc, resp.Result, true)
+			b.mu.Lock()
+			fg := b.foreground
+			b.mu.Unlock()
+			if fg {
+				params, _ := json.Marshal(wire.PresenceSetParams{Foreground: true})
+				dc.c.Go(wire.MethodPresenceSet, params, func(*wire.Msg) {})
+			}
 			done <- true
 		}
 	})

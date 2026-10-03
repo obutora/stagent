@@ -17,7 +17,8 @@
 # rebuilds the binaries from that commit and aborts unless they equal dist/
 # byte for byte, pushes main and the tag v<version> together (refusing a tag
 # that already exists on another commit), then creates the release at that
-# commit with dist/ as its assets and the Go version in its notes.
+# commit with dist/ as its assets and, as its notes, the version's section of
+# CHANGELOG.md (required) followed by the Go version.
 #
 # Builds are reproducible (-trimpath, no VCS stamp, empty build id), so the
 # same source and Go toolchain always give the same sha256 sums: the app pins
@@ -160,6 +161,9 @@ cat "$dist/SHA256SUMS"
 
 [ "$publish" = 1 ] || exit 0
 
+changes="$(awk -v head="## $version" '$0 == head { on = 1; next } on && /^## / { exit } on' "$here/CHANGELOG.md")"
+[ -n "$(printf '%s' "$changes" | tr -d '[:space:]')" ] || die "CHANGELOG.md has no \"## $version\" section (the release notes)"
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 clone="$work/stagent"
@@ -197,7 +201,10 @@ if [ -n "$(git -C "$clone" ls-remote origin "refs/tags/$tag")" ]; then
   remote_tag="$(git -C "$clone" rev-parse "refs/tags/$tag^{commit}")"
   [ "$remote_tag" = "$commit" ] || die "$repo already has tag $tag at $remote_tag, not at $commit"
 fi
-notes="stagent $version — server binary for SSH Term. Built from this tag ($commit) with $go_version via scripts/release.sh (reproducible: CGO_ENABLED=0, -trimpath, no VCS stamp, empty build id); verify downloads against SHA256SUMS."
+notes="$changes
+
+---
+stagent $version — server binary for SSH Term. Built from this tag ($commit) with $go_version via scripts/release.sh (reproducible: CGO_ENABLED=0, -trimpath, no VCS stamp, empty build id); verify downloads against SHA256SUMS."
 
 if [ "$dry_run" = 1 ]; then
   git -C "$clone" log -1 --stat --format='%H %s' | tail -n 20

@@ -30,6 +30,14 @@ type Manifest struct {
 	// Backups are the pre-edit copies of modified config files. They stay
 	// after unhook and are deleted by purge.
 	Backups []string `json:"backups"`
+	// LingerEnabled: `integrate --linger` turned lingering on (it was off).
+	// Only then do `integrate --remove linger` and `uninstall --linger`
+	// turn it back off.
+	LingerEnabled bool `json:"linger_enabled,omitempty"`
+	// TerminalNoWarn lists the Terminal.app profiles `integrate --terminal`
+	// added stagent to (noWarnProcesses, macOS). `integrate --remove
+	// terminal` and `uninstall --level unhook` take out only that entry.
+	TerminalNoWarn []TerminalEntry `json:"terminal_no_warn,omitempty"`
 }
 
 // LayoutInfo is the part of the layout the app shows and the uninstaller

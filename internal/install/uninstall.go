@@ -41,8 +41,9 @@ func (r *UninstallReport) step(action, target string, err error) bool {
 	return err == nil
 }
 
-// uninstall runs the cumulative levels stop ⊂ unhook ⊂ purge.
-func (e *env) uninstall(levelName string, uploads bool) *UninstallReport {
+// uninstall runs the cumulative levels stop ⊂ unhook ⊂ purge. linger
+// (purge only) also turns lingering off when stagent turned it on.
+func (e *env) uninstall(levelName string, uploads, linger bool) *UninstallReport {
 	level := levelNames[levelName]
 	r := &UninstallReport{Level: levelName, Steps: []Step{}, Removed: []string{}, Failed: []Failure{}}
 	// Live sessions, for naming what holds files a purge cannot delete.
@@ -58,6 +59,9 @@ func (e *env) uninstall(levelName string, uploads bool) *UninstallReport {
 		e.unhook(r)
 	}
 	if level >= levelPurge {
+		if linger && e.m.LingerEnabled {
+			r.step("disable-linger", lingerTarget, e.disableLinger())
+		}
 		e.purge(r, sessions, uploads)
 	} else if e.haveM || e.dirty {
 		if err := e.saveManifest(); err != nil {
@@ -79,20 +83,25 @@ func (e *env) stopDaemon(r *UninstallReport) {
 	if err != nil {
 		return // not running
 	}
+	r.step(e.shutdownDaemon(st))
+}
+
+// shutdownDaemon stops the running daemon st reported: daemon.shutdown
+// (holders take it as deliberate and do not start another), then a kill
+// when it has not exited after settle. It returns the step taken.
+func (e *env) shutdownDaemon(st *wire.DaemonStatus) (action, target string, err error) {
 	e.daemon.Shutdown()
 	if e.waitDaemonGone(st.PID) {
-		r.step("stop-daemon", e.l.DaemonAddr, nil)
-		return
+		return "stop-daemon", e.l.DaemonAddr, nil
 	}
 	if st.PID <= 0 {
-		r.step("stop-daemon", e.l.DaemonAddr, errString("daemon did not exit"))
-		return
+		return "stop-daemon", e.l.DaemonAddr, errString("daemon did not exit")
 	}
 	err = e.kill(st.PID)
 	if err == nil && !e.waitDaemonGone(st.PID) {
 		err = errString("daemon still running after kill")
 	}
-	r.step("kill-daemon", "pid "+strconv.Itoa(st.PID), err)
+	return "kill-daemon", "pid " + strconv.Itoa(st.PID), err
 }
 
 // unhook removes every integration element (tracked or orphaned).
@@ -116,6 +125,11 @@ func (e *env) unhook(r *UninstallReport) {
 		r.step("remove-service", e.serviceKind(), err)
 	}
 	changes = append(changes, sc...)
+	if tc, err := e.terminalRemoveChange(); err != nil {
+		r.step("remove-entries", terminalTarget, err)
+	} else if tc != nil {
+		changes = append(changes, tc)
+	}
 	for _, c := range changes {
 		action := "remove-entries"
 		switch {

@@ -1,9 +1,16 @@
 package install
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/obutora/stagent/internal/hostid"
+	"github.com/obutora/stagent/internal/paths"
 )
 
 func orphanTargets(r *DoctorReport) string {
@@ -49,6 +56,10 @@ func TestDoctorReportsOrphans(t *testing.T) {
 	if len(r.Problems) != 0 {
 		t.Errorf("problems = %v", r.Problems)
 	}
+	// install created the host id; doctor reports it.
+	if r.HostID == "" || r.HostID != hostid.Read(te.l.HostID) {
+		t.Errorf("host_id = %q, file %q", r.HostID, hostid.Read(te.l.HostID))
+	}
 
 	// With the binary gone every remaining element is an orphan.
 	removeAll(t, te.l.Root)
@@ -63,7 +74,7 @@ func TestDoctorReportsOrphans(t *testing.T) {
 	}
 
 	// unhook without a manifest still cleans them up.
-	res := te.uninstall("unhook", false)
+	res := te.uninstall("unhook", false, false)
 	if len(res.Remaining) != 0 || strings.Contains(readFile(t, te.claudeSettings()), "stagent") || strings.Contains(readFile(t, te.codexHooks()), "stagent") {
 		t.Fatalf("orphans left after unhook: %+v", res.Remaining)
 	}
@@ -88,39 +99,99 @@ func TestDoctorHarnessDiscoveryAndVersion(t *testing.T) {
 	}
 }
 
+// fakeLogind answers the busctl / loginctl queries of doctor: kill and
+// linger are their outputs ("" fails), types the Type of each session of
+// the user.
+func fakeLogind(kill, linger *string, types *[]string) func(string, []string) (string, error) {
+	return func(name string, args []string) (string, error) {
+		var out string
+		switch {
+		case name == "busctl":
+			out = *kill
+		case name == "loginctl" && slices.Contains(args, "--property=Linger"):
+			out = *linger
+		case name == "loginctl" && slices.Contains(args, "--property=Sessions"):
+			var ids []string
+			for i := range *types {
+				ids = append(ids, strconv.Itoa(i+1))
+			}
+			out = strings.Join(ids, " ") + "\n"
+		case name == "loginctl" && args[0] == "show-session":
+			out = strings.Join(*types, "\n\n") + "\n"
+		default:
+			return "", nil
+		}
+		if out == "" {
+			return "", errString("exit status 1")
+		}
+		return out, nil
+	}
+}
+
 // Detached sessions outlive logout unless logind kills the user's processes
 // and no lingering keeps the user's service manager (and its scopes) alive,
-// or the sockets are in $XDG_RUNTIME_DIR.
+// or the sockets are in $XDG_RUNTIME_DIR. Lingering is needed when it is
+// off and, before any start through the wrapper, logind kills user
+// processes or the user has a graphical session; after one, when that
+// start does not survive logout.
 func TestDoctorPersistence(t *testing.T) {
 	te := newTestEnv(t, "linux")
-	kill, linger := "b true\n", "no\n"
-	te.run.respond = func(name string, args []string) (string, error) {
-		switch name {
-		case "busctl":
-			return kill, nil
-		case "loginctl":
-			return linger, nil
-		}
-		return "", nil
-	}
-	check := func(wantKill, wantLinger *bool, wantProblem bool) {
+	kill, linger, types := "b true\n", "no\n", []string{"tty"}
+	te.run.respond = fakeLogind(&kill, &linger, &types)
+	yes, no := true, false
+	check := func(wantKill, wantLinger, wantNeeded *bool, wantReason string) {
 		t.Helper()
 		r := te.doctor()
 		p := r.Persistence
 		eq := func(a, b *bool) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
+		reason := ""
+		if p.LingerReason != nil {
+			reason = *p.LingerReason
+		}
 		problem := strings.Contains(strings.Join(r.Problems, "\n"), "loginctl enable-linger")
-		if p.RunDir != te.l.RunDir || !p.RunDirSurvivesLogout || !eq(p.KillUserProcesses, wantKill) || !eq(p.Linger, wantLinger) || problem != wantProblem {
-			t.Errorf("kill %q linger %q: persistence %+v (kill %v linger %v), problems %q", kill, linger, p, p.KillUserProcesses, p.Linger, r.Problems)
+		if p.RunDir != te.l.RunDir || !p.RunDirSurvivesLogout || !eq(p.KillUserProcesses, wantKill) || !eq(p.Linger, wantLinger) ||
+			!eq(p.LingerNeeded, wantNeeded) || reason != wantReason || problem != (wantNeeded != nil && *wantNeeded) {
+			t.Errorf("kill %q linger %q types %q: persistence %+v (kill %v linger %v needed %v), problems %q",
+				kill, linger, types, p, p.KillUserProcesses, p.Linger, p.LingerNeeded, r.Problems)
 		}
 	}
-	yes, no := true, false
-	check(&yes, &no, true)
+	// Before any start through the wrapper.
+	check(&yes, &no, &yes, lingerReasonKill)
 	linger = "yes\n"
-	check(&yes, &yes, false)
+	check(&yes, &yes, &no, "")
 	kill, linger = "b false\n", "no\n"
-	check(&no, &no, false)
-	te.run.respond = func(string, []string) (string, error) { return "", errString("exit status 1") }
-	check(nil, nil, false)
+	check(&no, &no, &no, "")
+	types = []string{"tty", "wayland"}
+	check(&no, &no, &yes, lingerReasonGraphical)
+	types = []string{"x11"}
+	check(&no, &no, &yes, lingerReasonGraphical)
+	linger = "yes\n"
+	check(&no, &yes, &no, "")
+	kill, linger = "", ""
+	check(nil, nil, nil, "")
+	// Lingering unknown, KillUserProcesses known: still judged.
+	kill = "b true\n"
+	check(&yes, nil, &yes, lingerReasonKill)
+
+	// After a start through the wrapper, its outcome decides.
+	kill, linger, types = "b true\n", "no\n", []string{"tty"}
+	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 1, SurvivesLogout: &yes})
+	check(&yes, &no, &no, "")
+	kill, types = "b false\n", []string{"x11"}
+	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 2, SurvivesLogout: &no})
+	check(&no, &no, &yes, lingerReasonLastRun)
+	if sw := te.doctor().ShellWrapper; sw.LastRunAt == nil || *sw.LastRunAt != 2 || sw.LastRunSurvivesLogout == nil || *sw.LastRunSurvivesLogout {
+		t.Errorf("shell_wrapper %+v", sw)
+	}
+	linger = "yes\n"
+	check(&no, &yes, &no, "")
+	// A record of stagent before 0.4.0 holds only the time.
+	linger = "no\n"
+	writeFile(t, te.l.WrapperRun, "1700000000000\n")
+	check(&no, &no, &yes, lingerReasonGraphical)
+	if sw := te.doctor().ShellWrapper; sw.LastRunAt == nil || *sw.LastRunAt != 1700000000000 || sw.LastRunSurvivesLogout != nil {
+		t.Errorf("legacy shell_wrapper %+v", sw)
+	}
 
 	te.vars["XDG_RUNTIME_DIR"] = te.l.RunDir + "-other"
 	if p := te.doctor().Persistence; !p.RunDirSurvivesLogout {
@@ -132,7 +203,126 @@ func TestDoctorPersistence(t *testing.T) {
 	}
 
 	mac := newTestEnv(t, "darwin")
-	if p := mac.doctor().Persistence; !p.RunDirSurvivesLogout || p.KillUserProcesses != nil || p.Linger != nil || mac.run.ran("busctl") || mac.run.ran("loginctl") {
+	if p := mac.doctor().Persistence; !p.RunDirSurvivesLogout || p.KillUserProcesses != nil || p.Linger != nil || p.LingerNeeded != nil || mac.run.ran("busctl") || mac.run.ran("loginctl") {
 		t.Errorf("darwin: %+v, calls %v", p, mac.run.calls)
+	}
+}
+
+// On macOS the last start through the wrapper and the running daemon each
+// report whether they swapped to the per-user bootstrap port, with the
+// reason and a problem when not; a daemon before 0.4.0 says nothing.
+// Lingering stays out of it.
+func TestDoctorBootstrapMacOS(t *testing.T) {
+	te := newTestEnv(t, "darwin")
+	yes, no := true, false
+	const why = "bootstrap_look_up_per_user: (ipc/send) invalid destination port (0x10000003)"
+	te.daemon.running = true
+	r := te.doctor()
+	if r.ShellWrapper.LastRunSurvivesLogout != nil || r.ShellWrapper.LastRunBootstrapError != nil || r.Daemon.BootstrapSwapped != nil || r.Daemon.BootstrapError != nil {
+		t.Errorf("nothing recorded, old daemon: %+v %+v", r.ShellWrapper, r.Daemon)
+	}
+
+	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 1, SurvivesLogout: &yes})
+	te.daemon.bootstrap = &yes
+	r = te.doctor()
+	if sw := r.ShellWrapper; sw.LastRunSurvivesLogout == nil || !*sw.LastRunSurvivesLogout || sw.LastRunBootstrapError != nil ||
+		r.Daemon.BootstrapSwapped == nil || !*r.Daemon.BootstrapSwapped || r.Daemon.BootstrapError != nil || strings.Contains(strings.Join(r.Problems, "\n"), "bootstrap") {
+		t.Errorf("swapped: %+v %+v %q", sw, r.Daemon, r.Problems)
+	}
+
+	te.l.WriteWrapperRun(paths.WrapperRunRecord{At: 2, SurvivesLogout: &no, BootstrapError: why})
+	te.daemon.bootstrap, te.daemon.bootstrapErr = &no, why
+	r = te.doctor()
+	sw, d := r.ShellWrapper, r.Daemon
+	if sw.LastRunSurvivesLogout == nil || *sw.LastRunSurvivesLogout || sw.LastRunBootstrapError == nil || *sw.LastRunBootstrapError != why {
+		t.Errorf("shell_wrapper %+v", sw)
+	}
+	if d.BootstrapSwapped == nil || *d.BootstrapSwapped || d.BootstrapError == nil || *d.BootstrapError != why {
+		t.Errorf("daemon %+v", d)
+	}
+	n := 0
+	for _, p := range r.Problems {
+		if strings.Contains(p, "per-user bootstrap port failed: "+why) {
+			n++
+		}
+	}
+	if n != 2 || r.Persistence.LingerNeeded != nil {
+		t.Errorf("problems %q, linger_needed %v", r.Problems, r.Persistence.LingerNeeded)
+	}
+	b, _ := json.Marshal(r)
+	for _, k := range []string{`"bootstrap_swapped":false`, `"last_run_bootstrap_error":"` + why} {
+		if !strings.Contains(string(b), k) {
+			t.Errorf("JSON lacks %s: %s", k, b)
+		}
+	}
+}
+
+// The claude item carries remoteControlAtStartup from the user's
+// ~/.claude/settings.json (null when absent or not a boolean); the other
+// harness items have no such key. The file is only read.
+func TestDoctorRemoteControlAtStartup(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	for _, c := range []struct{ settings, want string }{
+		{"", "null"},
+		{`{"remoteControlAtStartup": true, "hooks": {}}`, "true"},
+		{`{"remoteControlAtStartup": false}`, "false"},
+		{`{"remoteControlAtStartup": "yes"}`, "null"},
+		{`{"theme": "dark"}`, "null"},
+		{`{not json`, "null"},
+	} {
+		os.Remove(te.claudeSettings())
+		if c.settings != "" {
+			writeFile(t, te.claudeSettings(), c.settings)
+		}
+		var doc struct {
+			Harnesses []map[string]json.RawMessage `json:"harnesses"`
+		}
+		if err := json.Unmarshal(asciiJSON(te.doctor(), false), &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range doc.Harnesses {
+			v, ok := h["remote_control_at_startup"]
+			switch id := string(h["id"]); id {
+			case `"claude"`:
+				if !ok || string(v) != c.want {
+					t.Errorf("settings %q: remote_control_at_startup = %s (present %v), want %s", c.settings, v, ok, c.want)
+				}
+			default:
+				if ok {
+					t.Errorf("%s item has remote_control_at_startup", id)
+				}
+			}
+		}
+		if c.settings != "" && readFile(t, te.claudeSettings()) != c.settings {
+			t.Errorf("doctor changed %s", te.claudeSettings())
+		}
+	}
+}
+
+// doctor reports the daemon's last push failures from its file, with a
+// problem per failing channel; none is `"last_error": {}`.
+func TestDoctorNotifyLastError(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	lastError := func() string {
+		t.Helper()
+		var doc struct {
+			Notify map[string]json.RawMessage `json:"notify"`
+		}
+		if err := json.Unmarshal(asciiJSON(te.doctor(), false), &doc); err != nil {
+			t.Fatal(err)
+		}
+		return string(doc.Notify["last_error"])
+	}
+	if got := lastError(); got != "{}" {
+		t.Fatalf("last_error without failures = %s", got)
+	}
+	writeFile(t, te.l.NotifyErrors, `{"ntfy": {"at": 1767225600000, "status": 429, "error": "429 Too Many Requests"}}`)
+	if got := lastError(); got != `{"ntfy":{"at":1767225600000,"status":429,"error":"429 Too Many Requests"}}` {
+		t.Fatalf("last_error = %s", got)
+	}
+	problems := strings.Join(te.doctor().Problems, "\n")
+	if !strings.Contains(problems, "notify: the last push to ntfy failed at ") || !strings.Contains(problems, ": 429 Too Many Requests") ||
+		strings.Contains(problems, "webhook") {
+		t.Fatalf("problems = %s", problems)
 	}
 }

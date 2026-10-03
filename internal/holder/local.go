@@ -58,14 +58,16 @@ func (t *localTerm) write(b []byte) {
 func (t *localTerm) disable() { t.gone.Store(true) }
 
 // copyInput forwards local keystrokes to the program until stdin fails or
-// the session ends. A raw-mode terminal only fails a read (EOF, EIO) once
-// it hung up; lost, if not nil, is then called.
-func (t *localTerm) copyInput(ctx context.Context, q *inputQueue, det *detect.Detector, lost func()) {
+// the session ends; input is called with each read before it is forwarded.
+// A raw-mode terminal only fails a read (EOF, EIO) once it hung up; lost,
+// if not nil, is then called.
+func (t *localTerm) copyInput(ctx context.Context, q *inputQueue, det *detect.Detector, input func([]byte), lost func()) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := t.in.Read(buf)
 		if n > 0 {
 			det.Input()
+			input(buf[:n])
 			if q.push(ctx, []inputChunk{{data: bytes.Clone(buf[:n])}}) != nil {
 				return
 			}

@@ -10,7 +10,9 @@ import (
 	"runtime/debug"
 	"syscall"
 
+	"github.com/obutora/stagent/internal/bootstrap"
 	"github.com/obutora/stagent/internal/ipc"
+	"github.com/obutora/stagent/internal/logind"
 	"github.com/obutora/stagent/internal/paths"
 )
 
@@ -45,7 +47,15 @@ func Main(args []string) int {
 		log.Printf("listen %s: %v", l.DaemonAddr, err)
 		return 1
 	}
-	d, err := New(Options{Layout: l})
+	// The one daemon of this user leaves the login session it was started
+	// from (logind.Escape, Linux) or its bootstrap namespace (macOS) before
+	// it serves anyone.
+	logind.Escape("stagent-daemon")
+	bs := bootstrap.Swap()
+	if bs.Err != "" {
+		log.Printf("per-user bootstrap port: %s (push notifications cannot resolve host names after you log out)", bs.Err)
+	}
+	d, err := New(Options{Layout: l, Bootstrap: bs})
 	if err != nil {
 		ln.Close()
 		log.Print(err)

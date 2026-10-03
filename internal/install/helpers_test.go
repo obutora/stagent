@@ -41,16 +41,25 @@ func (f *fakeRunner) ran(prefix string) bool {
 type fakeDaemon struct {
 	running        bool
 	pid            int
+	version        string // "" = this binary's
 	exitOnShutdown bool
 	shutdowns      int
 	sessions       []wire.Session
+	// bootstrap / bootstrapErr are daemon.status's bootstrap_swapped /
+	// bootstrap_error.
+	bootstrap    *bool
+	bootstrapErr string
 }
 
 func (d *fakeDaemon) Status() (*wire.DaemonStatus, error) {
 	if !d.running {
 		return nil, errors.New("daemon unreachable")
 	}
-	return &wire.DaemonStatus{PID: d.pid, Version: version.Version}, nil
+	v := d.version
+	if v == "" {
+		v = version.Version
+	}
+	return &wire.DaemonStatus{PID: d.pid, Version: v, BootstrapSwapped: d.bootstrap, BootstrapError: d.bootstrapErr}, nil
 }
 
 func (d *fakeDaemon) Shutdown() error {
@@ -80,6 +89,9 @@ type testEnv struct {
 	vars   map[string]string
 	bins   map[string]string // lookPath results
 	killed []int
+	// spawns counts detached daemon starts; spawnFails makes them fail.
+	spawns     int
+	spawnFails bool
 }
 
 // newTestEnv builds an env on a fresh STAGENT_HOME with fake system access.
@@ -121,6 +133,14 @@ func newTestEnv(t *testing.T, goos string) *testEnv {
 	te.kill = func(pid int) error {
 		te.killed = append(te.killed, pid)
 		te.daemon.running = false
+		return nil
+	}
+	te.spawnDaemon = func() error {
+		te.spawns++
+		if te.spawnFails {
+			return errors.New("spawn failed")
+		}
+		te.daemon.running, te.daemon.version = true, ""
 		return nil
 	}
 	te.loadManifest()

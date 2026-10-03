@@ -28,6 +28,7 @@ func (h *Holder) serve(ctx context.Context, ln net.Listener) {
 			cs := &connState{h: h}
 			rpc.Serve(ctx, c, cs.handle)
 			cs.detach()
+			h.dropFocus(cs)
 		}()
 	}
 }
@@ -89,6 +90,9 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 			return nil, err
 		}
 		h.det.Input()
+		if p.Local {
+			h.localInput(cs, []byte(p.Text))
+		}
 		if err := h.in.push(ctx, req); err != nil {
 			return nil, wire.Errorf(wire.ErrSessionEnded, "%v", err)
 		}
@@ -143,6 +147,11 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 				return nil, wire.Errorf(wire.ErrSessionEnded, "%v", err)
 			}
 		case wire.SignalTerminate, wire.SignalKill, wire.SignalHangup:
+			if p.Signal == wire.SignalHangup {
+				h.mu.Lock()
+				h.hungUp = true
+				h.mu.Unlock()
+			}
 			if err := h.pty.Signal(p.Signal); err != nil {
 				return nil, err
 			}
@@ -207,14 +216,26 @@ func (cs *connState) attach(c *rpc.Conn, m *wire.Msg, p wire.AttachParams) (any,
 	}
 	fps = min(fps, maxFPS)
 
-	cs.detach() // re-attaching replaces the previous attachment
+	// Re-attaching replaces the previous attachment. The session stays
+	// attached across the swap: the old attachment leaves without
+	// reporting attached=false.
+	if old := cs.att; old != nil {
+		h.mu.Lock()
+		old.replaced = true
+		h.mu.Unlock()
+		cs.detach()
+	}
 	a := &attachment{
 		h: h, conn: c, raw: mode == wire.AttachRaw, fps: fps,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 	}
 	h.mu.Lock()
 	if h.ended {
+		changed := h.syncAttachedLocked()
 		h.mu.Unlock()
+		if changed {
+			h.link.wake()
+		}
 		return nil, wire.Errorf(wire.ErrSessionEnded, "session %s has ended", h.id)
 	}
 	var first []byte
@@ -239,8 +260,12 @@ func (cs *connState) attach(c *rpc.Conn, m *wire.Msg, p wire.AttachParams) (any,
 		a.items = append(a.items, item{data: first, end: h.pos})
 	}
 	h.atts[a] = struct{}{}
+	attachedChanged := h.syncAttachedLocked()
 	res := wire.AttachResult{Cols: h.sess.Cols, Rows: h.sess.Rows, Mode: mode, Offset: h.pos, Resumed: resumed}
 	h.mu.Unlock()
+	if attachedChanged {
+		h.link.wake()
+	}
 	cs.att = a
 
 	// The result must precede the first `output`, so reply before the
@@ -249,6 +274,18 @@ func (cs *connState) attach(c *rpc.Conn, m *wire.Msg, p wire.AttachParams) (any,
 	a.signal()
 	go a.run()
 	return rpc.Async, nil
+}
+
+// syncAttachedLocked updates sess.Attached from the attachments (h.mu
+// held) and reports whether it changed; the caller then wakes the daemon
+// link.
+func (h *Holder) syncAttachedLocked() bool {
+	attached := len(h.atts) > 0
+	if attached == h.sess.Attached {
+		return false
+	}
+	h.sess.Attached = attached
+	return true
 }
 
 func (cs *connState) detach() {
@@ -282,6 +319,9 @@ type attachment struct {
 	resync bool // raw: overflowed; next output is a fresh snapshot
 	dirty  bool // screen: changed since the last frame
 	closed *int // exit code once the session ended
+	// replaced (guarded by h.mu): a re-attach on the same connection
+	// replaces this attachment, so leaving does not change sess.Attached.
+	replaced bool
 
 	wake     chan struct{}
 	stop     chan struct{}
@@ -364,7 +404,11 @@ func (a *attachment) run() {
 	defer func() {
 		a.h.mu.Lock()
 		delete(a.h.atts, a)
+		changed := !a.replaced && a.h.syncAttachedLocked()
 		a.h.mu.Unlock()
+		if changed {
+			a.h.link.wake()
+		}
 	}()
 	interval := time.Second / time.Duration(a.fps)
 	var lastFrame time.Time

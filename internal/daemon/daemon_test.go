@@ -5,15 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/obutora/stagent/internal/follow"
+	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/rpc"
@@ -34,8 +39,7 @@ type testEnv struct {
 // fastConfig keeps debounce and digest windows short so tests run quickly.
 func fastConfig() wire.Config {
 	return wire.Config{
-		Notify:             wire.NotifyConfig{DebounceMs: 30, DigestWindowMs: 30},
-		ApprovalTimeoutSec: 30,
+		Notify: wire.NotifyConfig{DebounceMs: 30, DigestWindowMs: 30},
 	}
 }
 
@@ -181,23 +185,31 @@ func testSession(id string) wire.Session {
 
 func ptr[T any](v T) *T { return &v }
 
-type hookReply struct {
-	res wire.HookEventResult
-	err error
-}
-
-func (e *testEnv) hookAsync(p wire.HookEventParams) <-chan hookReply {
+// hookAsync sends one hook event on its own connection, like `stagent hook`;
+// the reply channel yields the call's error once the daemon answers.
+// Closing the client is the hook process going away.
+func (e *testEnv) hookAsync(p wire.HookEventParams) (*rpc.Client, <-chan error) {
 	hc, _ := e.client()
-	out := make(chan hookReply, 1)
+	out := make(chan error, 1)
 	go func() {
-		var r wire.HookEventResult
-		err := hc.Call(context.Background(), wire.MethodHookEvent, p, &r)
-		out <- hookReply{r, err}
+		out <- hc.Call(context.Background(), wire.MethodHookEvent, p, nil)
 	}()
-	return out
+	return hc, out
 }
 
-func TestSessionLifecycleAndAppApproval(t *testing.T) {
+func answered(t *testing.T, reply <-chan error, what string) {
+	t.Helper()
+	select {
+	case err := <-reply:
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s: hook not answered", what)
+	}
+}
+
+func TestSessionLifecycleAndClaudeApproval(t *testing.T) {
 	e := startDaemon(t, fastConfig(), Options{})
 	watcher, events := e.client()
 	var w wire.WatchResult
@@ -226,13 +238,13 @@ func TestSessionLifecycleAndAppApproval(t *testing.T) {
 		t.Fatalf("state_changed %+v", sc)
 	}
 
-	reply := e.hookAsync(wire.HookEventParams{
+	hook, reply := e.hookAsync(wire.HookEventParams{
 		Harness: wire.HarnessClaude, SessionID: sid,
 		Payload: json.RawMessage(`{"hook_event_name":"PermissionRequest","session_id":"conv-1","transcript_path":"/t/conv-1.jsonl","cwd":"/home/u/proj","tool_name":"Bash","tool_input":{"command":"rm -rf build","description":"clean"}}`),
 	})
 	m = await(t, events, "approval_requested", event(wire.EventApprovalRequested, nil))
 	_, ap := decodeEvent[wire.Approval](t, m)
-	if ap.SessionID != sid || ap.ToolName != "Bash" || ap.Summary != "Bash: rm -rf build" || ap.ExpiresAt-ap.CreatedAt != 30000 {
+	if ap.SessionID != sid || ap.ToolName != "Bash" || ap.Summary != "Bash: rm -rf build" {
 		t.Fatalf("approval %+v", ap)
 	}
 	m = await(t, events, "needs_approval", sessionState(wire.StateNeedsApproval))
@@ -242,44 +254,51 @@ func TestSessionLifecycleAndAppApproval(t *testing.T) {
 		t.Fatalf("session after PermissionRequest %+v", s)
 	}
 	m = await(t, events, "needs_approval notification", notificationWith(reasonNeedsApproval))
-	if _, n := decodeEvent[wire.NotificationData](t, m); n.Title != "claude · proj" || n.Body != "Needs approval: Bash" {
+	if _, n := decodeEvent[wire.NotificationData](t, m); n.Title != "claude · proj" || n.Body != "Needs approval: Bash" || n.SessionID != sid {
 		t.Fatalf("notification %+v", n)
+	}
+	// A client connecting now sees the pending approval.
+	joined, _ := e.client()
+	var lw wire.WatchResult
+	call(t, joined, wire.MethodWatch, wire.WatchParams{}, &lw)
+	if len(lw.Approvals) != 1 || lw.Approvals[0].RequestID != ap.RequestID || len(lw.Sessions) != 1 || lw.Sessions[0].State != wire.StateNeedsApproval {
+		t.Fatalf("watch snapshot %+v", lw)
 	}
 	var list wire.ApprovalsListResult
 	call(t, watcher, wire.MethodApprovalsList, nil, &list)
 	if len(list.Approvals) != 1 || list.Approvals[0].RequestID != ap.RequestID {
 		t.Fatalf("approvals.list %+v", list)
 	}
+	// claude's prompt stays open, and the hook with it, until it is answered.
 	select {
-	case r := <-reply:
-		t.Fatalf("hook answered before the app: %+v", r)
-	default:
+	case err := <-reply:
+		t.Fatalf("hook answered while the prompt is open: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	err := watcher.Call(context.Background(), "approval.respond", map[string]string{"request_id": ap.RequestID, "decision": "allow"}, nil)
+	var we *wire.Error
+	if !errors.As(err, &we) || we.Code != wire.ErrUnknownMethod {
+		t.Fatalf("approval.respond: %v", err)
 	}
 
-	call(t, watcher, wire.MethodApprovalRespond, wire.ApprovalRespondParams{RequestID: ap.RequestID, Decision: wire.DecisionDeny}, nil)
-	select {
-	case r := <-reply:
-		if r.err != nil || r.res.Decision != wire.DecisionDeny || r.res.Message != defaultDenyMessage {
-			t.Fatalf("hook result %+v", r)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("hook not answered")
-	}
+	// claude stops the hook (the approved tool finished).
+	hook.Close()
 	m = await(t, events, "approval_resolved", event(wire.EventApprovalResolved, nil))
-	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd != (wire.ApprovalResolvedData{RequestID: ap.RequestID, Decision: "deny", By: "app"}) {
+	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd != (wire.ApprovalResolvedData{RequestID: ap.RequestID, By: "cancelled"}) {
 		t.Fatalf("approval_resolved %+v", rd)
 	}
-	await(t, events, "working after the decision", sessionState(wire.StateWorking))
-	err := watcher.Call(context.Background(), wire.MethodApprovalRespond, wire.ApprovalRespondParams{RequestID: ap.RequestID, Decision: wire.DecisionAllow}, nil)
-	var we *wire.Error
-	if !errors.As(err, &we) || we.Code != wire.ErrApprovalClosed {
-		t.Fatalf("second respond: %v", err)
+	m = await(t, events, "needs_approval cleared", sessionState(wire.StateWorking))
+	json.Unmarshal(m.Params, &s)
+	if s.StateSource != wire.SourceActivity {
+		t.Fatalf("session after the answer %+v", s)
+	}
+	call(t, watcher, wire.MethodApprovalsList, nil, &list)
+	if len(list.Approvals) != 0 {
+		t.Fatalf("approvals.list after the answer %+v", list)
 	}
 
-	r := <-e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "Stop", SessionID: sid, Payload: json.RawMessage(`{"session_id":"conv-1"}`)})
-	if r.err != nil || r.res.Decision != "" {
-		t.Fatalf("Stop hook result %+v", r)
-	}
+	_, stop := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "Stop", SessionID: sid, Payload: json.RawMessage(`{"session_id":"conv-1"}`)})
+	answered(t, stop, "Stop")
 	await(t, events, "turn_complete", notificationWith(reasonTurnComplete))
 	await(t, events, "idle", sessionState(wire.StateIdle))
 
@@ -289,7 +308,7 @@ func TestSessionLifecycleAndAppApproval(t *testing.T) {
 		t.Fatalf("session_ended %+v", se)
 	}
 	m = await(t, events, "exited notification", notificationWith(reasonExited))
-	if _, n := decodeEvent[wire.NotificationData](t, m); n.Level != wire.LevelWarn || n.Body != "Exited with code 2" {
+	if _, n := decodeEvent[wire.NotificationData](t, m); n.Level != wire.LevelWarn || n.Body != "Exited with code 2" || n.SessionID != sid {
 		t.Fatalf("exit notification %+v", n)
 	}
 
@@ -305,73 +324,225 @@ func TestSessionLifecycleAndAppApproval(t *testing.T) {
 	}
 }
 
-func TestApprovalTimeoutFallsBackToTerminal(t *testing.T) {
-	cfg := fastConfig()
-	cfg.ApprovalTimeoutSec = 1
-	e := startDaemon(t, cfg, Options{})
+// Approvals nothing here can answer — an agent outside stagent sessions
+// (an IDE, `claude -p`, the SDK) — are answered at once, neither registered
+// nor pushed.
+func TestApprovalOutsideSessionsIsNotTracked(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{})
 	watcher, events := e.client()
 	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
 
-	// An agent not wrapped by stagent (no STAGENT_SESSION_ID).
-	start := time.Now()
-	reply := e.hookAsync(wire.HookEventParams{
-		Harness: wire.HarnessCodex, Event: "PermissionRequest",
-		Payload: json.RawMessage(`{"cwd":"/srv/api","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: main.go\n*** End Patch"}}`),
+	for _, h := range []string{wire.HarnessClaude, wire.HarnessCodex} {
+		_, reply := e.hookAsync(wire.HookEventParams{
+			Harness: h, Event: "PermissionRequest",
+			Payload: json.RawMessage(`{"session_id":"conv-x","cwd":"/srv/api","tool_name":"Bash","tool_input":{"command":"touch x"}}`),
+		})
+		answered(t, reply, h)
+	}
+	// Claude's own "waiting for permission" notification is not pushed either.
+	_, reply := e.hookAsync(wire.HookEventParams{
+		Harness: wire.HarnessClaude, Event: "Notification",
+		Payload: json.RawMessage(`{"session_id":"conv-x","cwd":"/srv/api","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}`),
 	})
-	m := await(t, events, "approval_requested", event(wire.EventApprovalRequested, nil))
-	_, ap := decodeEvent[wire.Approval](t, m)
-	if ap.SessionID != "" || ap.Harness != wire.HarnessCodex || ap.Summary != "apply_patch: Update main.go" {
-		t.Fatalf("approval %+v", ap)
+	answered(t, reply, "Notification")
+	var list wire.ApprovalsListResult
+	call(t, watcher, wire.MethodApprovalsList, nil, &list)
+	if len(list.Approvals) != 0 {
+		t.Fatalf("approvals.list %+v", list)
 	}
-	m = await(t, events, "sessionless notification", notificationWith(reasonNeedsApproval))
-	if _, n := decodeEvent[wire.NotificationData](t, m); n.Title != "codex · api" {
-		t.Fatalf("notification title %q", n.Title)
-	}
-	select {
-	case r := <-reply:
-		if r.err != nil || r.res.Decision != wire.DecisionNone {
-			t.Fatalf("hook result %+v", r)
+	// A later sessionless Stop is reported; nothing about the approval came before it.
+	_, stop := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "Stop", Payload: json.RawMessage(`{"cwd":"/srv/api"}`)})
+	answered(t, stop, "Stop")
+	await(t, events, "nothing before the turn_complete notification", func(m *wire.Msg) bool {
+		if event(wire.EventApprovalRequested, nil)(m) || notificationWith(reasonNeedsApproval)(m) {
+			t.Fatalf("sessionless approval reported: %s", m.Params)
 		}
-		if d := time.Since(start); d < 900*time.Millisecond {
-			t.Fatalf("answered after %v, before the timeout", d)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout never answered the hook")
-	}
-	m = await(t, events, "approval_resolved", event(wire.EventApprovalResolved, nil))
-	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd.Decision != wire.DecisionNone || rd.By != "timeout" {
-		t.Fatalf("resolved %+v", rd)
-	}
-	err := watcher.Call(context.Background(), wire.MethodApprovalRespond, wire.ApprovalRespondParams{RequestID: ap.RequestID, Decision: wire.DecisionAllow}, nil)
-	var we *wire.Error
-	if !errors.As(err, &we) || we.Code != wire.ErrApprovalClosed {
-		t.Fatalf("respond after timeout: %v", err)
-	}
+		return notificationWith(reasonTurnComplete)(m)
+	})
 }
 
-func TestTerminalAnswerCancelsApproval(t *testing.T) {
+// Codex shows its prompt only after the hook returned, so the hook returns
+// at once; the approval closes when output resumes after the grace.
+func TestCodexApprovalReturnsAtOnceAndClosesOnActivity(t *testing.T) {
 	e := startDaemon(t, fastConfig(), Options{})
 	watcher, events := e.client()
 	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
 	holderConn, _ := e.client()
 	call(t, holderConn, wire.MethodHolderRegister, testSession(sid), nil)
 
-	reply := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "PermissionRequest", SessionID: sid,
-		Payload: json.RawMessage(`{"tool_name":"Edit","tool_input":{"file_path":"/p/a.go"}}`)})
+	_, reply := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessCodex, Event: "PermissionRequest", SessionID: sid,
+		Payload: json.RawMessage(`{"cwd":"/srv/api","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: main.go\n*** End Patch"}}`)})
+	answered(t, reply, "codex PermissionRequest")
+	m := await(t, events, "approval_requested", event(wire.EventApprovalRequested, nil))
+	if _, ap := decodeEvent[wire.Approval](t, m); ap.SessionID != sid || ap.Harness != wire.HarnessCodex || ap.Summary != "apply_patch: Update main.go" {
+		t.Fatalf("approval %+v", ap)
+	}
 	await(t, events, "needs_approval", sessionState(wire.StateNeedsApproval))
 	// The user answered in the terminal: output resumes after the grace.
 	time.Sleep(overrideGraceMs*time.Millisecond + 50*time.Millisecond)
 	holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, State: ptr(wire.StateWorking), StateSource: ptr(wire.SourceActivity)})
-	m := await(t, events, "approval_resolved", event(wire.EventApprovalResolved, nil))
-	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd.By != "cancelled" || rd.Decision != wire.DecisionNone {
+	m = await(t, events, "approval_resolved", event(wire.EventApprovalResolved, nil))
+	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd.By != "cancelled" {
 		t.Fatalf("resolved %+v", rd)
 	}
-	if r := <-reply; r.err != nil || r.res.Decision != wire.DecisionNone {
-		t.Fatalf("hook result %+v", r)
+	await(t, events, "working", sessionState(wire.StateWorking))
+}
+
+// A claude approval that output activity already closed releases its hook,
+// and only the last pending approval of a session clears needs_approval.
+func TestClaudeApprovalsCloseOneByOne(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	holderConn, _ := e.client()
+	call(t, holderConn, wire.MethodHolderRegister, testSession(sid), nil)
+
+	first, _ := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "PermissionRequest", SessionID: sid,
+		Payload: json.RawMessage(`{"tool_name":"Edit","tool_input":{"file_path":"/p/a.go"}}`)})
+	await(t, events, "first approval", event(wire.EventApprovalRequested, nil))
+	_, second := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "PermissionRequest", SessionID: sid,
+		Payload: json.RawMessage(`{"tool_name":"Edit","tool_input":{"file_path":"/p/b.go"}}`)})
+	await(t, events, "second approval", event(wire.EventApprovalRequested, nil))
+
+	first.Close()
+	await(t, events, "first resolved", event(wire.EventApprovalResolved, nil))
+	var w wire.WatchResult
+	late, _ := e.client()
+	call(t, late, wire.MethodWatch, wire.WatchParams{}, &w)
+	if len(w.Approvals) != 1 || w.Sessions[0].State != wire.StateNeedsApproval {
+		t.Fatalf("one approval left: %+v", w)
+	}
+
+	time.Sleep(overrideGraceMs*time.Millisecond + 50*time.Millisecond)
+	holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, State: ptr(wire.StateWorking), StateSource: ptr(wire.SourceActivity)})
+	await(t, events, "second resolved", event(wire.EventApprovalResolved, nil))
+	answered(t, second, "second hook released")
+}
+
+// nextPromptWatch returns the next holder.prompt_watch the holder got.
+func nextPromptWatch(t *testing.T, holderMsgs chan *wire.Msg, what string) wire.HolderPromptWatchParams {
+	t.Helper()
+	m := await(t, holderMsgs, what, func(m *wire.Msg) bool { return m.Method == wire.MethodHolderPromptWatch })
+	var p wire.HolderPromptWatchParams
+	if err := json.Unmarshal(m.Params, &p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// claude keeps a PermissionRequest hook open after its prompt was answered
+// (until the approved tool finished). The holder watching the screen
+// reports the menu gone: the approvals of that watch close without any
+// Stop, the hook is released and needs_approval clears; an approval
+// registered after the watch started (the next prompt) stays pending.
+func TestClaudeApprovalClosesWhenPromptLeavesScreen(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	holderConn, holderMsgs := e.client()
+	call(t, holderConn, wire.MethodHolderRegister, testSession(sid), nil)
+	permission := func(file string) <-chan error {
+		_, reply := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "PermissionRequest", SessionID: sid,
+			Payload: json.RawMessage(`{"tool_name":"Write","tool_input":{"file_path":"` + file + `"}}`)})
+		return reply
+	}
+	pending := func(what string, reply <-chan error) {
+		t.Helper()
+		select {
+		case err := <-reply:
+			t.Fatalf("%s: hook answered (%v)", what, err)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	first := permission("/p/a.txt")
+	_, ap1 := decodeEvent[wire.Approval](t, await(t, events, "first approval", event(wire.EventApprovalRequested, nil)))
+	await(t, events, "needs_approval", sessionState(wire.StateNeedsApproval))
+	w1 := nextPromptWatch(t, holderMsgs, "watch for the first prompt")
+	if !w1.On || w1.ID != sid || w1.Gen <= 0 {
+		t.Fatalf("prompt_watch %+v", w1)
+	}
+
+	// The next prompt comes before the holder reported the first one gone.
+	second := permission("/p/b.txt")
+	_, ap2 := decodeEvent[wire.Approval](t, await(t, events, "second approval", event(wire.EventApprovalRequested, nil)))
+	w2 := nextPromptWatch(t, holderMsgs, "watch for the second prompt")
+	if !w2.On || w2.ID != sid || w2.Gen <= w1.Gen {
+		t.Fatalf("second prompt_watch %+v after %+v", w2, w1)
+	}
+	pending("first", first)
+
+	holderConn.Notify(wire.MethodHolderPromptGone, wire.HolderPromptGoneParams{ID: sid, Gen: w1.Gen})
+	m := await(t, events, "first resolved", event(wire.EventApprovalResolved, nil))
+	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd != (wire.ApprovalResolvedData{RequestID: ap1.RequestID, By: "cancelled"}) {
+		t.Fatalf("approval_resolved %+v, want %s", rd, ap1.RequestID)
+	}
+	answered(t, first, "first hook released")
+	pending("second", second)
+	var w wire.WatchResult
+	late, _ := e.client()
+	call(t, late, wire.MethodWatch, wire.WatchParams{}, &w)
+	if len(w.Approvals) != 1 || w.Approvals[0].RequestID != ap2.RequestID || w.Sessions[0].State != wire.StateNeedsApproval {
+		t.Fatalf("after the first prompt left: %+v", w)
+	}
+
+	holderConn.Notify(wire.MethodHolderPromptGone, wire.HolderPromptGoneParams{ID: sid, Gen: w2.Gen})
+	m = await(t, events, "second resolved", event(wire.EventApprovalResolved, nil))
+	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd != (wire.ApprovalResolvedData{RequestID: ap2.RequestID, By: "cancelled"}) {
+		t.Fatalf("approval_resolved %+v, want %s", rd, ap2.RequestID)
+	}
+	answered(t, second, "second hook released")
+	m = await(t, events, "needs_approval cleared", sessionState(wire.StateIdle))
+	var s wire.Session
+	json.Unmarshal(m.Params, &s)
+	if s.StateSource != wire.SourceActivity {
+		t.Fatalf("session after the answer %+v", s)
+	}
+	if off := nextPromptWatch(t, holderMsgs, "watch off"); off != (wire.HolderPromptWatchParams{ID: sid, Gen: w2.Gen}) {
+		t.Fatalf("prompt_watch after the last approval closed %+v", off)
+	}
+	var al wire.ApprovalsListResult
+	call(t, watcher, wire.MethodApprovalsList, nil, &al)
+	if len(al.Approvals) != 0 {
+		t.Fatalf("approvals left %+v", al.Approvals)
 	}
 }
 
-func TestSessionlessNotificationsFoldIntoOneDigestPush(t *testing.T) {
+// A holder that reconnects while a claude approval is pending is asked to
+// watch again; a report from a connection that is not the session's holder
+// closes nothing.
+func TestPromptWatchFollowsHolderReconnect(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{GoneGrace: 5 * time.Second})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	holderConn, holderMsgs := e.client()
+	call(t, holderConn, wire.MethodHolderRegister, testSession(sid), nil)
+	_, reply := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "PermissionRequest", SessionID: sid,
+		Payload: json.RawMessage(`{"tool_name":"Bash","tool_input":{"command":"make"}}`)})
+	await(t, events, "approval", event(wire.EventApprovalRequested, nil))
+	w1 := nextPromptWatch(t, holderMsgs, "watch")
+
+	holderConn.Close()
+	again, againMsgs := e.client()
+	call(t, again, wire.MethodHolderRegister, testSession(sid), nil)
+	if w := nextPromptWatch(t, againMsgs, "watch after re-registering"); w != w1 {
+		t.Fatalf("prompt_watch after re-registering %+v, want %+v", w, w1)
+	}
+	stranger, _ := e.client()
+	stranger.Notify(wire.MethodHolderPromptGone, wire.HolderPromptGoneParams{ID: sid, Gen: w1.Gen})
+	select {
+	case err := <-reply:
+		t.Fatalf("hook answered on a stranger's report (%v)", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	again.Notify(wire.MethodHolderPromptGone, wire.HolderPromptGoneParams{ID: sid, Gen: w1.Gen})
+	await(t, events, "resolved", event(wire.EventApprovalResolved, nil))
+	answered(t, reply, "hook released")
+}
+
+// Hooks of programs not started through stagent notify in-app only; the
+// notifications of sessions within one window fold into one digest push.
+func TestSessionlessStayInAppAndSessionsFoldIntoOneDigest(t *testing.T) {
 	bodies := make(chan wire.NotificationData, 8)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var n wire.NotificationData
@@ -383,25 +554,38 @@ func TestSessionlessNotificationsFoldIntoOneDigestPush(t *testing.T) {
 	cfg := fastConfig()
 	cfg.Notify.DigestWindowMs = 300
 	cfg.Notify.Webhook = wire.WebhookConfig{Enabled: true, URL: srv.URL}
+	cfg.Notify.HostLabel = "box"
 	e := startDaemon(t, cfg, Options{})
 	watcher, events := e.client()
 	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
 
-	for _, cwd := range []string{"/w/a", "/w/b", "/w/c"} {
-		r := <-e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "Stop", Payload: json.RawMessage(`{"cwd":"` + cwd + `"}`)})
-		if r.err != nil {
-			t.Fatal(r.err)
-		}
+	for _, cwd := range []string{"/w/a", "/w/b"} {
+		_, reply := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "Stop", Payload: json.RawMessage(`{"cwd":"` + cwd + `"}`)})
+		answered(t, reply, "Stop")
 	}
-	for _, want := range []string{"claude · a", "claude · b", "claude · c"} {
+	for _, want := range []string{"claude · a", "claude · b"} {
 		m := await(t, events, "in-app notification", notificationWith(reasonTurnComplete))
-		if _, n := decodeEvent[wire.NotificationData](t, m); n.Title != want {
+		if _, n := decodeEvent[wire.NotificationData](t, m); n.Title != want || n.SessionID != "" {
 			t.Fatalf("in-app notification %q, want %q", n.Title, want)
 		}
 	}
 	select {
 	case n := <-bodies:
-		if n.Reason != "digest" || n.Count != 3 || n.Title != "3 agents finished their turn" {
+		t.Fatalf("a hook outside stagent sessions was pushed: %+v", n)
+	case <-time.After(600 * time.Millisecond):
+	}
+
+	for i, id := range []string{"00000000000000a1", "00000000000000a2", "00000000000000a3"} {
+		h, _ := e.client()
+		s := testSession(id)
+		s.Cwd = "/w/" + string(rune('a'+i))
+		call(t, h, wire.MethodHolderRegister, s, nil)
+		_, reply := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "Stop", SessionID: id})
+		answered(t, reply, "Stop")
+	}
+	select {
+	case n := <-bodies:
+		if n.Reason != "digest" || n.Count != 3 || n.Title != "box: 3 agents finished their turn" || n.SessionID != "" {
 			t.Fatalf("push %+v", n)
 		}
 	case <-time.After(5 * time.Second):
@@ -558,28 +742,209 @@ func TestTranscriptGetSubscribeAndConversations(t *testing.T) {
 	}
 }
 
-func TestConfigSetPersistsWithDefaults(t *testing.T) {
+// config.set is a JSON Merge Patch on config.json as stored: only the keys
+// it names change, unknown and unnamed keys stay, null deletes a key, and
+// the defaults of the result never reach the file.
+func TestConfigSetMergesPatch(t *testing.T) {
 	e := startDaemon(t, wire.Config{}, Options{})
+	stored := `{"future_key": {"a": 1}, "idle_after_ms": 4000, "retired_key": 90,
+	  "notify": {"ntfy": {"enabled": true, "topic": "t", "unknown": "x"}}}`
+	if err := os.WriteFile(e.layout.Config, []byte(stored), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	c, _ := e.client()
-	in := wire.Config{Notify: wire.NotifyConfig{Ntfy: wire.NtfyConfig{Enabled: true, Topic: "t"}}, ApprovalTimeoutSec: 90}
+	patch := `{"disable_handoff": true, "retired_key": null, "notify": {"ntfy": {"topic": "u"}}}`
 	var res wire.ConfigResult
-	call(t, c, wire.MethodConfigSet, wire.ConfigSetParams{Config: in}, &res)
-	if res.Config.ApprovalTimeoutSec != 90 || res.Config.Notify.Ntfy.Server != "https://ntfy.sh" || res.Config.Retention.EventsMax != 10000 {
+	call(t, c, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(patch)}, &res)
+	n := res.Config.Notify.Ntfy
+	if !res.Config.DisableHandoff || res.Config.IdleAfterMs != 4000 ||
+		!n.Enabled || n.Topic != "u" || n.Server != "https://ntfy.sh" || res.Config.Retention.EventsMax != 10000 {
 		t.Fatalf("config.set result %+v", res.Config)
 	}
-	st, err := os.Stat(e.layout.Config)
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("config file %v %v", st, err)
+	fileJSON := func() any {
+		t.Helper()
+		st, err := os.Stat(e.layout.Config)
+		if err != nil || st.Mode().Perm() != 0o600 {
+			t.Fatalf("config file %v %v", st, err)
+		}
+		b, _ := os.ReadFile(e.layout.Config)
+		var v any
+		if err := json.Unmarshal(b, &v); err != nil {
+			t.Fatalf("config file %q: %v", b, err)
+		}
+		return v
+	}
+	var want any
+	json.Unmarshal([]byte(`{"future_key": {"a": 1}, "idle_after_ms": 4000, "disable_handoff": true,
+	  "notify": {"ntfy": {"enabled": true, "topic": "u", "unknown": "x"}}}`), &want)
+	if got := fileJSON(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("config file = %v, want %v", got, want)
 	}
 	var get wire.ConfigResult
 	call(t, c, wire.MethodConfigGet, nil, &get)
-	if get.Config.ApprovalTimeoutSec != 90 || !get.Config.Notify.Ntfy.Enabled {
-		t.Fatalf("config.get %+v", get.Config)
+	if !reflect.DeepEqual(get.Config, res.Config) {
+		t.Fatalf("config.get %+v, config.set returned %+v", get.Config, res.Config)
 	}
 	var reg wire.HolderRegisterResult
 	call(t, c, wire.MethodHolderRegister, testSession(sid), &reg)
-	if reg.IdleAfterMs != 3000 {
+	if reg.IdleAfterMs != 4000 {
 		t.Fatalf("idle_after_ms %d", reg.IdleAfterMs)
+	}
+
+	// A result that is not a valid Config is refused and nothing is written.
+	for _, bad := range []string{
+		`{"notify": {"webhook": {"enabled": true, "url": "ftp://x"}}}`,
+		`{"idle_after_ms": "soon"}`,
+		`[1]`,
+	} {
+		var we *wire.Error
+		err := c.Call(t.Context(), wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(bad)}, nil)
+		if !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
+			t.Errorf("config.set %s: %v, want bad_request", bad, err)
+		}
+	}
+	if got := fileJSON(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("config file after refused patches = %v", got)
+	}
+}
+
+// config.set stores the ntfy channel and the host label the app sets,
+// keeping the keys it does not name; config.get and config.set report the
+// channels' last failures ({} when none).
+func TestConfigSetStoresNotifySettings(t *testing.T) {
+	e := startDaemon(t, wire.Config{}, Options{})
+	stored := `{"future_key": 1, "notify": {"debounce_ms": 100, "webhook": {"enabled": true, "url": "https://hook.example", "extra": true}}}`
+	if err := os.WriteFile(e.layout.Config, []byte(stored), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := e.client()
+	set := func(patch string) (wire.ConfigResult, json.RawMessage) {
+		t.Helper()
+		var raw json.RawMessage
+		call(t, c, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(patch)}, &raw)
+		var res wire.ConfigResult
+		if err := json.Unmarshal(raw, &res); err != nil {
+			t.Fatal(err)
+		}
+		return res, raw
+	}
+	hostID := hostid.Read(e.layout.HostID)
+	if !hostid.Valid(hostID) {
+		t.Fatalf("daemon start left no host id (%q)", hostID)
+	}
+	res, raw := set(`{"notify": {"host_label": "開発機", "click_base": "sshtermx://open", "ntfy": {"server": "https://ntfy.example", "token": "tk", "topic": "t1", "enabled": true}}}`)
+	want := wire.NtfyConfig{Enabled: true, Server: "https://ntfy.example", Topic: "t1", Token: "tk"}
+	if res.Config.Notify.Ntfy != want || res.Config.Notify.HostLabel != "開発機" || res.Config.Notify.ClickBase != "sshtermx://open" ||
+		res.Config.Notify.DebounceMs != 100 || !res.Config.Notify.Webhook.Enabled {
+		t.Fatalf("config.set result %+v", res.Config.Notify)
+	}
+	if err := c.Call(context.Background(), wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{"notify": {"click_base": "open"}}`)}, nil); err == nil {
+		t.Fatal("a click_base without a scheme was accepted")
+	}
+	var doc struct {
+		Notify map[string]json.RawMessage `json:"notify"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || string(doc.Notify["last_error"]) != "{}" {
+		t.Fatalf("config.set reply %s", raw)
+	}
+	res, _ = set(`{"notify": {"ntfy": {"enabled": false}}}`)
+	want.Enabled = false
+	if res.Config.Notify.Ntfy != want || res.Config.Notify.HostLabel != "開発機" {
+		t.Fatalf("after disabling %+v", res.Config.Notify)
+	}
+	b, _ := os.ReadFile(e.layout.Config)
+	var got, wantFile any
+	json.Unmarshal(b, &got)
+	json.Unmarshal([]byte(`{"future_key": 1, "notify": {"debounce_ms": 100, "host_label": "開発機", "click_base": "sshtermx://open",
+	  "webhook": {"enabled": true, "url": "https://hook.example", "extra": true},
+	  "ntfy": {"server": "https://ntfy.example", "token": "tk", "topic": "t1", "enabled": false}}}`), &wantFile)
+	if !reflect.DeepEqual(got, wantFile) {
+		t.Fatalf("config file = %v, want %v", got, wantFile)
+	}
+	// Removing notify (unpreparing the host) keeps the host id.
+	set(`{"notify": null}`)
+	if got := hostid.Read(e.layout.HostID); got != hostID {
+		t.Fatalf("host id %q changed to %q", hostID, got)
+	}
+	var getRaw json.RawMessage
+	call(t, c, wire.MethodConfigGet, nil, &getRaw)
+	if err := json.Unmarshal(getRaw, &doc); err != nil || string(doc.Notify["last_error"]) != "{}" {
+		t.Fatalf("config.get reply %s", getRaw)
+	}
+}
+
+// notify.test refuses without a channel and sends nothing; otherwise it
+// pushes a host-labelled test. A failure is reported without the topic,
+// shows in config.get until a push succeeds, and survives a restart.
+func TestNotifyTestAndLastErrors(t *testing.T) {
+	var mu sync.Mutex
+	status := http.StatusTooManyRequests
+	titles := make(chan string, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		title, _ := new(mime.WordDecoder).DecodeHeader(r.Header.Get("Title"))
+		titles <- title
+		mu.Lock()
+		defer mu.Unlock()
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+
+	e := startDaemon(t, fastConfig(), Options{})
+	c, events := e.client()
+	call(t, c, wire.MethodWatch, wire.WatchParams{}, nil)
+	var we *wire.Error
+	if err := c.Call(t.Context(), wire.MethodNotifyTest, nil, nil); !errors.As(err, &we) || we.Code != wire.ErrNotConfigured {
+		t.Fatalf("notify.test without a channel: %v, want not_configured", err)
+	}
+	for quiet := time.After(200 * time.Millisecond); ; {
+		select {
+		case m := <-events:
+			if notificationWith(reasonTest)(m) {
+				t.Fatal("notify.test without a channel emitted a notification")
+			}
+			continue
+		case <-quiet:
+		}
+		break
+	}
+
+	call(t, c, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(
+		`{"notify": {"host_label": "box", "ntfy": {"enabled": true, "server": "` + srv.URL + `", "topic": "topic-secret"}}}`)}, nil)
+	err := c.Call(t.Context(), wire.MethodNotifyTest, nil, nil)
+	if !errors.As(err, &we) || we.Code != wire.ErrUnavailable || !strings.Contains(we.Message, "429 Too Many Requests") || strings.Contains(we.Message, "secret") {
+		t.Fatalf("notify.test against a failing server: %v", err)
+	}
+	if title := <-titles; title != "box · SSH Term" {
+		t.Fatalf("test push titled %q", title)
+	}
+	await(t, events, "in-app test notification", notificationWith(reasonTest))
+	lastError := func(c *rpc.Client) map[string]wire.NotifyFailure {
+		t.Helper()
+		var get wire.ConfigResult
+		call(t, c, wire.MethodConfigGet, nil, &get)
+		return get.Notify.LastError
+	}
+	failed := lastError(c)
+	if f := failed[wire.ChannelNtfy]; len(failed) != 1 || f.Status != 429 || f.Error != "429 Too Many Requests" || f.At == 0 {
+		t.Fatalf("last_error %+v", failed)
+	}
+
+	e.stop()
+	cfg := fastConfig()
+	cfg.Notify.Ntfy = wire.NtfyConfig{Enabled: true, Server: srv.URL, Topic: "topic-secret"}
+	e = startDaemonAt(t, cfg, Options{})
+	c, _ = e.client()
+	if got := lastError(c); !reflect.DeepEqual(got, failed) {
+		t.Fatalf("last_error after a restart %+v, want %+v", got, failed)
+	}
+
+	mu.Lock()
+	status = http.StatusOK
+	mu.Unlock()
+	call(t, c, wire.MethodNotifyTest, nil, nil)
+	<-titles
+	if got := lastError(c); got == nil || len(got) != 0 {
+		t.Fatalf("last_error after a success %+v", got)
 	}
 }
 
@@ -647,10 +1012,6 @@ func TestUnknownMethodAndBadParams(t *testing.T) {
 	if !errors.As(err, &we) || we.Code != wire.ErrUnknownMethod {
 		t.Fatalf("holder method on the daemon: %v", err)
 	}
-	err = c.Call(context.Background(), wire.MethodApprovalRespond, wire.ApprovalRespondParams{RequestID: "x", Decision: "maybe"}, nil)
-	if !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
-		t.Fatalf("bad decision: %v", err)
-	}
 }
 
 func TestFlappingStateIsDebounced(t *testing.T) {
@@ -713,5 +1074,237 @@ func TestActivityOnlyUpdatesAreHeldBack(t *testing.T) {
 	h.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, Title: ptr("build")})
 	if s := updated(); s.Title != "build" || s.LastActivityAt != 3000 {
 		t.Fatalf("next push = title %q activity %d, want build/3000", s.Title, s.LastActivityAt)
+	}
+}
+
+// sessionUpdate returns the next session.updated of id.
+func sessionUpdate(t *testing.T, events chan *wire.Msg, what, id string, pred func(wire.Session) bool) wire.Session {
+	t.Helper()
+	var s wire.Session
+	await(t, events, what, func(m *wire.Msg) bool {
+		if m.Method != wire.NotifySessionUpdated {
+			return false
+		}
+		var u wire.Session
+		json.Unmarshal(m.Params, &u)
+		if u.ID != id || !pred(u) {
+			return false
+		}
+		s = u
+		return true
+	})
+	return s
+}
+
+// attached goes out as soon as the holder reports it (not held back like
+// activity), survives a holder reconnect and ends with the session.
+func TestAttachedIsPushedAtOnce(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	h, _ := e.client()
+	call(t, h, wire.MethodHolderRegister, testSession(sid), nil)
+	sessionUpdate(t, events, "registration", sid, func(s wire.Session) bool { return !s.Attached })
+	h.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, LastActivityAt: ptr(int64(1000))})
+	sessionUpdate(t, events, "first activity push", sid, func(s wire.Session) bool { return s.LastActivityAt == 1000 })
+
+	// Within the activity interval: attached is a real change.
+	h.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, Attached: ptr(true)})
+	sessionUpdate(t, events, "attached", sid, func(s wire.Session) bool { return s.Attached })
+	var sl wire.SessionsListResult
+	call(t, watcher, wire.MethodSessionsList, nil, &sl)
+	if len(sl.Sessions) != 1 || !sl.Sessions[0].Attached {
+		t.Fatalf("sessions.list %+v", sl.Sessions)
+	}
+	h.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, Attached: ptr(false)})
+	sessionUpdate(t, events, "detached", sid, func(s wire.Session) bool { return !s.Attached })
+
+	// A reconnecting holder registers its current value.
+	h.Close()
+	h2, _ := e.client()
+	ws := testSession(sid)
+	ws.Attached = true
+	call(t, h2, wire.MethodHolderRegister, ws, nil)
+	sessionUpdate(t, events, "attached after re-registration", sid, func(s wire.Session) bool { return s.Attached })
+
+	h2.Notify(wire.MethodHolderEnded, wire.ClosedParams{ID: sid})
+	sessionUpdate(t, events, "ended, not attached", sid, func(s wire.Session) bool { return s.ExitCode != nil && !s.Attached })
+}
+
+// last_local_input_at goes out as soon as the holder reports it (not held
+// back like activity) and survives a holder reconnect.
+func TestLocalInputIsPushedAtOnce(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	h, _ := e.client()
+	call(t, h, wire.MethodHolderRegister, testSession(sid), nil)
+	sessionUpdate(t, events, "registration", sid, func(s wire.Session) bool { return s.LastLocalInputAt == 0 })
+	h.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, LastActivityAt: ptr(int64(1000))})
+	sessionUpdate(t, events, "first activity push", sid, func(s wire.Session) bool { return s.LastActivityAt == 1000 })
+
+	// Within the activity interval: each keystroke time is a real change.
+	h.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, LastLocalInputAt: ptr(int64(1500))})
+	sessionUpdate(t, events, "first keystroke", sid, func(s wire.Session) bool { return s.LastLocalInputAt == 1500 })
+	h.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, LastLocalInputAt: ptr(int64(2500))})
+	sessionUpdate(t, events, "next keystroke", sid, func(s wire.Session) bool { return s.LastLocalInputAt == 2500 })
+	var sl wire.SessionsListResult
+	call(t, watcher, wire.MethodSessionsList, nil, &sl)
+	if len(sl.Sessions) != 1 || sl.Sessions[0].LastLocalInputAt != 2500 {
+		t.Fatalf("sessions.list %+v", sl.Sessions)
+	}
+
+	// A reconnecting holder registers its current value.
+	h.Close()
+	h2, _ := e.client()
+	ws := testSession(sid)
+	ws.LastLocalInputAt = 3500
+	call(t, h2, wire.MethodHolderRegister, ws, nil)
+	sessionUpdate(t, events, "keystroke after re-registration", sid, func(s wire.Session) bool { return s.LastLocalInputAt == 3500 })
+}
+
+// fakeProbe stands in for follow.AgentProbe: pids in running have their
+// agent running.
+type fakeProbe struct {
+	mu      sync.Mutex
+	running map[int]bool
+	asked   map[int]int // probes per pid
+}
+
+func (p *fakeProbe) probe(checks []follow.SessionAgent) ([]bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]bool, len(checks))
+	for i, c := range checks {
+		p.asked[c.PID]++
+		out[i] = p.running[c.PID] && c.Harness == wire.HarnessClaude
+	}
+	return out, nil
+}
+
+func (p *fakeProbe) set(pid int, running bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.running[pid] = running
+	p.asked[pid] = 0
+}
+
+// waitAsked waits until pid was probed n times since the last set.
+func (p *fakeProbe) waitAsked(t *testing.T, pid, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		p.mu.Lock()
+		asked := p.asked[pid]
+		p.mu.Unlock()
+		if asked >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d never probed", pid)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A shell session that hooks promoted to claude returns to other once the
+// probe no longer finds claude running in it, dropping everything the
+// agent's hooks set; a session started as claude is never probed.
+func TestShellSessionRevertsWhenAgentLeaves(t *testing.T) {
+	fp := &fakeProbe{running: map[int]bool{}, asked: map[int]int{}}
+	e := startDaemon(t, fastConfig(), Options{AgentProbe: fp.probe, ProbeInterval: 20 * time.Millisecond})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+
+	const agentSID = "fedcba9876543210"
+	h, _ := e.client()
+	shell := testSession(sid)
+	shell.Harness, shell.Command = "", []string{"bash", "-l"}
+	call(t, h, wire.MethodHolderRegister, shell, nil)
+	sessionUpdate(t, events, "shell registered", sid, func(s wire.Session) bool { return s.Harness == wire.HarnessOther })
+	h2, _ := e.client()
+	agent := testSession(agentSID)
+	agent.PID = 20
+	call(t, h2, wire.MethodHolderRegister, agent, nil)
+
+	hook := func(id, event, payload string) <-chan error {
+		_, reply := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, Event: event, SessionID: id, Payload: json.RawMessage(payload)})
+		return reply
+	}
+	fp.set(10, true)
+	<-hook(agentSID, "UserPromptSubmit", `{"session_id":"conv-a","prompt":"other"}`)
+	<-hook(sid, "SessionStart", `{"session_id":"conv-1","transcript_path":"/t/conv-1.jsonl"}`)
+	sessionUpdate(t, events, "promoted to claude", sid, func(s wire.Session) bool {
+		return s.Harness == wire.HarnessClaude && s.ConversationID == "conv-1" && s.TranscriptPath == "/t/conv-1.jsonl"
+	})
+	<-hook(sid, "UserPromptSubmit", `{"session_id":"conv-1","prompt":"fix the build"}`)
+	sessionUpdate(t, events, "working on a prompt", sid, func(s wire.Session) bool {
+		return s.LastMessage == "fix the build" && s.StateSource == wire.SourceHook
+	})
+	reply := hook(sid, "PermissionRequest", `{"session_id":"conv-1","tool_name":"Bash","tool_input":{"command":"make"}}`)
+	await(t, events, "approval_requested", event(wire.EventApprovalRequested, nil))
+	// Probes taken after the last hook see claude running.
+	fp.set(10, true)
+	fp.waitAsked(t, 10, 2)
+	e.d.mu.Lock()
+	seen := e.d.sessions[sid].agentSeen
+	e.d.mu.Unlock()
+	if !seen {
+		t.Fatal("probe did not record claude as running")
+	}
+
+	// claude quits: its approval is cancelled and the session is a plain
+	// shell again.
+	fp.set(10, false)
+	m := await(t, events, "approval cancelled", event(wire.EventApprovalResolved, nil))
+	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd.By != "cancelled" {
+		t.Fatalf("resolved %+v", rd)
+	}
+	s := sessionUpdate(t, events, "reverted to other", sid, func(s wire.Session) bool { return s.Harness == wire.HarnessOther })
+	if s.ConversationID != "" || s.TranscriptPath != "" || s.LastMessage != "" ||
+		s.State != wire.StateIdle || s.StateSource != wire.SourceActivity {
+		t.Fatalf("reverted session %+v", s)
+	}
+	answered(t, reply, "PermissionRequest released")
+	var al wire.ApprovalsListResult
+	call(t, watcher, wire.MethodApprovalsList, nil, &al)
+	if len(al.Approvals) != 0 {
+		t.Fatalf("approvals left %+v", al.Approvals)
+	}
+
+	// A later hook promotes it again; an agent the probe never finds is
+	// given up after unseenProbes.
+	<-hook(sid, "UserPromptSubmit", `{"session_id":"conv-2","prompt":"again"}`)
+	sessionUpdate(t, events, "promoted again", sid, func(s wire.Session) bool {
+		return s.Harness == wire.HarnessClaude && s.ConversationID == "conv-2"
+	})
+	sessionUpdate(t, events, "never seen, reverted", sid, func(s wire.Session) bool { return s.Harness == wire.HarnessOther })
+
+	fp.mu.Lock()
+	askedAgent := fp.asked[20]
+	fp.mu.Unlock()
+	if askedAgent != 0 {
+		t.Fatalf("session started as claude was probed %d times", askedAgent)
+	}
+	var sl wire.SessionsListResult
+	call(t, watcher, wire.MethodSessionsList, nil, &sl)
+	for _, ls := range sl.Sessions {
+		if ls.ID == agentSID && ls.Harness != wire.HarnessClaude {
+			t.Fatalf("agent session %+v", ls)
+		}
+	}
+	// Nothing promoted is left: the probe loop stops.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.d.mu.Lock()
+		probing := e.d.probing
+		e.d.mu.Unlock()
+		if !probing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("probe loop still running without promoted sessions")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -2,21 +2,82 @@ package install
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"os"
+	"syscall"
 )
 
 // Change is one entry of `integrate` output (and of the removals unhook
 // performs).
 type Change struct {
-	ID      string `json:"id"`
-	Target  string `json:"target"`
-	Action  string `json:"action"` // create | modify | delete
+	ID     string `json:"id"`
+	Target string `json:"target"`
+	// Action is create | modify | delete, or skip for a target that could
+	// not be planned (Error says why).
+	Action  string `json:"action"`
 	Summary string `json:"summary"`
 	Diff    string `json:"diff"`
 	Error   string `json:"error,omitempty"`
+	// ErrorCode classifies Error for the app (errorCode).
+	ErrorCode string `json:"error_code,omitempty"`
 
-	apply func() error
+	apply func() error // nil for skip
+}
+
+// Error codes of Change.ErrorCode (PROTOCOL.md).
+const (
+	codeNotWritable   = "not_writable"
+	codeReadOnlyFS    = "read_only_fs"
+	codeUTF16Profile  = "utf16_profile"
+	codeUnmanagedFile = "unmanaged_file"
+	codeIOError       = "io_error"
+	// codeLingerDenied: polkit refused `loginctl enable-linger`
+	// (set-self-linger); an administrator has to enable it.
+	codeLingerDenied = "linger_denied"
+)
+
+// contentError is a file whose content stagent does not edit: a UTF-16
+// profile, or a file that is not ours or not parsable.
+type contentError struct{ code, msg string }
+
+func (e *contentError) Error() string { return e.msg }
+
+func unmanagedFile(msg string) error { return &contentError{codeUnmanagedFile, msg} }
+
+// targetError is a failure to plan one target.
+type targetError struct {
+	id, path string
+	err      error
+}
+
+func (e *targetError) Error() string { return e.err.Error() }
+func (e *targetError) Unwrap() error { return e.err }
+
+// errorCode classifies an error of planning or applying a change.
+func errorCode(err error) string {
+	var ce *contentError
+	var de *deniedError
+	switch {
+	case errors.As(err, &ce):
+		return ce.code
+	case errors.As(err, &de):
+		return codeLingerDenied
+	case errors.Is(err, fs.ErrPermission):
+		return codeNotWritable
+	case errors.Is(err, syscall.EROFS):
+		return codeReadOnlyFS
+	}
+	return codeIOError
+}
+
+// skipChange reports a target that could not be planned.
+func skipChange(id string, err error) *Change {
+	c := &Change{ID: id, Action: "skip", Summary: "left unchanged", Error: err.Error(), ErrorCode: errorCode(err)}
+	if te := (*targetError)(nil); errors.As(err, &te) {
+		c.ID, c.Target = te.id, te.path
+	}
+	return c
 }
 
 // target is one integration point: a file stagent adds elements to (or
@@ -51,11 +112,11 @@ type addResult struct {
 func (e *env) addChange(t *target) (*Change, error) {
 	cur, err := readOptional(t.path)
 	if err != nil {
-		return nil, err
+		return nil, &targetError{t.id, t.path, err}
 	}
 	res, err := t.add(cur)
 	if err != nil {
-		return nil, err
+		return nil, &targetError{t.id, t.path, err}
 	}
 	if cur != nil && bytes.Equal(res.after, cur) {
 		return nil, nil
@@ -75,7 +136,10 @@ func (e *env) writeAdd(t *target, before []byte, res addResult) error {
 		rec = &ConfigEntry{ID: t.id, Path: t.path, Owned: t.owned, Created: before == nil, Identify: t.identify}
 		if before != nil {
 			rec.SHA256Before = sha256Hex(before)
-			if !t.owned {
+			// A file already holding our elements without a record (an
+			// earlier version wrote them, or the manifest was lost) has no
+			// pre-stagent content to back up: removal takes them out.
+			if !t.owned && t.present(before) == "" {
 				b := backupName(resolveTarget(t.path), now)
 				if err := os.WriteFile(b, before, 0o600); err != nil {
 					return err
@@ -121,7 +185,7 @@ func (e *env) writeAdd(t *target, before []byte, res addResult) error {
 func (e *env) removeChange(t *target) (*Change, error) {
 	cur, err := readOptional(t.path)
 	if err != nil {
-		return nil, err
+		return nil, &targetError{t.id, t.path, err}
 	}
 	if cur == nil {
 		return nil, nil
@@ -146,7 +210,7 @@ func (e *env) removeChange(t *target) (*Change, error) {
 		}
 		after, err = t.remove(cur, rec)
 		if err != nil {
-			return nil, err
+			return nil, &targetError{t.id, t.path, err}
 		}
 		summary = "remove stagent's elements (" + t.identify + ")"
 		if after == nil {

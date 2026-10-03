@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 )
 
@@ -104,6 +105,47 @@ func TestTTYName(t *testing.T) {
 	}
 	if got := TTYName(1<<40 | 3); got != "" {
 		t.Fatalf("unknown device named %q", got)
+	}
+}
+
+func TestReadsTerminal(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skip(err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	// A pipe, as harnesses give the hooks they run.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	for _, c := range []struct {
+		name  string
+		stdin *os.File
+		want  bool
+	}{{"pty", tty, true}, {"/dev/null", devNull, false}, {"pipe", r, false}} {
+		child := exec.Command("sleep", "30")
+		child.Stdin = c.stdin
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		got, known := ReadsTerminal(child.Process.Pid)
+		child.Process.Kill()
+		child.Wait()
+		if !known || got != c.want {
+			t.Errorf("stdin %s: tty %v known %v, want %v", c.name, got, known, c.want)
+		}
+	}
+	if _, known := ReadsTerminal(1 << 30); known {
+		t.Error("a missing process is known")
 	}
 }
 

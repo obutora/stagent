@@ -69,7 +69,6 @@ func TestClaudeMergeKeepsForeignEntriesOrderAndFormatting(t *testing.T) {
 	te := newTestEnv(t, "linux")
 	path := te.claudeSettings()
 	writeFile(t, path, claudeSettingsBefore)
-	writeFile(t, te.l.Config, `{"approval_timeout_sec": 30}`)
 
 	r := te.integrate(t, integrateOpts{apply: true, harness: []string{hClaude}})
 	if got := changeIDs(r.Changes); len(got) != 1 || got[0] != hClaude || r.Changes[0].Action != "modify" {
@@ -113,7 +112,7 @@ func TestClaudeMergeKeepsForeignEntriesOrderAndFormatting(t *testing.T) {
 		}
 		wantTimeout := 10
 		if ev == "PermissionRequest" {
-			wantTimeout = 40 // approval_timeout_sec + 10
+			wantTimeout = 7 * 24 * 60 * 60 // held until the prompt is answered
 		}
 		if last[0].Timeout != wantTimeout {
 			t.Errorf("%s timeout = %d, want %d", ev, last[0].Timeout, wantTimeout)

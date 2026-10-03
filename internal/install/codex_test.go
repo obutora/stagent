@@ -80,7 +80,7 @@ func TestCodexHooksAndFeatureFlagRoundTrip(t *testing.T) {
 	if len(ss) != 2 || !strings.Contains(ss[0].Hooks[0].Command, "herdr") || !isOurCommand(ss[1].Hooks[0].Command) {
 		t.Fatalf("SessionStart = %+v (ours must be appended after foreign groups)", ss)
 	}
-	if pr := hf.Hooks["PermissionRequest"]; len(pr) != 1 || pr[0].Hooks[0].Timeout != 70 {
+	if pr := hf.Hooks["PermissionRequest"]; len(pr) != 1 || pr[0].Hooks[0].Timeout != 10 {
 		t.Fatalf("PermissionRequest = %+v", pr)
 	}
 	if len(hf.Hooks["PreToolUse"]) != 1 {

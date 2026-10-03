@@ -1,9 +1,6 @@
 package install
 
-import (
-	"errors"
-	"strings"
-)
+import "strings"
 
 // Minimal, line-based editing of Codex's config.toml. Only the lines we add,
 // change or remove are touched; every other byte of the file is kept.
@@ -320,7 +317,7 @@ func leadingSpace(s string) string {
 
 func isBlank(l tomlLine) bool { return strings.TrimSpace(l.raw) == "" }
 
-var errTOMLInlineFeatures = errors.New("config.toml defines features as an inline table")
+var errTOMLInlineFeatures = unmanagedFile("config.toml defines features as an inline table")
 
 // ensureFeatureHooks makes `[features] hooks = true` effective. edit is nil
 // when the file already enables it.

@@ -42,6 +42,17 @@ func list() ([]Proc, error) {
 	return out, nil
 }
 
+func get(pid int) (Proc, bool) {
+	buf := make([]byte, 2048)
+	n, err := readStat(procPath(pid, "stat"), buf)
+	if err != nil {
+		return Proc{}, false
+	}
+	p, ok := parseStat(pid, buf[:n], time.Time{})
+	p.Start = time.Time{} // needs the boot time, which Process does not read
+	return p, ok
+}
+
 // readStat reads a /proc stat file with bare system calls: os.ReadFile's
 // extra fstat and allocations make a scan of every process half again as
 // slow, and it runs every second.
@@ -226,3 +237,14 @@ func rdev(path string) uint64 {
 // TTYHosts returns nil: Linux does not need it, the command lines of the
 // login processes that name the remote host are readable to everyone.
 func TTYHosts() map[uint64]string { return nil }
+
+// ReadsTerminal reports whether pid's stdin is a terminal, by where
+// /proc/<pid>/fd/0 points; known is false when that cannot be read
+// (another user's process, the process exited).
+func ReadsTerminal(pid int) (tty, known bool) {
+	target, err := os.Readlink(procPath(pid, "fd/0"))
+	if err != nil {
+		return false, false
+	}
+	return strings.HasPrefix(target, "/dev/pts/") || strings.HasPrefix(target, "/dev/tty"), true
+}

@@ -1,8 +1,6 @@
 package install
 
 import (
-	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,7 +27,11 @@ var codexEvents = []string{"SessionStart", "UserPromptSubmit", "Stop", "Permissi
 
 const (
 	hookTimeoutSec = 10
-	identifyHooks  = `hooks.<event>[].hooks[].command contains "` + binMarker + `"`
+	// claudeApprovalTimeoutSec (7 days) is the timeout of claude's
+	// PermissionRequest hook: the daemon holds that hook until the prompt
+	// is answered, with no time limit of its own.
+	claudeApprovalTimeoutSec = 7 * 24 * 60 * 60
+	identifyHooks            = `hooks.<event>[].hooks[].command contains "` + binMarker + `"`
 )
 
 // --- paths ---------------------------------------------------------------
@@ -66,22 +68,12 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// approvalTimeout reads approval_timeout_sec from config.json (with the
-// documented default).
-func (e *env) approvalTimeout() int {
-	var c wire.Config
-	if b, err := os.ReadFile(e.l.Config); err == nil {
-		json.Unmarshal(b, &c)
-	}
-	return c.WithDefaults().ApprovalTimeoutSec
-}
-
-func (e *env) hookSpecs(events []string) []hookSpec {
+func hookSpecs(harness string, events []string) []hookSpec {
 	out := make([]hookSpec, len(events))
 	for i, ev := range events {
 		t := hookTimeoutSec
-		if ev == "PermissionRequest" {
-			t = e.approvalTimeout() + 10
+		if harness == hClaude && ev == "PermissionRequest" {
+			t = claudeApprovalTimeoutSec
 		}
 		out[i] = hookSpec{ev, t}
 	}
@@ -96,11 +88,11 @@ func (e *env) hooksTarget(id, path, harness string, events []string) *target {
 		add: func(cur []byte) (addResult, error) {
 			d, err := parseJSONDoc(cur)
 			if err != nil {
-				return addResult{}, errors.New(path + " is not valid JSON; left unchanged")
+				return addResult{}, unmanagedFile(path + " is not valid JSON; left unchanged")
 			}
-			created, changed, err := mergeHooks(d.root, e.hookCommand(harness), e.hookSpecs(events))
+			created, changed, err := mergeHooks(d.root, e.hookCommand(harness), hookSpecs(harness, events))
 			if err != nil {
-				return addResult{}, errors.New(path + ": " + err.Error() + "; left unchanged")
+				return addResult{}, unmanagedFile(path + ": " + err.Error() + "; left unchanged")
 			}
 			if !changed {
 				return addResult{after: cur}, nil
@@ -114,7 +106,7 @@ func (e *env) hooksTarget(id, path, harness string, events []string) *target {
 		remove: func(cur []byte, rec *ConfigEntry) ([]byte, error) {
 			d, err := parseJSONDoc(cur)
 			if err != nil {
-				return nil, errors.New(path + " is not valid JSON; left unchanged")
+				return nil, unmanagedFile(path + " is not valid JSON; left unchanged")
 			}
 			var created []string
 			if rec != nil {
@@ -290,7 +282,7 @@ func (e *env) ompTarget() *target {
 		identify: "whole file (first line " + ompMarker + ")",
 		add: func(cur []byte) (addResult, error) {
 			if cur != nil && !isOmpExtension(cur) {
-				return addResult{}, errors.New(e.ompExtension() + " exists and is not managed by stagent; left unchanged")
+				return addResult{}, unmanagedFile(e.ompExtension() + " exists and is not managed by stagent; left unchanged")
 			}
 			return addResult{after: []byte(ompExtensionSource), summary: "install the omp extension that reports session events to stagent"}, nil
 		},
