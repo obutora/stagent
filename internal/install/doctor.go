@@ -124,6 +124,8 @@ type PersistenceReport struct {
 	// LingerEnabledByStagent: the manifest records that `integrate
 	// --linger` turned lingering on.
 	LingerEnabledByStagent bool `json:"linger_enabled_by_stagent"`
+	// WSL is WSL を動かし続ける when Linux runs in WSL; null otherwise.
+	WSL *WSLReport `json:"wsl"`
 }
 
 // Values of PersistenceReport.LingerReason.
@@ -198,6 +200,12 @@ func (e *env) inventory(uploads bool) []artifact {
 	if left := e.terminalLeft(); len(left) > 0 {
 		// Harmless without the binary, so never an orphan.
 		add(levelUnhook, terminalTarget, "stagent in noWarnProcesses of the Terminal profiles "+strings.Join(left, ", "), false, true)
+	}
+	if rec := e.wslRecord(); rec != nil {
+		if cur, err := readOptional(rec.Path); err == nil && cur != nil && wslPresent(cur) != "" {
+			// The user's own Windows setting; purge undoes it.
+			add(levelPurge, rec.Path, "WSL keeps running ("+wslIdleLine+" in [general]), added by stagent", false, true)
+		}
 	}
 	if exists(e.l.Root) {
 		add(levelPurge, e.l.Root, "stagent installation (binary, manifest, state, logs)", false, true)
@@ -330,6 +338,9 @@ func (e *env) doctor() *DoctorReport {
 			r.Problems = append(r.Problems, "the last agent started through the shell wrapper ends when you log out: lingering is off"+fix)
 		}
 	}
+	if w := r.Persistence.WSL; w != nil && w.KeepRunningNeeded != nil && *w.KeepRunningNeeded {
+		r.Problems = append(r.Problems, wslProblem(w))
+	}
 
 	r.Notify.LastError, _ = notify.LoadFailures(e.l.NotifyErrors)
 	for _, ch := range slices.Sorted(maps.Keys(r.Notify.LastError)) {
@@ -358,7 +369,7 @@ func (e *env) doctor() *DoctorReport {
 // recorded); lastRun is whether it outlives logout with the settings read
 // now, nil when unknown and off Linux.
 func (e *env) persistenceReport(lastPlace logind.Placement) (p PersistenceReport, lastRun *bool) {
-	p = PersistenceReport{RunDir: e.l.RunDir, RunDirSurvivesLogout: true, LingerEnabledByStagent: e.m.LingerEnabled}
+	p = PersistenceReport{RunDir: e.l.RunDir, RunDirSurvivesLogout: true, LingerEnabledByStagent: e.m.LingerEnabled, WSL: e.wslReport()}
 	if e.goos != "linux" {
 		return p, nil
 	}
@@ -391,6 +402,14 @@ func (e *env) persistenceReport(lastPlace logind.Placement) (p PersistenceReport
 // graphical session (its terminals run under the user manager). Unknown
 // when neither KillUserProcesses nor lingering can be read.
 func (e *env) lingerNeeded(p *PersistenceReport, lastRun *bool) {
+	if p.WSL != nil {
+		// WSL keeps the user's login session for as long as the instance
+		// runs, so the user manager never stops before the agents do:
+		// lingering changes nothing (WSL を動かし続ける does).
+		needed := false
+		p.LingerNeeded = &needed
+		return
+	}
 	if p.KillUserProcesses == nil && p.Linger == nil {
 		return
 	}

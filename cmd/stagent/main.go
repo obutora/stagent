@@ -38,9 +38,11 @@ const usage = `usage: stagent <command> [args]
                       entry point for harness hooks (reads the payload on stdin)
   install             create the layout and manifest (after the binary is placed)
   integrate           plan or apply harness hooks, shell wrappers, login service,
-                      lingering (Linux), Terminal.app's close confirmation (macOS)
+                      lingering (Linux), Terminal.app's close confirmation (macOS),
+                      keeping WSL running (.wslconfig, WSL)
   uninstall           stop / unhook / purge
   doctor              report installation state as JSON
+  wsl-shutdown        restart WSL: run wsl.exe --shutdown (stops every distribution)
   version             print the version
 `
 
@@ -69,7 +71,7 @@ func dispatch(args []string) int {
 		return follow.Main(rest)
 	case "hook":
 		return hook.Main(rest)
-	case "install", "integrate", "uninstall", "doctor":
+	case "install", "integrate", "uninstall", "doctor", "wsl-shutdown":
 		return install.Main(cmd, rest)
 	case "__env": // internal: environment probe run through the login shell
 		return bridge.EnvDump()

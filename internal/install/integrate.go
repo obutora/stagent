@@ -34,11 +34,12 @@ type integrateOpts struct {
 	linger          bool
 	terminal        bool
 	executionPolicy bool
+	wslKeepRunning  bool
 	remove          []string
 }
 
 // Removable integration names for --remove.
-var removeIDs = []string{hClaude, hCodex, hOmp, "shell-wrapper", "service", "linger", "terminal"}
+var removeIDs = []string{hClaude, hCodex, hOmp, "shell-wrapper", "service", "linger", "terminal", wslKeepRunningID}
 
 func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	for _, h := range o.harness {
@@ -46,7 +47,7 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 			return nil, errors.New("cannot both add and remove " + h)
 		}
 	}
-	if o.shellWrapper && slices.Contains(o.remove, "shell-wrapper") || o.service && slices.Contains(o.remove, "service") || o.linger && slices.Contains(o.remove, "linger") || o.terminal && slices.Contains(o.remove, "terminal") {
+	if o.shellWrapper && slices.Contains(o.remove, "shell-wrapper") || o.service && slices.Contains(o.remove, "service") || o.linger && slices.Contains(o.remove, "linger") || o.terminal && slices.Contains(o.remove, "terminal") || o.wslKeepRunning && slices.Contains(o.remove, wslKeepRunningID) {
 		return nil, errors.New("cannot both add and remove the same integration")
 	}
 	var changes []*Change
@@ -121,6 +122,9 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	if o.executionPolicy {
 		many("execution-policy")(e.executionPolicyChanges())
 	}
+	if o.wslKeepRunning {
+		one(wslKeepRunningID)(e.wslAddChange())
+	}
 	var removed []*target
 	for _, id := range o.remove {
 		ts := e.targetsFor(id)
@@ -135,6 +139,8 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 			one(id)(e.lingerRemoveChange())
 		case "terminal":
 			one(id)(e.terminalRemoveChange())
+		case wslKeepRunningID:
+			one(id)(e.wslRemoveChange())
 		}
 	}
 	if len(o.harness)+len(o.remove) > 0 || o.shellWrapper || o.service {

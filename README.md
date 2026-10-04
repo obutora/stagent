@@ -128,6 +128,16 @@ SSH, kept shells included, run with Windows' RedirectionGuard
 (`redirection_guard` in `doctor`): tools reached through a junction you
 created, such as scoop's shims, do not start there.
 
+In WSL, logging out is not what ends sessions: WSL shuts a distribution
+down some 15–40 s after the last Windows terminal tab or SSH connection
+using it closes (processes inside WSL do not keep it running), and the
+sessions end with it. `stagent integrate --wsl-keep-running` sets
+`[general] instanceIdleTimeout=-1` in your Windows `.wslconfig`, which
+applies to all your distributions once WSL restarts (`stagent
+wsl-shutdown`, or restarting the PC); WSL, Windows restarts and signing
+out of Windows still end them. `stagent doctor` reports it under
+`persistence.wsl`; lingering is never needed in WSL.
+
 ## Installation and removal
 
 The app installs the binary to `~/.ssh-term/agent/bin/stagent` the first time

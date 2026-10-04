@@ -30,9 +30,18 @@ their order). Notifications may arrive at any time between responses.
 
 | host OS | exec command |
 |---|---|
-| Linux / macOS | `'<home>/.ssh-term/agent/bin/stagent' bridge` (single-quoted absolute path, `'` escaped as `'\''`) |
+| Linux / macOS | `exec '<home>/.ssh-term/agent/bin/stagent' bridge` (single-quoted absolute path, `'` escaped as `'\''`) |
 | Windows, sshd DefaultShell = cmd | `"<home>\.ssh-term\agent\bin\stagent.exe" bridge` |
 | Windows, sshd DefaultShell = PowerShell | `& '<home>\.ssh-term\agent\bin\stagent.exe' bridge` |
+
+The Linux / macOS line starts with `exec ` for WSL behind Windows' SSH
+server (sshd DefaultShell = WSL's `bash.exe`): Win32-OpenSSH passes a
+command starting with `'` to the outer bash unquoted, which drops every
+argument after the path. That outer bash also expands `$` inside the
+single quotes, so no argument contains one. Such a host is Linux to the
+app (the uname probe runs before the PowerShell one whatever the banner
+says), and its SFTP is never opened: Windows' `sftp-server.exe`, started
+through WSL, does not answer.
 
 The first request must be `hello`. If `result.protocol` differs from the
 app's protocol, the app offers an update of the binary.
@@ -743,8 +752,9 @@ success (non-zero with `{"error": "..."}` on failure).
 |---|---|
 | `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, replaced_daemon?, changes[], notes[{code, text, args?}]}` — creates directories and the manifest and completes an update (below); idempotent |
 | `stagent doctor --json` | `DoctorReport` |
-| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--linger] [--terminal] [--execution-policy] [--remove claude,codex,omp,shell-wrapper,service,linger,terminal]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
+| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--linger] [--terminal] [--execution-policy] [--wsl-keep-running] [--remove claude,codex,omp,shell-wrapper,service,linger,terminal,wsl-keep-running]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
 | `stagent uninstall --json --level stop\|unhook\|purge [--uploads] [--linger]` | `{level, steps[{action, target, ok, error?}], removed[], failed[{path, reason, sessions[]}], remaining[]}` |
+| `stagent wsl-shutdown --json` | (WSL) runs `wsl.exe --shutdown`, which normally ends this command, see below |
 
 Levels are cumulative: `unhook` includes `stop`, `purge` includes `unhook`.
 
@@ -796,6 +806,46 @@ that a more specific scope (Group Policy) keeps is the error
 `execution_policy_overridden` with PowerShell's message. It is not
 recorded and nothing removes it. Off Windows it is a `skip`.
 
+`--wsl-keep-running` (WSL) keeps WSL from shutting the distribution down
+once no Windows-side client (a Windows terminal tab, `bash.exe` behind
+Windows' sshd) uses it, which otherwise ends detached sessions and kept
+shells some 15–40 s after the SSH connection or the PC's terminal closes
+(processes inside WSL do not count). It sets `[general]
+instanceIdleTimeout=-1` in the Windows user's `.wslconfig`, found with
+`cmd.exe /c echo %USERPROFILE%` and `wslpath` through interop and written
+through the drive mount (`/mnt/c/Users/<user>/.wslconfig`). The setting is
+the user's, for every distribution, and WSL reads it only when it starts:
+it applies after `wsl --shutdown` (`wsl-shutdown`) or a restart of the PC.
+Exactly one line changes and every other byte is kept: a missing file is
+created as `[general]` plus the line; under an existing `[general]` the
+line goes right below the header; a non-negative `instanceIdleTimeout`
+line is changed to `-1`; otherwise `[general]` and the line are appended
+(after a blank line). Line endings follow the file (CRLF for a new one).
+It is the change `{id: "wsl-keep-running", target: <path>, action:
+"create"|"modify"}`, absent when the file sets a negative value already;
+the manifest records it as a config entry (`doctor`'s
+`persistence.wsl.keep_running_by_stagent`). When the Windows profile
+cannot be reached (interop off, no drive mount) it is a `skip` with
+`error_code` `wslconfig_unreachable` and target
+`%USERPROFILE%\.wslconfig`; a file saved as UTF-16 is `unmanaged_file`;
+off WSL a `skip`. `--remove wsl-keep-running` and `uninstall --level
+purge` (always, no flag) undo only a recorded edit: a file unchanged since
+is deleted when stagent created it or restored from the backup; one edited
+since loses only stagent's line (with the `[general]` header and blank line
+stagent added, once the section holds nothing else), or gets back the line
+stagent changed. A line that no longer sets a negative value, and one the
+user wrote before, are never touched; `stop` and `unhook` leave the file.
+Either direction notes `wsl_restart`.
+
+`wsl-shutdown` (WSL) runs `wsl.exe --shutdown` through interop. It stops
+every WSL distribution of the user — this one and Docker Desktop's
+included — so stagent and the exec channel running it normally end
+without output (behind Windows' sshd the SSH connection stays open; the
+next exec starts WSL again). A client takes an exit without an `{"error"}`
+document as success. Off WSL, or when `wsl.exe` fails, it exits 1 with
+`{"error": "..."}`; if `wsl.exe` returns and stagent still runs, it prints
+`{"shutdown": true}`.
+
 `--service` on macOS writes `~/Library/LaunchAgents/com.obutora.stagent.plist`
 with `LimitLoadToSessionType` `Background` and `ProcessType` `Standard`
 and bootstraps it into the user domain, `launchctl bootstrap user/<uid>`
@@ -825,7 +875,9 @@ file. Its output, in both modes:
   enable-linger <user>`; `error` is loginctl's message),
   `execution_policy_overridden` (Group Policy keeps a PowerShell
   execution policy that does not run the profile; `error` is
-  PowerShell's message), `io_error` (anything else).
+  PowerShell's message), `wslconfig_unreachable` (WSL: the Windows user
+  profile holding `.wslconfig` cannot be found, interop or the drive mount
+  being off; edit the file on the PC), `io_error` (anything else).
 - `result`: `nothing_to_do` when `--shell-wrapper` was asked for and no
   supported shell (bash, zsh, fish, PowerShell) was found (takes
   precedence); otherwise `ok` without any error (also when everything is
@@ -862,6 +914,7 @@ code it does not know.
 | `launch_agent` | – | (`--service`, macOS) the LaunchAgent runs in the user domain and survives logout; starting before any login after a restart is unverified |
 | `terminal_no_profiles` | – | Terminal.app has no saved profiles; nothing to change |
 | `terminal_running` | – | Terminal.app is running and applies the change once it is quit and opened again |
+| `wsl_restart` | – | (`--wsl-keep-running`, `--remove wsl-keep-running`) WSL reads `.wslconfig` when it starts: the change applies after `wsl --shutdown` or a restart of the PC |
 | `not_applied` | `failed` | (`--apply`) the change ids that failed, comma-separated (`manifest: <error>` when the manifest could not be saved) |
 | `legacy_daemon_stopped` | `addr` | (`install`) a daemon of a version before 0.3.0 at `addr` was stopped; sessions it had keep running but are no longer listed |
 | `daemon_replace_failed` | `running`, `version`, `error` | (`install`) the running daemon (`running`) could not be replaced by this `version` |
@@ -944,7 +997,8 @@ in tmp when socket paths would be too long there.
   "service": {"kind": "systemd|launchd|schtasks|none", "installed": false, "running": false},
   "persistence": {"run_dir": "/tmp/stagent-1000", "run_dir_survives_logout": true,
                   "kill_user_processes": false, "linger": true,
-                  "linger_needed": false, "linger_reason": null, "linger_enabled_by_stagent": false},
+                  "linger_needed": false, "linger_reason": null, "linger_enabled_by_stagent": false,
+                  "wsl": null},
   "terminal": null,
   "powershell": null,
   "redirection_guard": null,
@@ -1025,7 +1079,10 @@ logind's `KillUserProcesses` and `linger` whether lingering is enabled for
 the user (`null` when unknown or off Linux).
 
 `linger_needed` says whether agents started on this host end at logout
-unless lingering is turned on (`integrate --linger`). It is false when
+unless lingering is turned on (`integrate --linger`). On WSL it is always
+false: WSL keeps the user's login session for as long as the instance
+runs, so lingering changes nothing there (`wsl` does). Elsewhere it is
+false when
 lingering is on; otherwise, once a start through a wrapper is recorded
 and `last_run_survives_logout` is known, it is the opposite of that
 (`linger_reason` `last_run`); else true when `kill_user_processes` is true
@@ -1038,6 +1095,26 @@ says so and suggests
 `loginctl enable-linger`. `linger_enabled_by_stagent` is true when the
 manifest records that `integrate --linger` turned lingering on. `hello`
 reports none of this (it would ask logind at every connection).
+
+`wsl` is `null` unless Linux runs in WSL (`/proc/sys/kernel/osrelease`
+names Microsoft). Then it is
+`{"distro": "Ubuntu", "config_path": "/mnt/c/Users/me/.wslconfig",
+"instance_idle_timeout": 15000, "networking_mode": "nat",
+"keep_running_needed": true, "keep_running_by_stagent": false}`:
+`distro` is `$WSL_DISTRO_NAME` (`""` when unset); `config_path` the Linux
+path of the Windows user's `.wslconfig`, existing or not (`null` when the
+Windows profile cannot be reached); `instance_idle_timeout` is `[general]
+instanceIdleTimeout` in ms, WSL's default `15000` when the file or key is
+absent or not an integer; `networking_mode` is `[wsl2] networkingMode` in
+lower case, `"nat"` when absent (both `null` when the file cannot be read,
+e.g. UTF-16). `keep_running_needed` is true when WSL shuts the
+distribution down once no Windows-side client uses it
+(`instance_idle_timeout` ≥ 0; `problems` then says so and suggests
+`integrate --apply --wsl-keep-running`), false when it is negative, and
+`null` when unknown. It follows the file, which WSL reads only when it
+starts: right after `--wsl-keep-running` it is false though WSL may not
+have restarted yet. `keep_running_by_stagent` is true when the manifest
+records stagent's edit and the file still has the line.
 
 `notify.last_error` is the daemon's last push failure per channel (see
 `config.get`), read from its file, so it is reported whether or not the
@@ -1150,6 +1227,15 @@ agent sessions are held on this host; `stagent ls` lists them``. It prints
 this whatever the handoff choice, and nothing when there are none or the
 daemon does not answer within a fraction of a second (it is not started
 for this).
+
+A Codex CLI 0.156 or later (`codex --version`, asked with the session's
+environment and working directory, 5 s at most) is started with
+`--no-daemon` added right after the program, unless the command already has
+it or is one Codex refuses it with (`codex agents`, `--remote`). From 0.157
+Codex otherwise runs its threads in one shared `codex app-server
+--managed-daemon` per `CODEX_HOME`, which keeps the environment of the codex
+that started it, so the hooks of every later session would carry that
+session's `STAGENT_SESSION_ID`. The session's `command` stays as given.
 
 The shell wrappers (`integrate --shell-wrapper`; bash/zsh block, fish file,
 PowerShell profile block) define functions `claude`, `codex` and `omp`

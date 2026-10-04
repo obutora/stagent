@@ -40,6 +40,9 @@ const (
 	// codeExecutionPolicyOverridden: PowerShell kept a policy that does not
 	// run the profile after Set-ExecutionPolicy (Group Policy defines it).
 	codeExecutionPolicyOverridden = "execution_policy_overridden"
+	// codeWSLConfigUnreachable: the Windows user profile holding
+	// .wslconfig cannot be found from WSL (interop off, no drive mount).
+	codeWSLConfigUnreachable = "wslconfig_unreachable"
 )
 
 // contentError is a file whose content stagent does not edit: a UTF-16
