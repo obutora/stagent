@@ -49,7 +49,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 	fs := flag.NewFlagSet("stagent "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print compact JSON")
-	var plan, apply, shellWrapper, service, linger, terminal, executionPolicy, uploads *bool
+	var plan, apply, shellWrapper, service, linger, terminal, executionPolicy, wslKeepRunning, uploads *bool
 	var harness, remove, level *string
 	switch cmd {
 	case "integrate":
@@ -61,7 +61,8 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		linger = fs.Bool("linger", false, "turn on lingering (`loginctl enable-linger`, Linux) so agents keep running after logout")
 		terminal = fs.Bool("terminal", false, "add stagent to the processes Terminal.app does not ask about before closing a window (macOS)")
 		executionPolicy = fs.Bool("execution-policy", false, "set the execution policy RemoteSigned for the current user in each PowerShell that would not run its profile (Windows)")
-		remove = fs.String("remove", "", "comma-separated integrations to remove: claude,codex,omp,shell-wrapper,service,linger,terminal (linger, terminal: only what stagent turned on or added)")
+		wslKeepRunning = fs.Bool("wsl-keep-running", false, "keep WSL running when no Windows terminal or SSH connection uses it: [general] instanceIdleTimeout=-1 in .wslconfig (WSL; applies once WSL restarts)")
+		remove = fs.String("remove", "", "comma-separated integrations to remove: claude,codex,omp,shell-wrapper,service,linger,terminal,wsl-keep-running (linger, terminal, wsl-keep-running: only what stagent turned on or added)")
 	case "uninstall":
 		level = fs.String("level", "", "stop | unhook | purge")
 		uploads = fs.Bool("uploads", false, "also delete ~/.ssh-term/uploads (purge)")
@@ -98,7 +99,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		if *plan && *apply {
 			return fail(2, errors.New("--plan and --apply are mutually exclusive"))
 		}
-		o := integrateOpts{apply: *apply, shellWrapper: *shellWrapper, service: *service, linger: *linger, terminal: *terminal, executionPolicy: *executionPolicy}
+		o := integrateOpts{apply: *apply, shellWrapper: *shellWrapper, service: *service, linger: *linger, terminal: *terminal, executionPolicy: *executionPolicy, wslKeepRunning: *wslKeepRunning}
 		var err error
 		if o.harness, err = parseList(*harness, harnessIDs); err != nil {
 			return fail(2, err)
@@ -106,7 +107,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		if o.remove, err = parseList(*remove, removeIDs); err != nil {
 			return fail(2, err)
 		}
-		if len(o.harness) == 0 && len(o.remove) == 0 && !o.shellWrapper && !o.service && !o.linger && !o.terminal && !o.executionPolicy {
+		if len(o.harness) == 0 && len(o.remove) == 0 && !o.shellWrapper && !o.service && !o.linger && !o.terminal && !o.executionPolicy && !o.wslKeepRunning {
 			for _, h := range harnessIDs {
 				if e.findHarness(h) != "" {
 					o.harness = append(o.harness, h)
@@ -123,6 +124,12 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 			return fail(2, fmt.Errorf("--level must be stop, unhook or purge (got %q)", *level))
 		}
 		emit(e.uninstall(*level, *uploads, *linger))
+	case "wsl-shutdown":
+		if err := e.wslShutdown(); err != nil {
+			return fail(1, err)
+		}
+		// Normally not reached: the shutdown takes this process down.
+		emit(map[string]bool{"shutdown": true})
 	default:
 		return fail(2, fmt.Errorf("unknown installer command %q", cmd))
 	}

@@ -42,7 +42,8 @@ func (r *UninstallReport) step(action, target string, err error) bool {
 }
 
 // uninstall runs the cumulative levels stop ⊂ unhook ⊂ purge. linger
-// (purge only) also turns lingering off when stagent turned it on.
+// (purge only) also turns lingering off when stagent turned it on; purge
+// always undoes stagent's .wslconfig edit (WSL を動かし続ける).
 func (e *env) uninstall(levelName string, uploads, linger bool) *UninstallReport {
 	level := levelNames[levelName]
 	r := &UninstallReport{Level: levelName, Steps: []Step{}, Removed: []string{}, Failed: []Failure{}}
@@ -62,6 +63,7 @@ func (e *env) uninstall(levelName string, uploads, linger bool) *UninstallReport
 		if linger && e.m.LingerEnabled {
 			r.step("disable-linger", lingerTarget, e.disableLinger())
 		}
+		e.revertWSL(r)
 		e.purge(r, sessions, uploads)
 	} else if e.haveM || e.dirty {
 		if err := e.saveManifest(); err != nil {
@@ -149,6 +151,26 @@ func (e *env) unhook(r *UninstallReport) {
 		}
 	}
 	e.dropStaleRecords(targets)
+}
+
+// revertWSL undoes stagent's .wslconfig edit (see wslRemoveChange).
+func (e *env) revertWSL(r *UninstallReport) {
+	c, err := e.wslRemoveChange()
+	switch {
+	case err != nil:
+		r.step("remove-entries", e.wslRecord().Path, err)
+	case c != nil:
+		action := "remove-entries"
+		switch {
+		case strings.HasPrefix(c.Summary, "restore"):
+			action = "restore"
+		case c.Action == "delete":
+			action = "delete-file"
+		}
+		if r.step(action, c.Target, c.apply()) && c.Action == "delete" {
+			r.Removed = append(r.Removed, c.Target)
+		}
+	}
 }
 
 // purge deletes the installation, relocated data, sockets and backups.

@@ -203,7 +203,10 @@ func Run(ctx context.Context, o Options) (int, error) {
 			fmt.Fprintln(os.Stderr, heldNotice(n))
 		}
 	}
-	p, err := pty.Start(o.Command, dir, buildEnv(env, id, o.Detached), cols, rows)
+	penv := buildEnv(env, id, o.Detached)
+	// The session keeps the command as given; only the program sees
+	// codex's --no-daemon.
+	p, err := pty.Start(codexCommand(o.Command, dir, penv), dir, penv, cols, rows)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 			return ExitNotFound, err

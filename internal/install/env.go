@@ -118,6 +118,10 @@ type env struct {
 	// redirectionGuard reads whether this process runs with Windows'
 	// RedirectionGuard (nil when unknown or off Windows).
 	redirectionGuard func() *bool
+	// kernelRelease reads /proc/sys/kernel/osrelease (WSL's names
+	// Microsoft); nil reads as not WSL.
+	kernelRelease func() string
+	wslConfig     *wslConfigLookup // cached wslConfigPath
 
 	m     *Manifest
 	haveM bool
@@ -147,6 +151,7 @@ func newEnv() (*env, error) {
 		settle:           3 * time.Second,
 		sid:              currentSID(),
 		redirectionGuard: redirectionGuard,
+		kernelRelease:    readKernelRelease,
 	}
 	e.loadManifest()
 	return e, nil
@@ -198,6 +203,7 @@ const (
 	noteLaunchAgent         = "launch_agent"
 	noteTerminalNoProfiles  = "terminal_no_profiles"
 	noteTerminalRunning     = "terminal_running"
+	noteWSLRestart          = "wsl_restart"
 	noteNotApplied          = "not_applied"           // args: failed
 	noteDaemonReplaceFailed = "daemon_replace_failed" // args: running, version, error
 	noteLegacyDaemonStopped = "legacy_daemon_stopped" // args: addr

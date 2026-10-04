@@ -3,6 +3,45 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.6.0
+
+### Added
+
+- WSL を動かし続ける: `integrate --wsl-keep-running` (WSL) sets
+  `[general] instanceIdleTimeout=-1` in the Windows user's `.wslconfig`
+  (found through interop, written through `/mnt/c`), so WSL no longer
+  shuts the distribution down — ending detached sessions and kept shells —
+  some 30 s after the last SSH connection or Windows terminal using it
+  closes. One line changes and every other byte is kept; the edit is
+  recorded in the manifest. `--remove wsl-keep-running` and `uninstall
+  --level purge` undo only that edit (restoring the original file, or
+  taking out just stagent's line when the file changed since); a line the
+  user wrote is never touched. A Windows profile that cannot be reached is
+  `error_code` `wslconfig_unreachable`. Either direction notes
+  `wsl_restart`: WSL reads the file when it starts (PROTOCOL.md).
+- `stagent wsl-shutdown --json` (WSL) runs `wsl.exe --shutdown` so the
+  setting applies now; it stops every distribution, this command included.
+- `doctor` reports `persistence.wsl` on WSL: the distribution,
+  `.wslconfig`'s path, `instance_idle_timeout`, `networking_mode`,
+  `keep_running_needed` (with a `problems` line when WSL stops the
+  distribution when idle) and `keep_running_by_stagent`.
+
+### Changed
+
+- `doctor` reports `persistence.linger_needed: false` on WSL: WSL keeps
+  the user's login session for as long as the distribution runs, so
+  lingering changes nothing there.
+
+### Fixed
+
+- Codex 0.157 or later: the hooks of every stagent session reach their own
+  session. Codex otherwise runs its threads in one shared `codex app-server
+  --managed-daemon` that keeps the environment of the codex that started
+  it, so later sessions' hooks carried the first session's
+  `STAGENT_SESSION_ID` and their states showed on that session. The holder
+  starts a Codex CLI 0.156 or later with `--no-daemon` (not `codex agents`,
+  `--remote`, or a command that already has it) (#319).
+
 ## 0.5.0
 
 ### Added
