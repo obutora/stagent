@@ -37,6 +37,10 @@ their order). Notifications may arrive at any time between responses.
 The first request must be `hello`. If `result.protocol` differs from the
 app's protocol, the app offers an update of the binary.
 
+The bridge exits when stdin reaches EOF. On Windows it also exits when the
+process that created its stdin pipe ends — Win32-OpenSSH's session process
+(`sshd -z`) — since stdin may not reach EOF when that process is killed.
+
 ### Versions and compatibility
 
 - The app pins one stagent release (`stagent_release.dart`); that version
@@ -50,8 +54,8 @@ app's protocol, the app offers an update of the binary.
   be removed only when no released app uses it; `approval.respond` and
   `config.set` replacing the whole config qualify.
 - Capabilities are reserved for what depends on the host OS. Linux and
-  macOS keep relying on `persist`. Whether a key is present is checked
-  only for `host_id`.
+  macOS keep relying on `persist`; Windows needs `persist_shell` as well.
+  Whether a key is present is checked only for `host_id`.
 
 ## Methods
 
@@ -79,11 +83,16 @@ name still missing from that PATH is looked up in the usual per-user tool
 directories (`~/.bun/bin`, `~/.local/bin`, npm/pnpm/volta/nvm/fnm/mise,
 Homebrew). `env` entries override both.
 
-With `shell: true` (capability `persist`) the session runs the user's login
-shell instead of a command: argv `[<shell>, "-l"]`, `<shell>` being `SHELL`
-of that captured environment (`/bin/sh` when unset). `command` must then be
-empty or absent (`bad_request` otherwise); on Windows the request fails with
-`unsupported`. This is how a terminal tab runs its shell in a persistent
+With `shell: true` (capability `persist`) the session runs the user's
+shell instead of a command. On Linux and macOS that is their login shell:
+argv `[<shell>, "-l"]`, `<shell>` being `SHELL` of that captured
+environment (`/bin/sh` when unset). On Windows (capability
+`persist_shell`) it is the shell an SSH terminal of the account gets:
+argv `[<shell>]`, `<shell>` being the bridge's `SHELL` — sshd sets it to
+its `DefaultShell`, `cmd.exe` when that is unset — or `%ComSpec%` when
+`SHELL` is empty; no `-l` (Windows PowerShell 5.1 would run it as a
+command and exit). `command` must then be empty or absent (`bad_request`
+otherwise). This is how a terminal tab runs its shell in a persistent
 session: it outlives the SSH connection and is re-attached later.
 
 On Linux a holder that must leave the login session it was started from
@@ -95,11 +104,15 @@ the bridge starts them in the GUI login session so that the agent can use
 the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
-`persist`. `persist` announces everything this document marks with it:
-`session.spawn` `shell`, attach resume (`since`, `offset`, `resumed`,
-`output.end`), the `hangup` signal, input-mode restoring snapshots and
-sessions changing from `passthrough` to `detached` (handoff). An app that
-relies on them treats a bridge without `persist` as needing an update.
+`persist`, and on Windows `persist_shell`. `persist` announces everything
+this document marks with it: `session.spawn` `shell`, attach resume
+(`since`, `offset`, `resumed`, `output.end`), the `hangup` signal,
+input-mode restoring snapshots and sessions changing from `passthrough`
+to `detached` (handoff). An app that relies on them treats a bridge
+without `persist` as needing an update. Windows bridges before 0.5.0
+announced `persist` but refused `shell` with `unsupported`; on Windows
+`persist_shell` announces that `shell` works, and an app treats a
+Windows bridge without it as needing an update.
 
 ### Session (forwarded to the session's holder)
 
@@ -164,13 +177,20 @@ passthrough session the local terminal answers them. Attached clients must
 not answer queries themselves: their replies would arrive as typed input.
 
 `session.signal`: `interrupt` writes Ctrl-C to the terminal, `terminate`
-sends SIGTERM (Windows: Ctrl-Break, then TerminateProcess after a grace
-period), `kill` SIGKILL / TerminateProcess, and `hangup` (`persist`)
-SIGHUP — what closing a terminal does; a shell exits on it, which is how
-the app ends a persistent shell session (Windows: same as `terminate`).
-The holder records a `hangup` (on every OS): the session ends with
-`session_ended {hung_up: true}` and its exit is not an abnormal one,
-whatever the exit code (see "Push notifications").
+sends SIGTERM, `kill` SIGKILL, and `hangup` (`persist`) SIGHUP — what
+closing a terminal does; a shell exits on it, which is how the app ends a
+persistent shell session. Windows has no such signals: `terminate` and
+`hangup` write ^C to the pseudo console and, if the program is still
+running 3 seconds later, `TerminateProcess(…, 1)` it (an idle shell does
+not exit on ^C, so a hung-up shell usually ends with exit code 1); `kill`
+is `TerminateProcess(…, 1)` at once. Closing the pseudo console then ends
+the processes still attached to it; a child with a console of its own
+(`start ""`) is left running, as a `setsid` child is on Unix. The holder
+records a `hangup` (on every OS): the session ends with `session_ended
+{hung_up: true}` and its exit is not an abnormal one, whatever the exit
+code (see "Push notifications"). On Windows, a passthrough session whose
+console closes (the user closes the window it runs in; Windows has no
+handoff) is hung up the same way and recorded as a `hangup` too.
 
 `session.input` `local: true` is what `stagent attach` sends: keyboard
 input of a terminal on the host. It counts as `last_local_input_at`, and
@@ -192,8 +212,15 @@ Input details: newlines inside `paste` are sent as `\r` (what a terminal
 sends for Enter) and any `ESC[201~` inside it is removed; `up down right left
 home end` use the SS3 form (`ESC O A` …) while the program has enabled
 application cursor keys (DECCKM); a `submit` that follows `text`/`paste` is
-written 30 ms later as a separate write so TUIs that debounce pasted input
-see Enter as a keystroke.
+written 30 ms later (250 ms on Windows) as a separate write so TUIs that
+debounce pasted input see Enter as a keystroke — on Windows a pseudo
+console hands programs key events rather than a bracketed paste, and Codex
+takes an Enter within about 120 ms of fast input as part of it. While the
+program has enabled win32-input-mode (`CSI ? 9001 h`, which conhost behind
+a Windows pseudo console asks for), an Esc that starts no sequence (`esc`,
+or a lone `ESC` in `text`) is sent as that mode's Esc key press and release
+(`CSI 27;1;27;1;0;1 _`, `CSI 27;1;27;0;0;1 _`): Claude Code on Windows
+does not take a lone `ESC` byte written there as the Esc key.
 
 `session.scrollback`: raw PTY bytes `[start, end)` of the session's output
 stream, newest first page when `before` is 0; `first` is the oldest retained
@@ -414,7 +441,7 @@ five checks. The agent's next hook sets the harness again.
 | kind | data |
 |---|---|
 | `session_started` | `{harness, command[], cwd, mode}` |
-| `session_ended` | `{exit_code, hung_up?}` — `hung_up`: a client ended it with `session.signal hangup` |
+| `session_ended` | `{exit_code, hung_up?}` — `hung_up`: a client ended it with `session.signal hangup`, or (Windows) the console of a passthrough session closed |
 | `state_changed` | `{from, to, source}` |
 | `notification` | `{title, body, level (info\|warn), reason, count?, session_id?}` — reason `waiting_input\|needs_approval\|turn_complete\|exited\|terminal\|test\|digest`; `session_id` names the session it is about (absent for a digest, `notify.test` and approvals of no session); webhooks post this object |
 | `approval_requested` | `Approval` |
@@ -458,15 +485,20 @@ the session. When a session's last approval closes, its hook-derived
 `needs_approval` goes and the terminal/activity state shows again.
 
 `UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp), cwd, reason
-(old_terminal|bypassed|ide), first_seen_at, last_activity_at` (unix ms, host
-clock: the first and the latest hook of the conversation). `reason`:
+(old_terminal|bypassed|ide|ssh|no_terminal), first_seen_at,
+last_activity_at` (unix ms, host clock: the first and the latest hook of
+the conversation). `reason`:
 `old_terminal` — the shell lacks the wrapper's `STAGENT_SHELL_WRAPPER`
 marker: a terminal opened before このホストの準備, or one that does not read
 the shell's rc files (open a new terminal); `bypassed` — the shell has the
 wrapper but the start went around it (`command claude`, a full path; start
-`claude` as it is); `ide` — an IDE extension or the desktop app (Claude
-Code's `CLAUDE_CODE_ENTRYPOINT` is neither `cli` nor `sdk-*`; cannot be
-shown).
+`claude` as it is); `ide` — an IDE extension or a desktop app (Claude
+Code's `CLAUDE_CODE_ENTRYPOINT` is neither `cli` nor `sdk-*`; the Codex
+desktop app or IDE extension; cannot be shown); `ssh` (Windows) — started
+in an SSH session, where the PowerShell wrapper does not wrap and the agent
+ends with the connection (start it in a kept shell); `no_terminal`
+(Windows) — no marker and no shell above the agent: a program started it
+without a terminal (cannot be shown).
 
 `Message`: `role (user|assistant|tool|system), text, tool_name?, time?`.
 
@@ -711,7 +743,7 @@ success (non-zero with `{"error": "..."}` on failure).
 |---|---|
 | `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, replaced_daemon?, changes[], notes[{code, text, args?}]}` — creates directories and the manifest and completes an update (below); idempotent |
 | `stagent doctor --json` | `DoctorReport` |
-| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--linger] [--terminal] [--remove claude,codex,omp,shell-wrapper,service,linger,terminal]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
+| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--linger] [--terminal] [--execution-policy] [--remove claude,codex,omp,shell-wrapper,service,linger,terminal]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
 | `stagent uninstall --json --level stop\|unhook\|purge [--uploads] [--linger]` | `{level, steps[{action, target, ok, error?}], removed[], failed[{path, reason, sessions[]}], remaining[]}` |
 
 Levels are cumulative: `unhook` includes `stop`, `purge` includes `unhook`.
@@ -752,6 +784,18 @@ the change, a key stagent created that holds just the default list again
 is removed, and a `stagent` entry stagent did not add stays. With nothing
 recorded `--remove terminal` does nothing, on any OS.
 
+`--execution-policy` (Windows) runs `Set-ExecutionPolicy -Scope
+CurrentUser -ExecutionPolicy RemoteSigned -Force` in each installed
+PowerShell whose effective policy keeps it from running the profile with
+the wrapper (`Restricted`, `AllSigned`; `doctor`'s `powershell[]`), and
+in no other. Each is the change `{id: "execution-policy-powershell" |
+"execution-policy-pwsh", target: "powershell:ExecutionPolicy" |
+"pwsh:ExecutionPolicy", action: "modify", diff: ""}`; none when every
+PowerShell runs its profile. Applying reads the effective policy again: one
+that a more specific scope (Group Policy) keeps is the error
+`execution_policy_overridden` with PowerShell's message. It is not
+recorded and nothing removes it. Off Windows it is a `skip`.
+
 `--service` on macOS writes `~/Library/LaunchAgents/com.obutora.stagent.plist`
 with `LimitLoadToSessionType` `Background` and `ProcessType` `Standard`
 and bootstraps it into the user domain, `launchctl bootstrap user/<uid>`
@@ -778,16 +822,19 @@ file. Its output, in both modes:
   that are not valid JSON or have an unexpected `hooks` layout, a Codex
   `features` inline table), `linger_denied` (polkit refused
   `set-self-linger`: an administrator has to run `sudo loginctl
-  enable-linger <user>`; `error` is loginctl's message), `io_error`
-  (anything else).
+  enable-linger <user>`; `error` is loginctl's message),
+  `execution_policy_overridden` (Group Policy keeps a PowerShell
+  execution policy that does not run the profile; `error` is
+  PowerShell's message), `io_error` (anything else).
 - `result`: `nothing_to_do` when `--shell-wrapper` was asked for and no
   supported shell (bash, zsh, fish, PowerShell) was found (takes
   precedence); otherwise `ok` without any error (also when everything is
   already in place and `changes` is empty), `failed` when there are errors
   and no target was planned/applied cleanly or already in place, and
   `partial` in between. Files written successfully are not rolled back.
-- `login_shell`: the base name of `$SHELL` (`""` when unset), e.g. for
-  telling the user which shell was found when the result is
+- `login_shell`: the base name of `$SHELL` (`""` when unset; on Windows
+  sshd sets it to its `DefaultShell`, `cmd.exe` when that is unset), e.g.
+  for telling the user which shell was found when the result is
   `nothing_to_do`.
 - `applied` is true when `--apply` wrote every change (and the manifest).
 - `notes[]`: remarks for the user (below).
@@ -804,11 +851,12 @@ code it does not know.
 | `claude_windows_hooks` | – | on Windows the hooks run `stagent.exe` directly; deleting the binary without `uninstall --level unhook` leaves hooks that error until removed (`doctor` lists them as orphans) |
 | `omp_restart` | – | running omp sessions load the extension only after a restart |
 | `codex_trust` | – | Codex asks to review and trust the new hooks at its next start; stagent writes no trust entries |
-| `codex_notify_fallback` | `reason` | Codex is integrated through the notify program (turn complete only, no approvals); `reason`: `windows` (no Codex hooks on Windows), `inline_features` (`features` is an inline table), `hooks_removed` (this Codex removed the hooks feature), `no_hooks_feature` (this Codex has none) |
+| `codex_notify_fallback` | `reason` | Codex is integrated through the notify program (turn complete only, no approvals); `reason`: `inline_features` (`features` is an inline table), `hooks_removed` (this Codex removed the hooks feature), `no_hooks_feature` (this Codex has none) |
 | `codex_notify_kept` | `command` | Codex already has another notify program (`command`); stagent left it, so turn-complete events are not reported |
 | `codex_features_kept` | – | removing left `[features] hooks` as it is: it changed after stagent enabled it |
 | `no_shell` | – | no supported shell rc file was found; nothing to wrap (`result` `nothing_to_do`) |
 | `powershell_no_bom` | `path`, `bin` | the profile `path` has no UTF-8 BOM and the wrapper names stagent by the non-ASCII path `bin`; Windows PowerShell 5.1 will not find it |
+| `cmd_not_wrapped` | `shell` | (`--shell-wrapper`, Windows) the SSH default shell `shell` is cmd, which has no profile: the wrapper goes into the PowerShell profiles only |
 | `binary_missing` | `path` | stagent is not installed at `path` yet; hooks and wrappers stay inactive until it is |
 | `service_linger` | – | (`--service`, systemd) lingering is off, so the user service stops at the last logout |
 | `launch_agent` | – | (`--service`, macOS) the LaunchAgent runs in the user domain and survives logout; starting before any login after a restart is unverified |
@@ -898,6 +946,8 @@ in tmp when socket paths would be too long there.
                   "kill_user_processes": false, "linger": true,
                   "linger_needed": false, "linger_reason": null, "linger_enabled_by_stagent": false},
   "terminal": null,
+  "powershell": null,
+  "redirection_guard": null,
   "notify": {"last_error": {"ntfy": {"at": 1767225600000, "status": 429, "error": "429 Too Many Requests"}}},
   "unwrapped": [{"conversation_id": "…", "harness": "claude", "cwd": "/home/u/api", "reason": "old_terminal",
                  "first_seen_at": 1767225600000, "last_activity_at": 1767225900000}],
@@ -934,6 +984,26 @@ daemon is a version before 0.4.0 (it does not report it).
 profiles (0 when none or unreadable), `no_warn` whether every one has
 `stagent` in `noWarnProcesses`, and `added_by_stagent` whether the
 manifest records profiles stagent added it to.
+
+`powershell` (Windows; `null` elsewhere) lists each installed PowerShell —
+Windows PowerShell 5.1, then PowerShell 7 when `pwsh` is on `PATH`:
+`[{"id": "powershell", "name": "Windows PowerShell 5.1", "path":
+"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+"execution_policy": "Restricted", "loads_profile": false}]`.
+`execution_policy` is its effective policy (`Get-ExecutionPolicy`), `null`
+when it cannot be read; `loads_profile` is false when that policy keeps the
+profile with the wrapper from running (`Restricted`, `AllSigned`: the block
+is not signed), `null` when unknown. A `false` adds a `problems` line
+suggesting `integrate --execution-policy`.
+
+`redirection_guard` (Windows; `null` elsewhere or when Windows cannot
+tell) is whether `doctor` itself runs with RedirectionGuard
+(`ProcessRedirectionTrustPolicy.EnforceRedirectionTrust`). sshd gets it
+from its Image File Execution Options and every process started over SSH
+inherits it, holders of kept shells included, even after leaving sshd's
+job: such processes do not follow junctions a non-administrator created,
+so tools reached through one (scoop's shims) fail in kept shells. stagent
+treats it as a known limitation.
 
 `host_id` is the host's id (see `hello`), absent until stagent created it;
 `doctor` only reads it.
@@ -992,6 +1062,15 @@ without `force`. Later hangups are ignored. A handed-off session stays
 where `stagent run` started (see below). On Windows a closing console
 still ends the process, so a handoff only happens when console input
 reaches EOF.
+
+The local terminal holds the program back, as any terminal does, only
+while it takes output. A write to it that makes no progress for 2 s (a
+Windows console with a selection, an SSH client gone without a hangup)
+counts as a terminal that stopped reading: output to it is dropped, so
+attached clients keep getting the program's output and the program does
+not block, and once it reads again it is redrawn with a snapshot of the
+screen. Lines that scrolled by meanwhile are missing from its own
+scrollback (`session.scrollback` has them).
 
 A `--detached` holder writes its diagnostics to stderr. When stderr is a
 pipe or socket (`stagent run --detached` run over an SSH exec channel),
@@ -1132,6 +1211,14 @@ using Claude's event names (`SessionStart`, `UserPromptSubmit`, `Stop`,
 unreachable it exits 0 without output.
 A hook run with `CLAUDE_CODE_BRIDGE_SESSION_ID` set (claude connected to
 Remote Control) tells the daemon so (`notify.skip_when_claude_app_notifies`).
+On Windows the commands run `stagent.exe` by its absolute path with
+forward slashes. Claude Code runs them through Git Bash or cmd, so its
+command quotes the path (`"C:/…/stagent.exe" hook claude`). Codex runs
+them with the session's shell, PowerShell on Windows, where a quoted path
+followed by arguments does not parse: its command leaves the path bare
+(`C:/…/stagent.exe hook codex`, valid in every shell), or uses the call
+operator (`& 'C:/…/stagent.exe' hook codex`) when the path holds a space
+or another character PowerShell reads specially.
 
 ### Agents without a stagent session
 
@@ -1145,6 +1232,9 @@ only):
 | `entrypoint` | `CLAUDE_CODE_ENTRYPOINT` (Claude Code: `cli`, `sdk-cli`, `sdk-ts`, `claude-vscode`, …) |
 | `parent_tty` | the harness — the hook's nearest ancestor that is not a shell (the installed Codex command keeps `sh -c` in between) — reads a terminal: its stdin (`/proc/<pid>/fd/0`) on Linux, its controlling terminal (as `ps -o tty=`) on macOS; absent when unknown (Windows) |
 | `parent_batch` | the harness's command line asks for a non-interactive run by the shell wrapper's rule (`claude -p` / `--print`; `codex exec` / `e` as the first argument; `omp -p` / `--print` or `--mode` other than `text`) |
+| `ssh` | `SSH_CONNECTION` is set |
+| `terminal_ancestor` | (Windows; absent elsewhere or when unknown) a shell — `powershell`, `pwsh`, `cmd`, `bash` or `sh` — runs above the harness, the hook's nearest ancestor that is not one of them (Claude Code runs hooks through Git Bash) |
+| `originator`, `subagent` | (codex) `originator` and whether `source` is a `subagent` thread, from the `session_meta` line that starts the conversation's rollout file: the payload's `transcript_path`, else `$CODEX_HOME/sessions/*/*/*/rollout-*-<thread-id>.jsonl` for the notify program. Seen (Codex 0.160): `codex-tui` (the terminal UI), `codex_exec` (`codex exec`), `Codex Desktop` (the desktop app) |
 
 `parent_batch` covers what the terminal cannot tell: `codex exec` or `omp
 -p` typed in a terminal read it like an interactive start.
@@ -1155,11 +1245,20 @@ only, and the watchers get `unwrapped.updated`:
 
 | hook | `reason` |
 |---|---|
+| codex `subagent`, or an `originator` other than `codex-tui` / `codex_cli_rs` (terminal UI) and `Codex Desktop` / `codex_vscode` | not recorded (non-interactive: `codex exec`, the SDK, another conversation's thread) |
+| codex `originator` `Codex Desktop` / `codex_vscode` | `ide` |
 | Claude Code `entrypoint` `sdk-*` | not recorded (non-interactive) |
 | Claude Code `entrypoint` other than `cli` | `ide` |
 | codex / omp (and Claude Code without `entrypoint`) with `parent_tty` false or `parent_batch` | not recorded (non-interactive) |
+| otherwise, on Windows with `ssh` | `ssh` |
 | otherwise, `shell_wrapper` set | `bypassed` |
+| otherwise, on Windows with `terminal_ancestor` false | `no_terminal` |
 | otherwise | `old_terminal` |
+
+Windows never knows the terminal (`parent_tty` is absent), so every other
+launch counts; `ssh` and `terminal_ancestor` take its place there. A codex
+without `originator` (an older Codex, an unreadable rollout file) is
+judged like before.
 
 Every hook of a recorded conversation updates `last_activity_at` (watchers
 get it at most once a minute unless something else changed). The record

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -687,8 +688,9 @@ func TestTranscriptGetSubscribeAndConversations(t *testing.T) {
 	c, notes := e.client()
 	h, _ := e.client()
 	call(t, h, wire.MethodHolderRegister, testSession(sid), nil)
+	tpathJSON, _ := json.Marshal(tpath) // a Windows path has backslashes
 	call(t, h, wire.MethodHookEvent, wire.HookEventParams{Harness: wire.HarnessClaude, Event: "SessionStart", SessionID: sid,
-		Payload: json.RawMessage(`{"session_id":"` + conv + `","transcript_path":"` + tpath + `","cwd":"/home/u/proj"}`)}, nil)
+		Payload: json.RawMessage(`{"session_id":"` + conv + `","transcript_path":` + string(tpathJSON) + `,"cwd":"/home/u/proj"}`)}, nil)
 
 	var got wire.TranscriptGetResult
 	call(t, c, wire.MethodTranscriptGet, wire.TranscriptGetParams{SessionID: sid}, &got)
@@ -764,7 +766,8 @@ func TestConfigSetMergesPatch(t *testing.T) {
 	fileJSON := func() any {
 		t.Helper()
 		st, err := os.Stat(e.layout.Config)
-		if err != nil || st.Mode().Perm() != 0o600 {
+		// Windows has no permission bits: Go reports 0666 for any writable file.
+		if err != nil || runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 			t.Fatalf("config file %v %v", st, err)
 		}
 		b, _ := os.ReadFile(e.layout.Config)

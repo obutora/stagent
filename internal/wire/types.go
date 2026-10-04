@@ -149,7 +149,8 @@ type SessionStartedData struct {
 type SessionEndedData struct {
 	ExitCode int `json:"exit_code"`
 	// HungUp: the program ended after a client's session.signal hangup
-	// (the app ending a kept shell), which is not an abnormal exit.
+	// (the app ending a kept shell) or, on Windows, after the console of a
+	// passthrough session closed; not an abnormal exit.
 	HungUp bool `json:"hung_up,omitempty"`
 }
 
@@ -222,9 +223,17 @@ const (
 	// UnwrappedBypassed: the shell has the wrapper but it was bypassed
 	// (`command claude`, a full path).
 	UnwrappedBypassed = "bypassed"
-	// UnwrappedIDE: an IDE extension or the desktop app (Claude Code's
-	// CLAUDE_CODE_ENTRYPOINT is neither cli nor sdk-*).
+	// UnwrappedIDE: an IDE extension or a desktop app (Claude Code's
+	// CLAUDE_CODE_ENTRYPOINT is neither cli nor sdk-*; a Codex originator
+	// other than its terminal UI and its batch runs).
 	UnwrappedIDE = "ide"
+	// UnwrappedSSH (Windows): started in an SSH session, where the
+	// PowerShell wrapper does not wrap (not UserInteractive) and the agent
+	// ends with the connection.
+	UnwrappedSSH = "ssh"
+	// UnwrappedNoTerminal (Windows): no wrapper's marker and no shell above
+	// the harness, i.e. a program started it without a terminal.
+	UnwrappedNoTerminal = "no_terminal"
 )
 
 // EnvShellWrapper is the marker the shell wrapper's rc block exports.

@@ -3,6 +3,7 @@ package follow
 import (
 	"os/exec"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -84,6 +85,9 @@ func TestDecodeHerdr(t *testing.T) {
 // The CLI runs with the client's environment (or stagent's), never with the
 // dynamic loader's variables, which would load code into it.
 func TestRunDropsLoaderVariables(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no LD_/DYLD_ loader variables, and the environment env(1) prints there gains SYSTEMROOT (os/exec) and TERM (MSYS)")
+	}
 	env, err := exec.LookPath("env")
 	if err != nil {
 		t.Skip("no env(1)")

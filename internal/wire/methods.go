@@ -74,6 +74,9 @@ const (
 	// CapPersist: session.spawn shell, attach resume (since/offset/end),
 	// signal hangup, runtime mode changes (handoff).
 	CapPersist = "persist"
+	// CapPersistShell (Windows only): session.spawn shell works there.
+	// Windows bridges before it announced CapPersist but refused shells.
+	CapPersistShell = "persist_shell"
 )
 
 type HelloParams struct {
@@ -177,7 +180,7 @@ type ClosedParams struct {
 	ID       string `json:"id"`
 	ExitCode int    `json:"exit_code"`
 	// HungUp (holder.ended only): the program ended after a client's
-	// session.signal hangup.
+	// session.signal hangup or (Windows) its passthrough console closed.
 	HungUp bool `json:"hung_up,omitempty"`
 }
 
@@ -240,9 +243,9 @@ type SpawnResult struct {
 // Signals for session.signal.
 const (
 	SignalInterrupt = "interrupt" // Ctrl-C to the PTY
-	SignalTerminate = "terminate" // SIGTERM / CTRL_BREAK / TerminateProcess after grace
+	SignalTerminate = "terminate" // SIGTERM; Windows: ^C, TerminateProcess after 3 s
 	SignalKill      = "kill"      // SIGKILL / TerminateProcess
-	SignalHangup    = "hangup"    // SIGHUP, as when a terminal closes (Windows: like terminate)
+	SignalHangup    = "hangup"    // SIGHUP, as when a terminal closes; Windows: like terminate
 )
 
 type SignalParams struct {
@@ -418,11 +421,20 @@ type HookEventParams struct {
 	// (Windows). ParentBatch:
 	// the harness's command line asks for a non-interactive run, by the
 	// shell wrapper's rule (claude -p / --print; codex exec / e; omp -p /
-	// --print or --mode other than text).
-	ShellWrapper bool   `json:"shell_wrapper,omitempty"`
-	Entrypoint   string `json:"entrypoint,omitempty"`
-	ParentTTY    *bool  `json:"parent_tty,omitempty"`
-	ParentBatch  bool   `json:"parent_batch,omitempty"`
+	// --print or --mode other than text). SSH: $SSH_CONNECTION is set.
+	// TerminalAncestor (Windows; nil elsewhere or unknown): a shell
+	// (PowerShell, pwsh, cmd, bash, sh) runs above the harness. Originator
+	// (codex): session_meta.originator of the conversation's rollout file
+	// (codex-tui, codex_exec, "Codex Desktop", …); Subagent: that
+	// conversation is a subagent thread of another one.
+	ShellWrapper     bool   `json:"shell_wrapper,omitempty"`
+	Entrypoint       string `json:"entrypoint,omitempty"`
+	ParentTTY        *bool  `json:"parent_tty,omitempty"`
+	ParentBatch      bool   `json:"parent_batch,omitempty"`
+	SSH              bool   `json:"ssh,omitempty"`
+	TerminalAncestor *bool  `json:"terminal_ancestor,omitempty"`
+	Originator       string `json:"originator,omitempty"`
+	Subagent         bool   `json:"subagent,omitempty"`
 }
 
 type DaemonStatus struct {

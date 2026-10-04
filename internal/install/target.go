@@ -37,6 +37,9 @@ const (
 	// codeLingerDenied: polkit refused `loginctl enable-linger`
 	// (set-self-linger); an administrator has to enable it.
 	codeLingerDenied = "linger_denied"
+	// codeExecutionPolicyOverridden: PowerShell kept a policy that does not
+	// run the profile after Set-ExecutionPolicy (Group Policy defines it).
+	codeExecutionPolicyOverridden = "execution_policy_overridden"
 )
 
 // contentError is a file whose content stagent does not edit: a UTF-16
@@ -60,11 +63,14 @@ func (e *targetError) Unwrap() error { return e.err }
 func errorCode(err error) string {
 	var ce *contentError
 	var de *deniedError
+	var oe *overriddenError
 	switch {
 	case errors.As(err, &ce):
 		return ce.code
 	case errors.As(err, &de):
 		return codeLingerDenied
+	case errors.As(err, &oe):
+		return codeExecutionPolicyOverridden
 	case errors.Is(err, fs.ErrPermission):
 		return codeNotWritable
 	case errors.Is(err, syscall.EROFS):

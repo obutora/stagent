@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -31,15 +32,35 @@ type unwrappedRec struct {
 
 // unwrappedReason says why a sessionless hook's agent has no session, ""
 // when it is not recorded: a non-interactive run (Claude Code's sdk-*
-// entry points; a codex / omp whose terminal is known to be missing or
-// whose command line asks for a batch run) or a program that is not an
-// agent harness. Claude Code tells its entry point; without one (older
-// versions) it is judged like the others.
-func unwrappedReason(p wire.HookEventParams) string {
+// entry points; a Codex conversation of `codex exec`, the SDK or a
+// subagent; a codex / omp whose terminal is known to be missing or whose
+// command line asks for a batch run) or a program that is not an agent
+// harness. Claude Code tells its entry point and Codex its originator;
+// without them (older versions, unreadable rollout) they are judged like
+// the others.
+//
+// On a Windows host (windows) the terminal is never known: every other
+// launch counts. One from an SSH session has its own reason (the wrapper
+// does not wrap there), and a launch without the wrapper's marker is told
+// apart by a shell above the harness: without one, a program started it
+// without a terminal (e.g. over WMI) rather than a terminal opened before
+// the setup. An app that runs the agent in a PowerShell reading its
+// profile (Orca) gets the wrapper; the Codex desktop app counts as ide.
+func unwrappedReason(p wire.HookEventParams, windows bool) string {
 	switch p.Harness {
 	case wire.HarnessClaude, wire.HarnessCodex, wire.HarnessOmp:
 	default:
 		return ""
+	}
+	if p.Harness == wire.HarnessCodex && (p.Originator != "" || p.Subagent) {
+		switch {
+		case p.Subagent:
+			return ""
+		case codexDesktop[p.Originator]:
+			return wire.UnwrappedIDE
+		case !codexTerminal[p.Originator]:
+			return "" // codex_exec, codex_sdk_ts, …
+		}
 	}
 	if p.Harness == wire.HarnessClaude && p.Entrypoint != "" {
 		switch {
@@ -51,11 +72,24 @@ func unwrappedReason(p wire.HookEventParams) string {
 	} else if (p.ParentTTY != nil && !*p.ParentTTY) || p.ParentBatch {
 		return ""
 	}
+	if windows && p.SSH {
+		return wire.UnwrappedSSH
+	}
 	if p.ShellWrapper {
 		return wire.UnwrappedBypassed
 	}
+	if windows && p.TerminalAncestor != nil && !*p.TerminalAncestor {
+		return wire.UnwrappedNoTerminal
+	}
 	return wire.UnwrappedOldTerminal
 }
+
+// Codex originators (session_meta.originator): its terminal UI (current
+// and older names) and the apps that run it without a terminal.
+var (
+	codexTerminal = map[string]bool{"codex-tui": true, "codex_cli_rs": true}
+	codexDesktop  = map[string]bool{"Codex Desktop": true, "codex_vscode": true}
+)
 
 // noteUnwrappedLocked records the agent of a hook that found no session;
 // it forgets the conversation at its SessionEnd and once a stagent session
@@ -75,7 +109,7 @@ func (d *Daemon) noteUnwrappedLocked(p wire.HookEventParams, pl hookPayload, eff
 	}
 	reason := ""
 	if p.SessionID == "" { // a $STAGENT_SESSION_ID means stagent started it
-		reason = unwrappedReason(p)
+		reason = unwrappedReason(p, runtime.GOOS == "windows")
 	}
 	if reason == "" {
 		return

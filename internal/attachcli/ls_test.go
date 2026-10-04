@@ -1,6 +1,7 @@
 package attachcli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,25 +33,26 @@ func TestAgo(t *testing.T) {
 
 func TestTable(t *testing.T) {
 	now := time.UnixMilli(1_700_000_000_000)
+	home := filepath.FromSlash("/home/u") // as os.UserHomeDir reports it
 	ms := func(d time.Duration) int64 { return now.Add(-d).UnixMilli() }
 	two := 2
 	list := []wire.Session{
 		{ID: "00000000000000a1", Mode: wire.ModeDetached, State: wire.StateIdle, LastActivityAt: ms(3 * time.Hour),
-			Command: []string{"sh", "-c", "echo hi; cat"}, Cwd: "/home/u/proj"},
+			Command: []string{"sh", "-c", "echo hi; cat"}, Cwd: filepath.Join(home, "proj")},
 		{ID: "00000000000000a2", Mode: wire.ModePassthrough, State: wire.StateWorking, LastActivityAt: ms(5 * time.Second),
 			LastLocalInputAt: ms(2 * time.Second),
-			Command:          []string{"claude", strings.Repeat("x", 60)}, Cwd: "/home/u", Title: "fix\tthe \x1b[31mbug"},
+			Command:          []string{"claude", strings.Repeat("x", 60)}, Cwd: home, Title: "fix\tthe \x1b[31mbug"},
 		{ID: "00000000000000a3", Mode: wire.ModeDetached, State: wire.StateExited, LastActivityAt: ms(5 * time.Second),
 			StartedAt: 1, Command: []string{"make"}, Cwd: "/srv", ExitCode: &two},
 	}
 	sortSessions(list)
 	var b strings.Builder
-	writeTable(&b, list, now, "/home/u")
+	writeTable(&b, list, now, home)
 	want := "" +
 		"ID                MODE         STATE       LAST ACTIVITY  PC INPUT  COMMAND                                   TITLE/CWD\n" +
 		"00000000000000a3  detached     exited (2)  5s ago         -         make                                      /srv\n" +
 		"00000000000000a2  passthrough  working     5s ago         2s ago    claude xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…  fix?the ?[31mbug\n" +
-		"00000000000000a1  detached     idle        3h ago         -         sh -c echo hi; cat                        ~/proj\n"
+		"00000000000000a1  detached     idle        3h ago         -         sh -c echo hi; cat                        ~" + string(filepath.Separator) + "proj\n"
 	if got := b.String(); got != want {
 		t.Fatalf("table:\n%s\nwant:\n%s", got, want)
 	}

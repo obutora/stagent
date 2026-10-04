@@ -54,6 +54,7 @@ type Screen struct {
 	// State tracked through emulator callbacks (title: through guard).
 	title        string
 	input        uint16 // bit i: inputModes[i] is set
+	win32Input   bool   // DECSET 9001, see Win32InputMode
 	noAutowrap   bool
 	cursorHidden bool
 
@@ -119,6 +120,7 @@ func New(cols, rows int, respond func([]byte)) *Screen {
 	e.RegisterEscHandler('c', func() bool {
 		s.full = true
 		s.input = 0
+		s.win32Input = false
 		return false
 	})
 	go s.drain()
@@ -158,6 +160,10 @@ func (s *Screen) setMode(m ansi.Mode, on bool) {
 		s.noAutowrap = !on
 		return
 	}
+	if m == modeWin32Input {
+		s.win32Input = on
+		return
+	}
 	for i, im := range inputModes {
 		if m == im {
 			if on {
@@ -178,6 +184,17 @@ func (s *Screen) modeOn(m ansi.DECMode) bool {
 		}
 	}
 	return false
+}
+
+// modeWin32Input is win32-input-mode: the program (conhost behind a Windows
+// pseudo console) asks for keys as CSI Vk;Sc;Uc;Kd;Cs;Rc _ sequences.
+const modeWin32Input = ansi.DECMode(9001)
+
+// Win32InputMode reports whether the program enabled win32-input-mode.
+func (s *Screen) Win32InputMode() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.win32Input
 }
 
 // Write feeds program output to the emulator.

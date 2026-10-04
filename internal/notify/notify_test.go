@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -335,7 +336,8 @@ func TestLastErrors(t *testing.T) {
 		t.Fatalf("webhook failure %+v", webhook)
 	}
 	st, err := os.Stat(path)
-	if err != nil || st.Mode().Perm() != 0o600 {
+	// Windows has no permission bits: Go reports 0666 for any writable file.
+	if err != nil || runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("failures file %v %v", st, err)
 	}
 	b, _ := os.ReadFile(path)

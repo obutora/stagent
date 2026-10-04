@@ -37,6 +37,14 @@ type DoctorReport struct {
 	// Terminal is Terminal.app's close confirmation (macOS; null
 	// elsewhere).
 	Terminal *TerminalReport `json:"terminal"`
+	// PowerShell lists the installed PowerShells with their effective
+	// execution policy (Windows; null elsewhere).
+	PowerShell []PowerShellReport `json:"powershell"`
+	// RedirectionGuard is whether this doctor process runs with Windows'
+	// RedirectionGuard: started over SSH, as kept shells are, it follows
+	// no junction a user created (scoop's shims fail). Null off Windows or
+	// when unknown.
+	RedirectionGuard *bool `json:"redirection_guard"`
 	// Notify comes from the daemon's last failures file, so it is there
 	// whether or not the daemon runs.
 	Notify wire.NotifyStatus `json:"notify"`
@@ -302,6 +310,15 @@ func (e *env) doctor() *DoctorReport {
 		r.ShellWrapper.LastRunSurvivesLogout = lastRun
 	}
 	r.Terminal = e.terminalReport()
+	r.PowerShell = e.powerShells()
+	for _, p := range r.PowerShell {
+		if p.LoadsProfile != nil && !*p.LoadsProfile {
+			r.Problems = append(r.Problems, p.Name+" does not run its profile (execution policy "+*p.ExecutionPolicy+"), so the shell wrapper stays inactive there; run `stagent integrate --apply --execution-policy` to set RemoteSigned for your user")
+		}
+	}
+	if e.goos == "windows" && e.redirectionGuard != nil {
+		r.RedirectionGuard = e.redirectionGuard()
+	}
 	if p := r.Persistence; p.LingerNeeded != nil && *p.LingerNeeded {
 		const fix = "; run `loginctl enable-linger` (may require an administrator) to keep them running"
 		switch *p.LingerReason {
@@ -464,7 +481,14 @@ func (e *env) codexReport() HarnessReport {
 	if cur, _ := readOptional(cfg.path); cur != nil {
 		d := parseTOMLLines(cur)
 		if i := topLevelNotify(d); i >= 0 && isOurCommand(d.lines[i].text()) {
-			h.Integrated = true
+			if !h.HooksSupported {
+				h.Integrated = true
+			} else if removeNotify(parseTOMLLines(cur)) {
+				// A leftover of the notify fallback: integrate replaces it
+				// with hooks, so the app offers to run it.
+				h.Integrated = false
+				h.Notes = append(h.Notes, "config.toml still runs stagent as the notify program (set up while this Codex had no hooks); integrate replaces it with hooks")
+			}
 		}
 		if on, set := featureHooksEnabled(d); set && !on && h.HooksSupported {
 			h.Notes = append(h.Notes, "hooks are disabled in config.toml ([features] hooks = false); integrate enables them")

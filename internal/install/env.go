@@ -28,10 +28,26 @@ func (execRunner) Run(timeout time.Duration, name string, args ...string) (strin
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = commandEnv(os.Environ())
 	cmd.WaitDelay = time.Second // do not hang on grandchildren holding the pipe
 	hideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// commandEnv is env without PSModulePath. PowerShell 7 exports its module
+// path to the programs it starts (stagent run by sshd when its default shell
+// is pwsh), and Windows PowerShell started with that path cannot load its
+// own modules: Get-ExecutionPolicy fails, and `doctor` read the policy as
+// unset. Without the variable each PowerShell uses its own default path.
+func commandEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if k, _, _ := strings.Cut(kv, "="); !strings.EqualFold(k, "PSModulePath") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // daemonAPI is the part of the daemon's local IPC the installer uses.
@@ -97,7 +113,11 @@ type env struct {
 	settle time.Duration
 	// sid is the user's SID on Windows (scheduled task principal).
 	sid  string
-	docs string // cached Windows Documents folder
+	docs string              // cached Windows Documents folder
+	ps   *[]PowerShellReport // cached powerShells
+	// redirectionGuard reads whether this process runs with Windows'
+	// RedirectionGuard (nil when unknown or off Windows).
+	redirectionGuard func() *bool
 
 	m     *Manifest
 	haveM bool
@@ -112,20 +132,21 @@ func newEnv() (*env, error) {
 		return nil, err
 	}
 	e := &env{
-		l:           l,
-		goos:        runtime.GOOS,
-		run:         execRunner{},
-		daemon:      ipcDaemon{l.DaemonAddr},
-		daemonAt:    func(addr string) daemonAPI { return ipcDaemon{addr} },
-		spawnDaemon: func() error { return daemonclient.StartDaemon(l) },
-		lookPath:    exec.LookPath,
-		getenv:      os.Getenv,
-		now:         time.Now,
-		uid:         os.Getuid(),
-		kill:        killProcess,
-		alive:       proc.Alive,
-		settle:      3 * time.Second,
-		sid:         currentSID(),
+		l:                l,
+		goos:             runtime.GOOS,
+		run:              execRunner{},
+		daemon:           ipcDaemon{l.DaemonAddr},
+		daemonAt:         func(addr string) daemonAPI { return ipcDaemon{addr} },
+		spawnDaemon:      func() error { return daemonclient.StartDaemon(l) },
+		lookPath:         exec.LookPath,
+		getenv:           os.Getenv,
+		now:              time.Now,
+		uid:              os.Getuid(),
+		kill:             killProcess,
+		alive:            proc.Alive,
+		settle:           3 * time.Second,
+		sid:              currentSID(),
+		redirectionGuard: redirectionGuard,
 	}
 	e.loadManifest()
 	return e, nil
@@ -171,6 +192,7 @@ const (
 	noteCodexFeaturesKept   = "codex_features_kept"
 	noteNoShell             = "no_shell"
 	notePowerShellNoBOM     = "powershell_no_bom" // args: path, bin
+	noteCmdNotWrapped       = "cmd_not_wrapped"   // args: shell
 	noteBinaryMissing       = "binary_missing"    // args: path
 	noteServiceLinger       = "service_linger"
 	noteLaunchAgent         = "launch_agent"

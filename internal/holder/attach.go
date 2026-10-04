@@ -85,7 +85,7 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 		if err := h.checkLive(p.ID); err != nil {
 			return nil, err
 		}
-		req, err := composeInput(p, h.scr.BracketedPaste(), h.scr.AppCursorKeys())
+		req, err := composeInput(p, h.scr.BracketedPaste(), h.scr.AppCursorKeys(), h.scr.Win32InputMode())
 		if err != nil {
 			return nil, err
 		}

@@ -153,6 +153,7 @@ func newTestEnv(t *testing.T, goos string) *testEnv {
 func (te *testEnv) reload() {
 	te.notes = nil
 	te.dirty = false
+	te.ps = nil
 	te.loadManifest()
 }
 

@@ -78,6 +78,13 @@ the server:
   terminal instead, set `STAGENT_HANDOFF=0` in that shell, or turn on
   `disable_handoff` in `config.json` (what the app's switch sets);
   `STAGENT_HANDOFF=1` overrides the config.
+- An app that starts the agent in a shell reading its profile goes
+  through the wrapper too (Orca runs it in such a PowerShell on Windows).
+  `stagent integrate` puts Codex's hooks into `~/.codex`: a codex started
+  with its own `CODEX_HOME`, as Orca's is, runs none of them. Started
+  through the wrapper it is listed without what the hooks report
+  (waiting for approval); otherwise it is neither listed nor counted
+  among the agents the list cannot show.
 
 Sessions also survive logging out. On Linux their sockets live in
 `/tmp/stagent-<uid>` (mode 0700), not in `$XDG_RUNTIME_DIR`, which is
@@ -108,6 +115,18 @@ the SSH session and claude asks you to `/login`; that login is kept in
 `stagent integrate --terminal` keeps Terminal.app from asking before it
 closes a window running an agent, or at logout (`stagent` in each
 profile's `noWarnProcesses`; removing it takes out only that entry).
+
+On Windows the wrapper goes into the profiles of Windows PowerShell 5.1
+and PowerShell 7 (cmd has none), and wraps only in a console of the
+desktop: an SSH session is not interactive for PowerShell, and an agent
+started there ends with the connection (start it in a kept shell
+instead). PowerShell runs the profile only under an execution policy
+other than `Restricted` / `AllSigned`; `stagent doctor` reports each
+one's policy (`powershell[]`) and `stagent integrate --execution-policy`
+sets `RemoteSigned` for your user where needed. Processes started over
+SSH, kept shells included, run with Windows' RedirectionGuard
+(`redirection_guard` in `doctor`): tools reached through a junction you
+created, such as scoop's shims, do not start there.
 
 ## Installation and removal
 

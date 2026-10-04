@@ -388,9 +388,13 @@ func (e *env) shellTargets() []*target {
 	}
 }
 
-// loginShell is the base name of the login shell ($SHELL), "" when unknown.
+// loginShell is the base name of the login shell ($SHELL; on Windows sshd
+// sets it to its DefaultShell, cmd.exe when unset), "" when unknown.
 func (e *env) loginShell() string {
 	s := e.getenv("SHELL")
+	if e.goos == "windows" {
+		s = s[strings.LastIndexAny(s, `\/`)+1:]
+	}
 	if s == "" {
 		return ""
 	}

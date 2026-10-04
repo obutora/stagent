@@ -30,7 +30,7 @@ import (
 	"github.com/obutora/stagent/internal/wire"
 )
 
-// Main runs `stagent bridge` until stdin closes.
+// Main runs `stagent bridge` until stdin closes or the SSH session ends.
 func Main(args []string) int {
 	if len(args) > 0 {
 		fmt.Fprintln(os.Stderr, "usage: stagent bridge  (speaks the app protocol on stdin/stdout)")
@@ -41,7 +41,9 @@ func Main(args []string) int {
 		fmt.Fprintln(os.Stderr, "stagent bridge:", err)
 		return 1
 	}
-	if err := New(l, os.Stdout).Serve(context.Background(), os.Stdin); err != nil {
+	b := New(l, os.Stdout)
+	b.sessionEnded = watchSession(os.Stdin)
+	if err := b.Serve(context.Background(), os.Stdin); err != nil {
 		fmt.Fprintln(os.Stderr, "stagent bridge:", err)
 		return 1
 	}
@@ -82,6 +84,10 @@ type Bridge struct {
 	// Detached holder starts (see startHolder); used by the spawn worker
 	// only, one spawn at a time.
 	spawnProc func(exe string, args []string, dir string, env []string, logPath string) (int, error)
+
+	// sessionEnded is closed when the SSH session ended while stdin is still
+	// open (see watchSession); nil when it is not watched.
+	sessionEnded <-chan struct{}
 
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
@@ -156,8 +162,9 @@ func (a appWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Serve reads app requests from r until it ends (EOF is a clean exit) or
-// the app output fails, then closes every daemon and holder connection.
+// Serve reads app requests from r until it ends (EOF is a clean exit), the
+// SSH session ends or the app output fails, then closes every daemon and
+// holder connection.
 func (b *Bridge) Serve(ctx context.Context, r io.Reader) error {
 	stop := context.AfterFunc(ctx, func() { b.cancel(ctx.Err()) })
 	defer stop()
@@ -189,6 +196,9 @@ func (b *Bridge) Serve(ctx context.Context, r io.Reader) error {
 			err = nil
 			b.finishQueued(drainWait)
 		}
+	case <-b.sessionEnded:
+		// The app is gone with the session, as with EOF.
+		b.finishQueued(drainWait)
 	case <-b.ctx.Done():
 		if cause := context.Cause(b.ctx); !errors.Is(cause, context.Canceled) {
 			err = cause
@@ -275,16 +285,20 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "stagent bridge: host id:", err)
 	}
+	caps := []string{
+		wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush, wire.CapPersist,
+	}
+	if runtime.GOOS == "windows" {
+		caps = append(caps, wire.CapPersistShell)
+	}
 	return wire.HelloResult{
-		Protocol: version.Protocol,
-		Version:  version.Version,
-		OS:       runtime.GOOS,
-		Arch:     runtime.GOARCH,
-		Home:     b.l.Home,
-		Capabilities: []string{
-			wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush, wire.CapPersist,
-		},
-		HostID: hostID,
+		Protocol:     version.Protocol,
+		Version:      version.Version,
+		OS:           runtime.GOOS,
+		Arch:         runtime.GOARCH,
+		Home:         b.l.Home,
+		Capabilities: caps,
+		HostID:       hostID,
 	}, nil
 }
 

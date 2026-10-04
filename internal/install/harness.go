@@ -50,14 +50,25 @@ func (e *env) ompExtension() string {
 // --- hook commands -------------------------------------------------------
 
 // hookCommand is the command a harness runs for our hooks. On unix it is
-// guarded so that a deleted binary is a silent no-op. On Windows the harness
-// may run it through Git Bash or cmd, which share no guard syntax, so the
-// quoted absolute path (forward slashes, valid in both) is invoked directly;
-// a missing binary then shows up as a non-blocking hook error in the
-// harness, and doctor reports the entries as orphans.
+// guarded so that a deleted binary is a silent no-op. On Windows the
+// absolute path (forward slashes) is invoked directly; a missing binary
+// then shows up as a non-blocking hook error in the harness, and doctor
+// reports the entries as orphans. Claude Code runs the command through Git
+// Bash or cmd, where the quoted path works. Codex runs it with the
+// session's shell, PowerShell on Windows, where a quoted path followed by
+// arguments is a syntax error: the path is left bare, valid in every
+// shell, unless it has a character PowerShell treats specially; then
+// PowerShell's call operator is used.
 func (e *env) hookCommand(harness string) string {
 	if e.goos == "windows" {
-		return `"` + strings.ReplaceAll(e.l.Bin, `\`, "/") + `" hook ` + harness
+		bin := strings.ReplaceAll(e.l.Bin, `\`, "/")
+		if harness != hCodex {
+			return `"` + bin + `" hook ` + harness
+		}
+		if strings.ContainsAny(bin, " \t'\"`$&|;,(){}[]@#<>%^") {
+			return "& '" + strings.ReplaceAll(bin, "'", "''") + "' hook " + harness
+		}
+		return bin + " hook " + harness
 	}
 	q := shellQuote(e.l.Bin)
 	return "[ -x " + q + " ] && " + q + " hook " + harness + " || true"
@@ -146,14 +157,12 @@ func (e *env) codexHooksTarget() *target {
 // Why Codex falls back to the notify program: the reason of codexMode
 // (noteCodexNotifyFallback's arg) and its English wording.
 const (
-	codexReasonWindows        = "windows"
 	codexReasonInlineFeatures = "inline_features"
 	codexReasonHooksRemoved   = "hooks_removed"
 	codexReasonNoHooksFeature = "no_hooks_feature"
 )
 
 var codexNotifyWhy = map[string]string{
-	codexReasonWindows:        "Codex hooks are not supported on Windows",
 	codexReasonInlineFeatures: "config.toml defines features as an inline table, which stagent does not edit",
 	codexReasonHooksRemoved:   "this Codex version removed the hooks feature",
 	codexReasonNoHooksFeature: "this Codex version has no hooks feature",
@@ -163,9 +172,6 @@ var codexNotifyWhy = map[string]string{
 // features flag) or "notify" (the legacy notify program, turn-complete
 // only), with the reason (codexReason*) for "notify".
 func (e *env) codexMode() (mode string, reason string) {
-	if e.goos == "windows" {
-		return "notify", codexReasonWindows
-	}
 	if cur, _ := readOptional(e.codexConfig()); cur != nil {
 		d := parseTOMLLines(cur)
 		if d.findKey("features", 0, d.firstHeader()) >= 0 {
@@ -198,14 +204,27 @@ func (e *env) codexConfigTarget(mode string) *target {
 		add: func(cur []byte) (addResult, error) {
 			d := parseTOMLLines(cur)
 			if mode == "hooks" {
+				// A notify program of ours is left from a time this Codex
+				// had no hooks; with hooks.json it would report each turn
+				// twice. It goes for good: removal does not bring it back.
+				dropped := removeNotify(d)
 				ed, err := ensureFeatureHooks(d)
 				if err != nil {
 					return addResult{}, err
 				}
-				if ed == nil {
+				var parts []string
+				var edits []TOMLEdit
+				if dropped {
+					parts = append(parts, "remove the notify program that ran stagent")
+				}
+				if ed != nil {
+					parts = append(parts, "enable Codex hooks ([features] hooks = true)")
+					edits = append(edits, *ed)
+				}
+				if len(parts) == 0 {
 					return addResult{after: cur}, nil
 				}
-				return addResult{after: d.bytes(), edits: []TOMLEdit{*ed}, summary: "enable Codex hooks ([features] hooks = true)"}, nil
+				return addResult{after: d.bytes(), edits: edits, summary: strings.Join(parts, "; ")}, nil
 			}
 			added, existing := addNotify(d, e.l.Bin)
 			if !added {

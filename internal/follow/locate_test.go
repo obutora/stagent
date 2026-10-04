@@ -3,6 +3,7 @@ package follow
 import (
 	"fmt"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -68,6 +69,9 @@ func TestLocateTmuxPane(t *testing.T) {
 	// Linux names a tmux client "tmux: client" (macOS keeps "tmux").
 	client := tr.add(104, 101, "tmux: client", "tmux", "-2", "-Lwork", "attach", "-t", "main").fg()
 	client.exe = "/opt/homebrew/bin/tmux"
+	if runtime.GOOS == "windows" { // the only absolute paths there
+		client.exe = `C:\msys64\usr\bin\tmux.exe`
+	}
 	client.env = []string{"PATH=/usr/bin", "TMUX_TMPDIR=/tmp/t", "ZELLIJ_SESSION_NAME=outer"}
 	tr.add(200, 1, "tmux: server", "tmux", "-Lwork", "new", "-s", "main")
 	tr.add(201, 200, "bash", "-bash")
@@ -86,7 +90,7 @@ func TestLocateTmuxPane(t *testing.T) {
 	}
 	// The client's binary and environment, minus the variables that would
 	// point the CLI at another multiplexer.
-	want := invocation{bin: "/opt/homebrew/bin/tmux", env: []string{"PATH=/usr/bin", "TMUX_TMPDIR=/tmp/t"}}
+	want := invocation{bin: client.exe, env: []string{"PATH=/usr/bin", "TMUX_TMPDIR=/tmp/t"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("invocation %+v, want %+v", got, want)
 	}

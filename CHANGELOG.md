@@ -3,6 +3,103 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.5.0
+
+### Added
+
+- Kept shells on Windows: `session.spawn {shell: true}` no longer fails
+  with `unsupported`. It runs `SHELL` as sshd sets it (its
+  `DefaultShell`; cmd.exe when that is unset), or `%ComSpec%` when
+  `SHELL` is empty, without `-l` (Windows PowerShell 5.1 exits on it).
+  The Windows `hello` adds the capability `persist_shell`; Linux and macOS
+  keep relying on `persist` (PROTOCOL.md).
+- `doctor` reports, on Windows, each installed PowerShell (5.1, and 7
+  when `pwsh` is on `PATH`) with its effective execution policy
+  (`powershell[]`: `execution_policy`, `loads_profile`), and whether it
+  runs with RedirectionGuard (`redirection_guard`), which every process
+  started over SSH inherits from sshd: tools reached through a junction a
+  user made (scoop's shims) fail in kept shells. A PowerShell that does
+  not run its profile (`Restricted`, `AllSigned`) adds a `problems` line.
+- `integrate --execution-policy` (Windows) sets `RemoteSigned` for the
+  current user in each PowerShell that does not run its profile, and only
+  there. Group Policy keeping the old policy fails the change with
+  PowerShell's own message (`error_code` `execution_policy_overridden`).
+- `integrate --shell-wrapper` notes `cmd_not_wrapped` on Windows when
+  sshd's default shell is cmd: the wrapper goes into the PowerShell
+  profiles only. `login_shell` is that shell (`cmd.exe`).
+- Agents started without a stagent session on Windows get their own
+  reasons: `ssh` for one started in an SSH session (the PowerShell
+  wrapper does not wrap there and the agent ends with the connection), and
+  `no_terminal` for one without the wrapper's marker and with no shell
+  (PowerShell, pwsh, cmd, bash) above it, i.e. started by a program
+  rather than a terminal. The hook sends `ssh` and, on Windows,
+  `terminal_ancestor` to the daemon.
+
+### Changed
+
+- PROTOCOL.md describes `terminate` and `hangup` on Windows as the code
+  does them: ^C, then `TerminateProcess(…, 1)` after 3 seconds (no
+  Ctrl-Break). A child with a console of its own (`start ""`) outlives a
+  hung-up shell.
+- Codex conversations are told apart by the `originator` of their rollout
+  file (all OSes): the terminal UI (`codex-tui`) is judged as before, the
+  desktop app (`Codex Desktop`) and the IDE extension count as `ide`, and
+  `codex exec`, SDK runs and subagent threads are not recorded. The notify
+  program, which gets no `transcript_path`, finds the file by its
+  `thread-id` under `$CODEX_HOME/sessions`.
+- Windows: Codex is integrated through its hooks, as elsewhere, instead of
+  the notify program (Codex runs hooks on Windows now, and the Codex app
+  may already use `notify` itself, which stagent never replaces). The
+  hook command leaves the path bare, or uses PowerShell's call operator,
+  because Codex runs it with PowerShell; the note `codex_notify_fallback`
+  no longer has the reason `windows`.
+
+### Fixed
+
+- Windows: the `esc` key (and a lone Esc in `text`) of `session.input`
+  reaches Claude Code. Behind a pseudo console in win32-input-mode it is
+  now sent as that mode's Esc key event; Claude Code ignored the bare
+  byte, so the app's Esc button could not cancel its prompts.
+- Windows: a `submit` after `text`/`paste` waits 250 ms instead of 30 ms.
+  Codex gets no bracketed paste there and took the Enter as a line break
+  of the pasted text, so chat prompts stayed unsent in its input box.
+- Output that only sets or resets DEC private modes (`CSI ? … h/l`) no
+  longer counts as activity: Oh My Pi on Windows re-enables bracketed
+  paste every second, which kept its session `working` while it waited.
+- Removing the Codex integration takes out the trust tables Codex wrote
+  for stagent's hooks together with the blank line before each, so
+  `config.toml` reads as it did before (one blank line was left per
+  table).
+- Windows: closing the console window of a passthrough session (the
+  PowerShell wrapper's `stagent run`) counts as a hangup: `session_ended`
+  carries `hung_up` and the exit (code 1) is no abnormal one, so it is no
+  longer pushed. An agent that exits with an error on its own still is.
+- Codex integrated through the notify program (it had no hooks then)
+  switches to hooks once it has them: `doctor` reports such a Codex as not
+  `integrated`, and `integrate --harness codex` removes stagent's notify
+  line while it adds the hooks, so a turn is no longer reported twice.
+  Removing the integration does not put the line back; a notify program
+  of the user's stays as it is.
+- A passthrough session (the shell wrappers' `stagent run`) whose
+  terminal stops reading without hanging up — a Windows console with a
+  selection, an SSH client gone silently — no longer stops its output
+  reaching the app. Before, the app's terminal froze while the program
+  went on (its conversation still reached the chat), the frozen screen
+  kept the session `working`, and the program blocked on output and
+  stopped reading input. A write to such a terminal that makes no
+  progress for 2 s now drops its output; once it reads again it is
+  redrawn from the screen (#281).
+- Windows: `stagent bridge` exits when the SSH session process that runs
+  it (`sshd -z`) ends, even if its stdin never reaches EOF. Killing that
+  process left the connection's bridge running (about 12 MB each) with no
+  app (#270).
+- Windows: `doctor` and `integrate --execution-policy` read Windows
+  PowerShell's execution policy when stagent runs under PowerShell 7 (sshd's
+  default shell pwsh). The `PSModulePath` PowerShell 7 hands down made
+  Windows PowerShell load PowerShell 7's `Get-ExecutionPolicy`, which fails
+  there, so a RemoteSigned 5.1 was reported as Restricted (`problems` and
+  the app's status line) (#177).
+
 ## 0.4.2
 
 ### Fixed

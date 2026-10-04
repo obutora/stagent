@@ -207,6 +207,28 @@ func TestModesAndTitle(t *testing.T) {
 	}
 }
 
+// conhost behind a Windows pseudo console asks for win32-input-mode; what
+// session.input sends for a lone Esc depends on it.
+func TestWin32InputMode(t *testing.T) {
+	s := New(20, 5, nil)
+	defer s.Close()
+	if s.Win32InputMode() {
+		t.Fatal("win32-input-mode on before the program asked")
+	}
+	s.Write([]byte("\x1b[?9001h"))
+	if !s.Win32InputMode() {
+		t.Fatal("win32-input-mode off after DECSET 9001")
+	}
+	s.Write([]byte("\x1b[?9001l"))
+	if s.Win32InputMode() {
+		t.Fatal("win32-input-mode still on after DECRST 9001")
+	}
+	s.Write([]byte("\x1b[?9001h\x1bc"))
+	if s.Win32InputMode() {
+		t.Fatal("win32-input-mode survives RIS")
+	}
+}
+
 // clientModes applies snapshot to a client whose terminal was left with
 // stale input modes on, and returns every mode the snapshot set or reset.
 func clientModes(t *testing.T, snapshot []byte) map[int]bool {

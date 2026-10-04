@@ -21,7 +21,7 @@ func signalName(s os.Signal) string {
 	case os.Interrupt:
 		return wire.SignalInterrupt
 	case syscall.SIGTERM:
-		return wire.SignalTerminate
+		return signalConsoleClosed
 	}
 	return ""
 }

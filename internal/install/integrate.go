@@ -27,13 +27,14 @@ const (
 )
 
 type integrateOpts struct {
-	apply        bool
-	harness      []string
-	shellWrapper bool
-	service      bool
-	linger       bool
-	terminal     bool
-	remove       []string
+	apply           bool
+	harness         []string
+	shellWrapper    bool
+	service         bool
+	linger          bool
+	terminal        bool
+	executionPolicy bool
+	remove          []string
 }
 
 // Removable integration names for --remove.
@@ -104,6 +105,9 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 		for _, t := range ts {
 			one(t.id)(e.addChange(t))
 		}
+		if login := e.loginShell(); e.goos == "windows" && strings.TrimSuffix(strings.ToLower(login), ".exe") == "cmd" {
+			e.note(noteCmdNotWrapped, "The default shell ({shell}) is cmd, which has no profile for the wrapper; it goes into the PowerShell profiles only.", "shell", login)
+		}
 	}
 	if o.service {
 		many("service")(e.serviceAddChanges())
@@ -113,6 +117,9 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	}
 	if o.terminal {
 		one("terminal")(e.terminalAddChange())
+	}
+	if o.executionPolicy {
+		many("execution-policy")(e.executionPolicyChanges())
 	}
 	var removed []*target
 	for _, id := range o.remove {

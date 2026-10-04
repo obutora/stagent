@@ -49,7 +49,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 	fs := flag.NewFlagSet("stagent "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print compact JSON")
-	var plan, apply, shellWrapper, service, linger, terminal, uploads *bool
+	var plan, apply, shellWrapper, service, linger, terminal, executionPolicy, uploads *bool
 	var harness, remove, level *string
 	switch cmd {
 	case "integrate":
@@ -60,6 +60,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		service = fs.Bool("service", false, "run the daemon as a login service")
 		linger = fs.Bool("linger", false, "turn on lingering (`loginctl enable-linger`, Linux) so agents keep running after logout")
 		terminal = fs.Bool("terminal", false, "add stagent to the processes Terminal.app does not ask about before closing a window (macOS)")
+		executionPolicy = fs.Bool("execution-policy", false, "set the execution policy RemoteSigned for the current user in each PowerShell that would not run its profile (Windows)")
 		remove = fs.String("remove", "", "comma-separated integrations to remove: claude,codex,omp,shell-wrapper,service,linger,terminal (linger, terminal: only what stagent turned on or added)")
 	case "uninstall":
 		level = fs.String("level", "", "stop | unhook | purge")
@@ -97,7 +98,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		if *plan && *apply {
 			return fail(2, errors.New("--plan and --apply are mutually exclusive"))
 		}
-		o := integrateOpts{apply: *apply, shellWrapper: *shellWrapper, service: *service, linger: *linger, terminal: *terminal}
+		o := integrateOpts{apply: *apply, shellWrapper: *shellWrapper, service: *service, linger: *linger, terminal: *terminal, executionPolicy: *executionPolicy}
 		var err error
 		if o.harness, err = parseList(*harness, harnessIDs); err != nil {
 			return fail(2, err)
@@ -105,7 +106,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		if o.remove, err = parseList(*remove, removeIDs); err != nil {
 			return fail(2, err)
 		}
-		if len(o.harness) == 0 && len(o.remove) == 0 && !o.shellWrapper && !o.service && !o.linger && !o.terminal {
+		if len(o.harness) == 0 && len(o.remove) == 0 && !o.shellWrapper && !o.service && !o.linger && !o.terminal && !o.executionPolicy {
 			for _, h := range harnessIDs {
 				if e.findHarness(h) != "" {
 					o.harness = append(o.harness, h)
