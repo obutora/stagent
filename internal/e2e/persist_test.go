@@ -22,6 +22,7 @@ import (
 
 	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/screen"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -274,17 +275,16 @@ func TestShellSessionAndHangup(t *testing.T) {
 	})
 }
 
-// A PC terminal session started with --handoff outlives the terminal: it
-// becomes detached, and the app owns its size and drives it.
-func TestHandoffKeepsSessionRunning(t *testing.T) {
-	a, _, bin, home := startPersistBridge(t)
+// startInTerminal runs `stagent run --handoff --id id -- sh -c program` in
+// a new 90x20 terminal standing in for a PC's, and returns its master side
+// and a channel closed once stagent run exited.
+func startInTerminal(t *testing.T, bin, home, id, program string) (ptmx *os.File, exited <-chan struct{}) {
+	t.Helper()
 	ptmx, tty, err := pty.Open()
 	if err != nil {
 		t.Fatal(err)
 	}
 	pty.Setsize(ptmx, &pty.Winsize{Cols: 90, Rows: 20})
-	const id = "00000000000000f1"
-	program := `stty -echo; printf ready; while read l; do printf '<%s:%s>' "$l" "$(stty size)"; done`
 	cmd := exec.Command(bin, "run", "--handoff", "--id", id, "--", "sh", "-c", program)
 	cmd.Dir = home
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
@@ -293,35 +293,50 @@ func TestHandoffKeepsSessionRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	tty.Close()
-	exited := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
 		cmd.Wait()
-		close(exited)
+		close(done)
 	}()
 	t.Cleanup(func() {
 		cmd.Process.Kill()
-		<-exited
+		<-done
 	})
-	a.waitFor(t, "passthrough session listed", func(m *wire.Msg) bool {
-		return sessionUpdated(m, id, func(s wire.Session) bool { return s.Mode == wire.ModePassthrough })
-	})
-	// Read the local terminal with poll: closing a master that a goroutine
-	// is blocked reading would not release it, and the terminal would
-	// never hang up.
-	var local []byte
+	return ptmx, done
+}
+
+// readLocal reads the terminal's master side, appending to *got, until
+// done(*got) holds. It polls: closing a master that a goroutine is blocked
+// reading would not release it, and the terminal would never hang up.
+func readLocal(t *testing.T, ptmx *os.File, got *[]byte, what string, done func([]byte) bool) {
+	t.Helper()
 	fd := int(ptmx.Fd())
+	buf := make([]byte, 32<<10)
 	deadline := time.Now().Add(waitLong)
-	for !bytes.Contains(local, []byte("ready")) {
+	for !done(*got) {
 		if time.Now().After(deadline) {
-			t.Fatalf("local terminal never showed the program's output: %q", local)
+			t.Fatalf("local terminal never %s; got %d bytes ending %q", what, len(*got), (*got)[max(0, len(*got)-200):])
 		}
 		pfd := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 		if n, _ := unix.Poll(pfd, 100); n > 0 {
-			buf := make([]byte, 4096)
 			n, _ := unix.Read(fd, buf)
-			local = append(local, buf[:max(n, 0)]...)
+			*got = append(*got, buf[:max(n, 0)]...)
 		}
 	}
+}
+
+// A PC terminal session started with --handoff outlives the terminal: it
+// becomes detached, and the app owns its size and drives it.
+func TestHandoffKeepsSessionRunning(t *testing.T) {
+	a, _, bin, home := startPersistBridge(t)
+	const id = "00000000000000f1"
+	program := `stty -echo; printf ready; while read l; do printf '<%s:%s>' "$l" "$(stty size)"; done`
+	ptmx, exited := startInTerminal(t, bin, home, id, program)
+	a.waitFor(t, "passthrough session listed", func(m *wire.Msg) bool {
+		return sessionUpdated(m, id, func(s wire.Session) bool { return s.Mode == wire.ModePassthrough })
+	})
+	var local []byte
+	readLocal(t, ptmx, &local, "showed the program's output", func(b []byte) bool { return bytes.Contains(b, []byte("ready")) })
 	var we *wire.Error
 	if err := a.Call(t.Context(), wire.MethodSessionResize, wire.ResizeParams{ID: id, Cols: 77, Rows: 22}, nil); !errors.As(err, &we) || we.Code != wire.ErrNotSizeOwner {
 		t.Fatalf("resize while the terminal owns the size: %v, want not_size_owner", err)
@@ -348,6 +363,52 @@ func TestHandoffKeepsSessionRunning(t *testing.T) {
 			t.Fatalf("session ended after the handoff: %s", m.Params)
 		}
 	}
+}
+
+// A PC terminal that stops reading without hanging up (a Windows console
+// with a selection, an SSH client gone silently) holds the program back
+// only briefly: the app keeps getting its output, and once the terminal
+// reads again it shows the session's screen (#281).
+func TestStalledLocalTerminalDoesNotStallTheSession(t *testing.T) {
+	a, _, bin, home := startPersistBridge(t)
+	const id = "00000000000000f3"
+	// After the input line, ~400 KB: far more than the terminal's buffers
+	// and the holder's queue for it hold.
+	program := `stty -echo; pad=$(printf '%200s' '' | tr ' ' x); printf ready; read l
+i=0; while [ $i -lt 2000 ]; do printf 'L%04d %s\n' $i "$pad"; i=$((i+1)); done
+printf '<END>'; read l`
+	ptmx, _ := startInTerminal(t, bin, home, id, program)
+	var local []byte
+	readLocal(t, ptmx, &local, "showed the program's output", func(b []byte) bool { return bytes.Contains(b, []byte("ready")) })
+
+	// From here on nothing reads the local terminal.
+	mark := a.mark()
+	var att wire.AttachResult
+	a.call(t, wire.MethodSessionAttach, wire.AttachParams{ID: id, Mode: wire.AttachRaw}, &att)
+	a.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "go", Submit: true}, nil)
+	outs := a.waitOutputs(t, id, mark, "<END>")
+
+	// The app's view: its raw stream, snapshots included, on an emulator.
+	app := screen.New(att.Cols, att.Rows, nil)
+	defer app.Close()
+	for _, o := range outs {
+		app.Write(o.Data)
+	}
+	want := app.Lines()
+	if !slices.ContainsFunc(want, func(l string) bool { return strings.HasPrefix(l, "<END>") }) ||
+		!slices.ContainsFunc(want, func(l string) bool { return strings.HasPrefix(l, "L1999 ") }) {
+		t.Fatalf("app screen lacks the end of the output:\n%s", strings.Join(want, "\n"))
+	}
+
+	// The terminal reads again: it ends up showing the same screen.
+	pc := screen.New(90, 20, nil)
+	defer pc.Close()
+	fed := 0
+	readLocal(t, ptmx, &local, "showed the session's screen", func(b []byte) bool {
+		pc.Write(b[fed:])
+		fed = len(b)
+		return slices.Equal(pc.Lines(), want)
+	})
 }
 
 // waitAfter returns the index of the first notification received after

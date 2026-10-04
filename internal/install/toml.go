@@ -476,8 +476,10 @@ func removeNotify(d *tomlDoc) bool {
 	return true
 }
 
-// removeTables deletes the named tables (header plus body, keeping blank
-// lines that separate the next table). It returns how many were removed.
+// removeTables deletes the named tables: header and body, together with
+// the blank line that separated the table from what came before, so the
+// file reads as it did before the table was appended or inserted. It
+// returns how many were removed.
 func removeTables(d *tomlDoc, names map[string]bool) int {
 	n := 0
 	for i := 0; i < len(d.lines); i++ {
@@ -489,11 +491,15 @@ func removeTables(d *tomlDoc, names map[string]bool) int {
 		for end < len(d.lines) && d.lines[end].header == "" {
 			end++
 		}
-		for end > i+1 && isBlank(d.lines[end-1]) && end < len(d.lines) {
+		for end > i+1 && isBlank(d.lines[end-1]) {
 			end--
 		}
-		d.remove(i, end)
-		i--
+		from := i
+		if from > 0 && isBlank(d.lines[from-1]) {
+			from--
+		}
+		d.remove(from, end)
+		i = from - 1
 		n++
 	}
 	return n

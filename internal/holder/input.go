@@ -1,9 +1,11 @@
 package holder
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -13,8 +15,16 @@ import (
 
 // submitGap separates typed/pasted text from the Enter that submits it.
 // TUIs that detect pastes by timing (without bracketed paste) would
-// otherwise take a CR arriving in the same read as part of the text.
-const submitGap = 30 * time.Millisecond
+// otherwise take a CR arriving in the same read as part of the text. On
+// Windows a pseudo console hands programs key events, not a bracketed
+// paste, and Codex takes an Enter within about 120 ms of fast input as a
+// line break of the paste, so the gap is longer there.
+var submitGap = func() time.Duration {
+	if runtime.GOOS == "windows" {
+		return 250 * time.Millisecond
+	}
+	return 30 * time.Millisecond
+}()
 
 var errInputClosed = errors.New("session input closed")
 
@@ -111,10 +121,36 @@ var appCursorKeys = map[string]string{
 	"home": "\x1bOH", "end": "\x1bOF",
 }
 
+// escKeyEvent is the Esc key as a win32-input-mode key press and release
+// (CSI Vk;Sc;Uc;Kd;Cs;Rc _).
+const escKeyEvent = "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_"
+
+// encodeLoneEsc rewrites each Esc of b that starts no sequence (the last
+// byte, or followed by another Esc) as escKeyEvent. Behind a Windows pseudo
+// console in win32-input-mode, Claude Code does not take a lone Esc byte as
+// the Esc key, so the app's Esc button would not cancel its prompts. A
+// terminal attached to the session sends that mode's sequences itself;
+// session.input does not.
+func encodeLoneEsc(b []byte) []byte {
+	if bytes.IndexByte(b, 0x1b) < 0 {
+		return b
+	}
+	out := make([]byte, 0, len(b)+len(escKeyEvent))
+	for i, c := range b {
+		if c == 0x1b && (i == len(b)-1 || b[i+1] == 0x1b) {
+			out = append(out, escKeyEvent...)
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // composeInput turns session.input params into PTY writes: text raw, paste
 // (newlines as CR, like a terminal pastes; bracketed when the program
-// enabled it), keys, then CR after a short gap if submit.
-func composeInput(p wire.InputParams, bracketed, appCursor bool) ([]inputChunk, error) {
+// enabled it), keys, then CR after a short gap if submit. While the program
+// asks for win32-input-mode a lone Esc becomes that mode's key event.
+func composeInput(p wire.InputParams, bracketed, appCursor, win32Input bool) ([]inputChunk, error) {
 	var b strings.Builder
 	b.WriteString(p.Text)
 	if p.Paste != "" {
@@ -142,7 +178,11 @@ func composeInput(p wire.InputParams, bracketed, appCursor bool) ([]inputChunk, 
 	}
 	var req []inputChunk
 	if b.Len() > 0 {
-		req = append(req, inputChunk{data: []byte(b.String())})
+		data := []byte(b.String())
+		if win32Input {
+			data = encodeLoneEsc(data)
+		}
+		req = append(req, inputChunk{data: data})
 	}
 	if p.Submit {
 		c := inputChunk{data: []byte{'\r'}}

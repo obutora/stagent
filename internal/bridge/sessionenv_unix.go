@@ -68,6 +68,16 @@ func runEnvDump(shell string, args []string) ([]string, error) {
 	return nil, err
 }
 
+// shellCommand is what a `shell: true` session runs: the user's $SHELL as
+// their login session sets it (/bin/sh when unset), as a login shell.
+func shellCommand(env []string) []string {
+	sh := envGet(env, "SHELL")
+	if sh == "" {
+		sh = "/bin/sh"
+	}
+	return []string{sh, "-l"}
+}
+
 func toolDirs(home string, getenv func(string) string) []string {
 	return paths.ToolDirs(runtime.GOOS, home, getenv)
 }

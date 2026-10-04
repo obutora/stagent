@@ -32,17 +32,27 @@ import (
 
 const waitLong = 10 * time.Second
 
-// buildStagent compiles cmd/stagent into a temp dir.
+// buildStagent compiles cmd/stagent for the end-to-end tests that drive
+// POSIX shells: they run on linux only.
 func buildStagent(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("end-to-end test runs on linux only")
 	}
+	return compileStagent(t)
+}
+
+// compileStagent compiles cmd/stagent into a temp dir.
+func compileStagent(t *testing.T) string {
+	t.Helper()
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		t.Skip("go toolchain not in PATH")
 	}
 	bin := filepath.Join(t.TempDir(), "stagent")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	out, err := exec.Command(goBin, "build", "-o", bin, "github.com/obutora/stagent/cmd/stagent").CombinedOutput()
 	if err != nil {
 		t.Skipf("building stagent failed:\n%s", out)

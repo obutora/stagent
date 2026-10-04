@@ -111,7 +111,9 @@ func (d *Detector) SetIdleAfter(v time.Duration) {
 }
 
 // Feed processes a chunk of program output. Escape sequences may be split
-// across chunks.
+// across chunks. A chunk of DEC private mode sets and resets only (`CSI ?
+// Pm h/l`) changes nothing on screen and is not work: Oh My Pi on Windows
+// re-enables bracketed paste every second while it waits.
 func (d *Detector) Feed(b []byte) {
 	if len(b) == 0 {
 		return
@@ -121,8 +123,11 @@ func (d *Detector) Feed(b []byte) {
 	if d.state == wire.StateExited {
 		return
 	}
-	d.lastOutput = d.cfg.Clock.Now()
 	d.p.feed(b, d.notified)
+	if onlyModeChanges(b) {
+		return
+	}
+	d.lastOutput = d.cfg.Clock.Now()
 	switch {
 	case d.state == wire.StateIdle,
 		d.state == wire.StateWaitingInput && !d.awaitInput:
@@ -131,6 +136,25 @@ func (d *Detector) Feed(b []byte) {
 	if d.state == wire.StateWorking {
 		d.arm()
 	}
+}
+
+// onlyModeChanges reports whether b consists of whole `CSI ? Pm h` / `CSI
+// ? Pm l` sequences and nothing else.
+func onlyModeChanges(b []byte) bool {
+	for len(b) > 0 {
+		if len(b) < 4 || b[0] != 0x1b || b[1] != '[' || b[2] != '?' {
+			return false
+		}
+		i := 3
+		for i < len(b) && (b[i] >= '0' && b[i] <= '9' || b[i] == ';') {
+			i++
+		}
+		if i == 3 || i >= len(b) || (b[i] != 'h' && b[i] != 'l') {
+			return false
+		}
+		b = b[i+1:]
+	}
+	return true
 }
 
 // Input records that input was written to the program, which ends a sticky

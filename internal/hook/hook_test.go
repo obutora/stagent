@@ -109,7 +109,7 @@ func TestLaunchFactsOnlyOutsideSessions(t *testing.T) {
 	got := fakeDaemon(t, 0)
 	tty := true
 	asked := 0
-	launch := func(h string) launchInfo {
+	launch := func(h string, _ []byte) launchInfo {
 		asked++
 		if h != "codex" {
 			t.Errorf("launch asked for %q", h)

@@ -286,7 +286,8 @@ func (d *Daemon) holderGoneLocked(cs *connState) {
 // endLocked records the end of a session: final state, session_ended, an
 // exited notification, and removal from the list after EndedLinger. An
 // exit is abnormal when the session was lost or its code is not 0, unless
-// a client hung it up (hungUp: the app ending a kept shell).
+// it was hung up (hungUp: the app ending a kept shell, or on Windows the
+// user closing a passthrough session's console).
 func (d *Daemon) endLocked(s *session, exitCode int, lost, hungUp bool) {
 	s.ended = true
 	code := exitCode

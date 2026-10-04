@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -348,7 +349,8 @@ func TestIndexRereadsOnlyChangedFiles(t *testing.T) {
 	if _, err := x.List(nil, 10); err != nil {
 		t.Fatal(err)
 	}
-	if st, err := os.Stat(idxPath); err != nil || st.Mode().Perm() != 0o600 {
+	// Windows has no permission bits: Go reports 0666 for any writable file.
+	if st, err := os.Stat(idxPath); err != nil || runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("index file: %v %v", st, err)
 	}
 

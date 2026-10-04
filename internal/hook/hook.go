@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -49,17 +50,21 @@ type procIO struct {
 	// connected to Remote Control).
 	remoteControl bool
 	// launch tells how the agent was started, for a hook outside any
-	// stagent session (see wire.HookEventParams).
-	launch func(harness string) launchInfo
+	// stagent session (see wire.HookEventParams), given the payload.
+	launch func(harness string, payload []byte) launchInfo
 }
 
 // launchInfo is what a hook outside a stagent session tells the daemon
 // about the agent's start (wire.HookEventParams).
 type launchInfo struct {
-	shellWrapper bool
-	entrypoint   string
-	parentTTY    *bool
-	parentBatch  bool
+	shellWrapper     bool
+	entrypoint       string
+	parentTTY        *bool
+	parentBatch      bool
+	ssh              bool
+	terminalAncestor *bool
+	originator       string
+	subagent         bool
 }
 
 // Main runs the hook command. It always returns 0.
@@ -73,19 +78,36 @@ func Main(args []string) int {
 	})
 }
 
-// osLaunch reads the launch facts from the environment and the harness
-// that runs the hook (harnessPID).
-func osLaunch(harness string) launchInfo {
+// osLaunch reads the launch facts from the environment, the harness that
+// runs the hook (harnessPID; on Windows winAncestry) and, for Codex, the
+// conversation's rollout file.
+func osLaunch(harness string, payload []byte) launchInfo {
 	li := launchInfo{
 		shellWrapper: os.Getenv(wire.EnvShellWrapper) != "",
 		entrypoint:   os.Getenv("CLAUDE_CODE_ENTRYPOINT"),
+		ssh:          os.Getenv("SSH_CONNECTION") != "",
 	}
-	pid := harnessPID()
-	if tty, known := ptable.ReadsTerminal(pid); known {
-		li.parentTTY = &tty
+	pid := 0
+	if runtime.GOOS == "windows" {
+		if s, err := ptable.Take(); err == nil {
+			var terminal bool
+			if pid, terminal = winAncestry(s, os.Getpid()); pid != 0 {
+				li.terminalAncestor = &terminal
+			}
+		}
+	} else {
+		pid = harnessPID()
+		if tty, known := ptable.ReadsTerminal(pid); known {
+			li.parentTTY = &tty
+		}
 	}
-	if argv, err := ptable.Argv(pid); err == nil {
-		li.parentBatch = batchArgs(harness, argv)
+	if pid != 0 {
+		if argv, err := ptable.Argv(pid); err == nil {
+			li.parentBatch = batchArgs(harness, argv)
+		}
+	}
+	if harness == wire.HarnessCodex {
+		li.originator, li.subagent = codexOrigin(payload)
 	}
 	return li
 }
@@ -201,9 +223,11 @@ func run(args []string, pio procIO) (code int) {
 		RemoteControl: pio.remoteControl,
 	}
 	if pio.sessionID == "" && pio.launch != nil {
-		li := pio.launch(harness)
+		li := pio.launch(harness, payload)
 		params.ShellWrapper, params.Entrypoint = li.shellWrapper, li.entrypoint
 		params.ParentTTY, params.ParentBatch = li.parentTTY, li.parentBatch
+		params.SSH, params.TerminalAncestor = li.ssh, li.terminalAncestor
+		params.Originator, params.Subagent = li.originator, li.subagent
 	}
 	client.Call(ctx, wire.MethodHookEvent, params, nil)
 	return 0

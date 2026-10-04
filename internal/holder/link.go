@@ -45,7 +45,7 @@ type daemonLink struct {
 	endCh   chan struct{}
 	endOnce sync.Once
 	code    int  // exit code, set before endCh closes
-	hungUp  bool // a client hung the program up, set before endCh closes
+	hungUp  bool // the program was hung up (Holder.hungUp), set before endCh closes
 	done    chan struct{}
 
 	mu    sync.Mutex
@@ -91,7 +91,7 @@ func (l *daemonLink) promptGone(gen int64) {
 	l.wake()
 }
 
-// end reports the exit (hungUp: after a client's session.signal hangup)
+// end reports the exit (hungUp: see Holder.hungUp)
 // and makes run return after sending holder.ended (or right away when no
 // daemon is connected).
 func (l *daemonLink) end(code int, hungUp bool) {

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,9 +41,6 @@ func (b *Bridge) doSpawn(p wire.SpawnParams) (*wire.SpawnResult, error) {
 		if len(p.Command) > 0 {
 			return nil, wire.Errorf(wire.ErrBadRequest, "session.spawn: command must be empty when shell is set")
 		}
-		if runtime.GOOS == "windows" {
-			return nil, wire.Errorf(wire.ErrUnsupported, "session.spawn: shell sessions are not supported on Windows")
-		}
 	} else if len(p.Command) == 0 || p.Command[0] == "" {
 		return nil, wire.Errorf(wire.ErrBadRequest, "session.spawn: command is empty")
 	}
@@ -65,7 +61,7 @@ func (b *Bridge) doSpawn(p wire.SpawnParams) (*wire.SpawnResult, error) {
 	env := b.sessionEnv()
 	command := p.Command
 	if p.Shell {
-		command = []string{loginShell(env), "-l"}
+		command = shellCommand(env)
 	} else {
 		env = ensureOnPath(env, command[0], b.l.Home)
 	}
@@ -99,15 +95,6 @@ func (b *Bridge) doSpawn(p wire.SpawnParams) (*wire.SpawnResult, error) {
 		return nil, err
 	}
 	return &wire.SpawnResult{Session: *s}, nil
-}
-
-// loginShell is the shell a `shell: true` session runs: the user's $SHELL
-// as their login session sets it.
-func loginShell(env []string) string {
-	if sh := envGet(env, "SHELL"); sh != "" {
-		return sh
-	}
-	return "/bin/sh"
 }
 
 // startHolder starts `exe args` as a detached holder and waits until it

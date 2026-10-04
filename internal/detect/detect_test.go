@@ -143,6 +143,24 @@ func TestSilentProgramBecomesIdle(t *testing.T) {
 	}
 }
 
+// Mode sets and resets alone draw nothing: a program that re-sends them
+// while it waits still becomes idle, and stays so.
+func TestModeChangesAloneAreNotWork(t *testing.T) {
+	d, clk, r := newDetector(t)
+	for range 4 {
+		clk.Advance(time.Second)
+		d.Feed([]byte("\x1b[?2004h"))
+	}
+	d.Feed([]byte("\x1b[?1004h\x1b[?25;2004l"))
+	if want := []string{"idle/activity"}; !reflect.DeepEqual(r.states, want) {
+		t.Fatalf("states = %v, want %v", r.states, want)
+	}
+	d.Feed([]byte("\x1b[?2004hx"))
+	if want := []string{"idle/activity", "working/activity"}; !reflect.DeepEqual(r.states, want) {
+		t.Fatalf("states after drawn output = %v, want %v", r.states, want)
+	}
+}
+
 func TestOSC9SplitAcrossChunksIsStickyUntilInput(t *testing.T) {
 	d, clk, r := newDetector(t)
 	for _, chunk := range []string{"work\x1b", "]9;Build", " done", "\x07prompt redraw"} {

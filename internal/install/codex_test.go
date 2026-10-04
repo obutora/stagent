@@ -106,6 +106,48 @@ func TestCodexHooksAndFeatureFlagRoundTrip(t *testing.T) {
 	}
 }
 
+// Windows gets the hooks too. Codex runs them with PowerShell: the path is
+// bare, or behind the call operator when PowerShell would misread it.
+func TestCodexHooksOnWindows(t *testing.T) {
+	te := newTestEnv(t, "windows")
+	te.l.Bin = `C:\Users\u\.ssh-term\agent\bin\stagent.exe`
+	r := te.integrate(t, integrateOpts{harness: []string{hCodex}})
+	if got := strings.Join(changeIDs(r.Changes), ","); got != "codex-hooks,codex-config" || len(notesWith(r.Notes, noteCodexNotifyFallback)) != 0 {
+		t.Fatalf("changes = %s, notes %+v", got, r.Notes)
+	}
+	if !strings.Contains(r.Changes[0].Diff, `"command": "C:/Users/u/.ssh-term/agent/bin/stagent.exe hook codex"`) {
+		t.Fatalf("hooks.json diff:\n%s", r.Changes[0].Diff)
+	}
+	te.l.Bin = `C:\Users\Jo O'Neil\.ssh-term\agent\bin\stagent.exe`
+	if got := te.hookCommand(hCodex); got != `& 'C:/Users/Jo O''Neil/.ssh-term/agent/bin/stagent.exe' hook codex` || !isOurCommand(got) {
+		t.Fatalf("command with a space and a quote: %s", got)
+	}
+}
+
+// Codex writes the trust tables of our hooks between others, each after a
+// blank line; removing them gives the file back as it was without them.
+func TestRemoveTablesKeepsLayout(t *testing.T) {
+	ours := map[string]bool{"hooks.state.h:stop:1:0": true, "hooks.state.h:session_start:1:0": true}
+	for _, c := range []struct{ name, before, after string }{
+		{"between others", "a = 1\n\n[x]\nk = 1\n\n[hooks.state.\"h:session_start:1:0\"]\ntrusted_hash = \"s\"\n\n[hooks.state.\"h:stop:1:0\"]\ntrusted_hash = \"t\"\n\n[y]\nk = 2\n",
+			"a = 1\n\n[x]\nk = 1\n\n[y]\nk = 2\n"},
+		{"at the end", "[x]\nk = 1\n\n[hooks.state.\"h:stop:1:0\"]\ntrusted_hash = \"t\"\n", "[x]\nk = 1\n"},
+		{"right after a table", "[x]\nk = 1\n[hooks.state.\"h:stop:1:0\"]\ntrusted_hash = \"t\"\n\n[y]\n", "[x]\nk = 1\n\n[y]\n"},
+	} {
+		d := parseTOMLLines([]byte(c.before))
+		if n := removeTables(d, ours); n == 0 || string(d.bytes()) != c.after {
+			t.Errorf("%s: removed %d, got %q want %q", c.name, n, d.bytes(), c.after)
+		}
+	}
+}
+
+// noHooksCodex makes the host's codex one without a hooks feature, so the
+// integration falls back to the notify program.
+func noHooksCodex(te *testEnv) {
+	te.bins["codex"] = "/usr/bin/codex"
+	te.run.respond = func(string, []string) (string, error) { return "apps  stable  true\n", nil }
+}
+
 func TestCodexFeatureLineEdits(t *testing.T) {
 	cases := []struct {
 		name, before, after string
@@ -161,7 +203,8 @@ func TestCodexInlineFeaturesFallsBackToNotify(t *testing.T) {
 }
 
 func TestCodexNotifyFallbackNeverOverwritesUserNotify(t *testing.T) {
-	te := newTestEnv(t, "windows") // Codex hooks are unsupported on Windows
+	te := newTestEnv(t, "linux")
+	noHooksCodex(te)
 	before := "model = \"o3\"\nnotify = [\"python3\", \"/home/u/notify.py\"]\n\n[tui]\nx = 1\n"
 	writeFile(t, te.codexConfig(), before)
 	r := te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
@@ -174,8 +217,8 @@ func TestCodexNotifyFallbackNeverOverwritesUserNotify(t *testing.T) {
 	if kept := notesWith(r.Notes, noteCodexNotifyKept); len(kept) != 1 || !strings.Contains(kept[0].Args["command"], "/home/u/notify.py") {
 		t.Errorf("no note about the existing notify: %+v", r.Notes)
 	}
-	if fb := notesWith(r.Notes, noteCodexNotifyFallback); len(fb) != 1 || fb[0].Args["reason"] != codexReasonWindows || !strings.Contains(fb[0].Text, codexNotifyWhy[codexReasonWindows]) {
-		t.Errorf("no notify fallback note for Windows: %+v", r.Notes)
+	if fb := notesWith(r.Notes, noteCodexNotifyFallback); len(fb) != 1 || fb[0].Args["reason"] != codexReasonNoHooksFeature || !strings.Contains(fb[0].Text, codexNotifyWhy[codexReasonNoHooksFeature]) {
+		t.Errorf("no notify fallback note: %+v", r.Notes)
 	}
 	// Removing Codex must not touch the user's notify either.
 	if r := te.integrate(t, integrateOpts{apply: true, remove: []string{hCodex}}); len(r.Changes) != 0 {
@@ -184,7 +227,8 @@ func TestCodexNotifyFallbackNeverOverwritesUserNotify(t *testing.T) {
 }
 
 func TestCodexNotifyFallbackAddsAndRemovesOurLine(t *testing.T) {
-	te := newTestEnv(t, "windows")
+	te := newTestEnv(t, "linux")
+	noHooksCodex(te)
 	before := "model = \"o3\"\n\n[tui]\nx = 1\n"
 	writeFile(t, te.codexConfig(), before)
 	te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
@@ -197,6 +241,59 @@ func TestCodexNotifyFallbackAddsAndRemovesOurLine(t *testing.T) {
 	te.integrate(t, integrateOpts{apply: true, remove: []string{hCodex}})
 	if got := readFile(t, te.codexConfig()); got != before+"y = 2\n" {
 		t.Fatalf("after remove = %q", got)
+	}
+}
+
+func codexHarness(t *testing.T, te *testEnv) HarnessReport {
+	t.Helper()
+	for _, h := range te.doctor().Harnesses {
+		if h.ID == hCodex {
+			return h
+		}
+	}
+	t.Fatal("no codex in doctor")
+	return HarnessReport{}
+}
+
+// A host integrated through the notify fallback whose Codex later gains
+// hooks: doctor offers integrate again, which swaps our notify for hooks
+// for good; removal then gives the pre-stagent file back.
+func TestCodexNotifyFallbackSwitchesToHooks(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	noHooksCodex(te)
+	before := "model = \"o3\"\n\n[tui]\nx = 1\n"
+	writeFile(t, te.codexConfig(), before)
+	te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	if h := codexHarness(t, te); !h.Integrated {
+		t.Fatalf("notify fallback not integrated: %+v", h)
+	}
+
+	te.run.respond = func(string, []string) (string, error) { return "hooks  stable  true\n", nil }
+	if h := codexHarness(t, te); h.Integrated || !h.HooksSupported {
+		t.Fatalf("leftover notify reported as integrated: %+v", h)
+	}
+	r := te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	if got := strings.Join(changeIDs(r.Changes), ","); got != "codex-hooks,codex-config" {
+		t.Fatalf("changes = %s", got)
+	}
+	if got, want := readFile(t, te.codexConfig()), "model = \"o3\"\n\n[tui]\nx = 1\n\n[features]\nhooks = true\n"; got != want {
+		t.Fatalf("config.toml = %q want %q", got, want)
+	}
+	if h := codexHarness(t, te); !h.Integrated {
+		t.Fatalf("hooks not integrated: %+v", h)
+	}
+
+	te.integrate(t, integrateOpts{apply: true, remove: []string{hCodex}})
+	if got := readFile(t, te.codexConfig()); got != before {
+		t.Fatalf("after remove = %q want %q", got, before)
+	}
+
+	// The user's own notify program stays through hooks integration.
+	user := "notify = [\"python3\", \"/home/u/notify.py\"]\n"
+	writeFile(t, te.codexConfig(), user)
+	te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	if got := readFile(t, te.codexConfig()); got != user+"\n[features]\nhooks = true\n" {
+		t.Fatalf("user's notify touched: %q", got)
 	}
 }
 

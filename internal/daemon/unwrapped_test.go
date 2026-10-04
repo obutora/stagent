@@ -31,8 +31,41 @@ func TestUnwrappedReason(t *testing.T) {
 		{"omp -p", wire.HookEventParams{Harness: wire.HarnessOmp, ParentTTY: tty, ParentBatch: true}, ""},
 		{"omp, terminal unknown", wire.HookEventParams{Harness: wire.HarnessOmp}, wire.UnwrappedOldTerminal},
 		{"not an agent harness", wire.HookEventParams{Harness: "other", ParentTTY: tty}, ""},
+		// Codex tells how a conversation started (session_meta.originator).
+		{"codex TUI in an old terminal", wire.HookEventParams{Harness: wire.HarnessCodex, Originator: "codex-tui", ParentTTY: tty}, wire.UnwrappedOldTerminal},
+		{"codex exec", wire.HookEventParams{Harness: wire.HarnessCodex, Originator: "codex_exec", ParentTTY: tty, ShellWrapper: true}, ""},
+		{"codex subagent thread", wire.HookEventParams{Harness: wire.HarnessCodex, Originator: "codex-tui", Subagent: true, ParentTTY: tty}, ""},
+		{"Codex desktop app", wire.HookEventParams{Harness: wire.HarnessCodex, Originator: "Codex Desktop", ParentTTY: noTTY}, wire.UnwrappedIDE},
+		{"unknown codex originator", wire.HookEventParams{Harness: wire.HarnessCodex, Originator: "codex_sdk_ts", ParentTTY: tty}, ""},
+		// Elsewhere SSH and the ancestors do not count.
+		{"claude over SSH (Linux)", wire.HookEventParams{Harness: wire.HarnessClaude, Entrypoint: "cli", ParentTTY: tty, ShellWrapper: true, SSH: true}, wire.UnwrappedBypassed},
 	} {
-		if got := unwrappedReason(c.p); got != c.want {
+		if got := unwrappedReason(c.p, false); got != c.want {
+			t.Errorf("%s: reason %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// On Windows the terminal is unknown: SSH and the shell above the harness
+// tell launches apart.
+func TestUnwrappedReasonWindows(t *testing.T) {
+	shell, noShell := ptr(true), ptr(false)
+	for _, c := range []struct {
+		name string
+		p    wire.HookEventParams
+		want string
+	}{
+		{"claude in an SSH PowerShell with the wrapper's profile", wire.HookEventParams{Harness: wire.HarnessClaude, Entrypoint: "cli", ShellWrapper: true, SSH: true, TerminalAncestor: shell}, wire.UnwrappedSSH},
+		{"claude -p over SSH", wire.HookEventParams{Harness: wire.HarnessClaude, Entrypoint: "sdk-cli", SSH: true, TerminalAncestor: shell}, ""},
+		{"codex exec over SSH", wire.HookEventParams{Harness: wire.HarnessCodex, Originator: "codex_exec", SSH: true, TerminalAncestor: shell}, ""},
+		{"claude in a console opened before the setup", wire.HookEventParams{Harness: wire.HarnessClaude, Entrypoint: "cli", TerminalAncestor: shell}, wire.UnwrappedOldTerminal},
+		{"claude started by an app", wire.HookEventParams{Harness: wire.HarnessClaude, Entrypoint: "cli", TerminalAncestor: noShell}, wire.UnwrappedNoTerminal},
+		{"omp, ancestors unknown", wire.HookEventParams{Harness: wire.HarnessOmp}, wire.UnwrappedOldTerminal},
+		{"command claude in a prepared console", wire.HookEventParams{Harness: wire.HarnessClaude, Entrypoint: "cli", ShellWrapper: true, TerminalAncestor: shell}, wire.UnwrappedBypassed},
+		{"Codex desktop app", wire.HookEventParams{Harness: wire.HarnessCodex, Originator: "Codex Desktop", TerminalAncestor: noShell}, wire.UnwrappedIDE},
+		{"codex TUI started by an app", wire.HookEventParams{Harness: wire.HarnessCodex, Originator: "codex-tui", TerminalAncestor: noShell}, wire.UnwrappedNoTerminal},
+	} {
+		if got := unwrappedReason(c.p, true); got != c.want {
 			t.Errorf("%s: reason %q, want %q", c.name, got, c.want)
 		}
 	}

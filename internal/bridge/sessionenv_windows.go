@@ -13,6 +13,21 @@ func captureLoginEnv(string) ([]string, error) {
 	return nil, errors.New("no login shell on windows")
 }
 
+// shellCommand is what a `shell: true` session runs: the shell an SSH
+// terminal of this account gets. sshd sets SHELL to its DefaultShell
+// (cmd.exe when that is unset); %ComSpec% stands in when SHELL is empty.
+// No "-l": Windows PowerShell 5.1 would run it as a command and exit.
+func shellCommand(env []string) []string {
+	sh := envGet(env, "SHELL")
+	if sh == "" {
+		sh = envGet(env, "ComSpec")
+	}
+	if sh == "" {
+		sh = "cmd.exe"
+	}
+	return []string{sh}
+}
+
 func toolDirs(home string, getenv func(string) string) []string {
 	return paths.ToolDirs(runtime.GOOS, home, getenv)
 }

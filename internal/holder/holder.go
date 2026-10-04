@@ -113,8 +113,9 @@ type Holder struct {
 	ended     bool
 	handedOff bool // passthrough whose local terminal hung up (Options.Handoff)
 	// hungUp: a client hung the program up (session.signal hangup), as the
-	// app does to end a kept shell; the daemon does not take the exit for
-	// an abnormal one.
+	// app does to end a kept shell, or (Windows) the user closed the
+	// console of a passthrough session; the daemon does not take the exit
+	// for an abnormal one.
 	hungUp bool
 	// focus holds the terminals on the host (the local terminal, `stagent
 	// attach` connections) whose last focus report was focus in;
@@ -292,6 +293,7 @@ func (h *Holder) run(ctx context.Context, ln net.Listener) (int, error) {
 			h.logf("stagent run: raw mode: %v", err)
 		}
 		defer h.local.restore()
+		go h.local.writeOutput(h.resyncLocal)
 	}
 
 	pumpDone := make(chan struct{})
@@ -356,6 +358,9 @@ wait:
 	case <-pumpDone:
 	case <-time.After(time.Second):
 	}
+	if h.local != nil {
+		h.local.drain()
+	}
 
 	h.finish(code)
 	stopServer()
@@ -418,10 +423,10 @@ func (h *Holder) pump(done chan struct{}) {
 
 // output fans one chunk of program output out. It never waits on clients
 // or the daemon; only the local terminal (passthrough) may apply
-// backpressure, as with any terminal.
+// backpressure, as with any terminal, and only while it takes output.
 func (h *Holder) output(b []byte) {
-	if h.local != nil {
-		h.local.write(b)
+	if h.local != nil && h.local.waitRoom() {
+		h.logf("stagent run: session %s: local terminal stopped reading; dropping its output until it reads again", h.id)
 	}
 	if h.sb != nil {
 		if _, err := h.sb.Write(b); err != nil && !h.sbWarned {
@@ -437,6 +442,9 @@ func (h *Holder) output(b []byte) {
 	h.pos += int64(len(b))
 	h.sess.LastActivityAt = now
 	var shared []byte
+	if h.local != nil {
+		shared = h.local.push(b)
+	}
 	for a := range h.atts {
 		if a.raw {
 			if shared == nil {
@@ -459,6 +467,18 @@ func (h *Holder) output(b []byte) {
 	if titleChanged || now-h.lastActivityWake >= 1000 {
 		h.lastActivityWake = now
 		h.link.wake()
+	}
+}
+
+// resyncLocal redraws the local terminal once it reads again after its
+// output was dropped. The snapshot is taken under h.mu, exactly where the
+// output queued after it continues.
+func (h *Holder) resyncLocal() {
+	h.mu.Lock()
+	restarted := h.local.restart(h.scr.Snapshot())
+	h.mu.Unlock()
+	if restarted {
+		h.logf("stagent run: session %s: local terminal reading again; redrawn", h.id)
 	}
 }
 
@@ -610,6 +630,11 @@ func (h *Holder) handoff() {
 	h.logf("stagent run: session %s: terminal hung up, continuing detached", h.id)
 }
 
+// signalConsoleClosed (Windows) is the holder's console going away: its
+// window closed, logoff or shutdown, which Go reports as SIGTERM. Windows
+// ends the holder seconds later, so there is no handoff.
+const signalConsoleClosed = "console_closed"
+
 func (h *Holder) forwardSignal(s os.Signal) {
 	switch name := signalName(s); name {
 	case pty.SignalHangup:
@@ -622,6 +647,18 @@ func (h *Holder) forwardSignal(s os.Signal) {
 		if h.local != nil {
 			h.local.disable()
 		}
+		h.pty.Signal(pty.SignalHangup)
+	case signalConsoleClosed:
+		if h.local == nil {
+			h.pty.Signal(wire.SignalTerminate)
+			return
+		}
+		// The user closed the console the session ran in: hang the program
+		// up and, as after a client's hangup, its exit is no abnormal one.
+		h.local.disable()
+		h.mu.Lock()
+		h.hungUp = true
+		h.mu.Unlock()
 		h.pty.Signal(pty.SignalHangup)
 	case wire.SignalInterrupt:
 		h.in.tryPush([]byte{0x03})
