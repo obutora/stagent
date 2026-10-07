@@ -208,6 +208,34 @@ func TestGuardCheck(t *testing.T) {
 	}
 }
 
+// TestGuardCheckSandboxed: on macOS a sandboxed command that double forked
+// is launchd's child, out of the agent's tree, and still refused for being
+// sandboxed. Without sandbox_check (Sandboxed nil) the walk alone decides.
+func TestGuardCheckSandboxed(t *testing.T) {
+	f := host()
+	f[70] = fakeProc{1, "stagent", []string{"stagent", "attach"}}
+	inSandbox := func(pid int) bool { return pid == 70 }
+	for _, c := range []struct {
+		name      string
+		pid       int
+		sandboxed func(int) bool
+		refused   bool
+	}{
+		{"sandboxed orphan", 70, inSandbox, true},
+		{"sshd descendant", 12, inSandbox, false},
+		{"sandboxed orphan, sandbox_check unavailable", 70, nil, false},
+	} {
+		g := &Guard{Table: f.table(), Sandboxed: c.sandboxed}
+		err := g.CheckPID(c.pid)
+		if (err != nil) != c.refused {
+			t.Errorf("%s: CheckPID = %v, refused want %v", c.name, err, c.refused)
+		}
+		if err != nil && err.Code != wire.ErrAgentRefused {
+			t.Errorf("%s: code %q, want %q", c.name, err.Code, wire.ErrAgentRefused)
+		}
+	}
+}
+
 func TestNewGuardSkipsIsolatedLayouts(t *testing.T) {
 	if g := NewGuard(&paths.Layout{Isolated: true}); g != nil {
 		t.Fatal("an isolated layout is guarded")

@@ -56,8 +56,8 @@ const (
 	ErrNotSizeOwner  = "not_size_owner"
 	ErrNotConfigured = "not_configured"
 	// ErrAgentRefused: the connection comes from a coding agent's process
-	// tree (ADR 0004); the holder refuses every method, the daemon the
-	// ones that change settings or stop it.
+	// tree or, on macOS, a sandbox (ADR 0004); the holder refuses every
+	// method, the daemon the ones that change settings or stop it.
 	ErrAgentRefused = "agent_refused"
 	// ErrMenuOpen: session.input with paste and submit was not written
 	// because an approval menu is on the screen.

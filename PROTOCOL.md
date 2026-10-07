@@ -31,11 +31,13 @@ another user (see `hello`'s `blocked`). Nothing was sent there. The
 message names the location and its owner.
 
 `agent_refused`: the local connection came from a process that a coding
-agent (claude, codex, omp) started — stagent walks its parents — or from
-one it could not check: it exited first, or its parents were more than
-256 deep or kept changing (ADR 0004). A holder answers whatever such a
-connection asks first with it and closes the connection; the daemon
-refuses `config.set`, `presence.set`, `notify.test` and `daemon.shutdown`,
+agent (claude, codex, omp) started — stagent walks its parents — or, on
+macOS, from a process in a sandbox (Seatbelt, which coding agents run
+their commands in), or from one it could not check: it exited first, or
+its parents were more than 256 deep or kept changing (ADR 0004). A
+holder answers whatever such a connection asks first with it and closes
+the connection; the daemon refuses `config.set`, `presence.set`,
+`notify.test` and `daemon.shutdown`,
 and serves the rest (`hook.event`, `holder.*`, reads). The daemon decides
 when the connection is made. The message says why. Only Linux and macOS
 check, and only without `STAGENT_HOME`. `stagent bridge`, started by
