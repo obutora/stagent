@@ -98,14 +98,16 @@ So `stagent attach` run by an agent fails with that reason, and
 `stagent install` / `stagent integrate` run by an agent cannot replace the
 daemon: run them in your own terminal. A connection whose process has
 already exited, or whose parents cannot be followed, is refused as well.
-The check follows parents only: a process that leaves them (a double fork,
-such as `setsid -f`, reparents it to init or launchd) escapes it. That holds an
-agent sandboxed in its own PID namespace (bubblewrap, as Claude Code's
-Linux sandbox uses), not one sandboxed on macOS, nor an agent without a
-sandbox, which can do whatever you can anyway. Locations set with
-`STAGENT_HOME` (tests, development) are not checked, nor is Windows, where
-a process keeps the pid of a parent that exited, so its parents cannot be
-told.
+The check follows parents: a process that leaves them (a double fork,
+such as `setsid -f`, reparents it to init or launchd) escapes that walk.
+That holds an agent sandboxed in its own PID namespace (bubblewrap, as
+Claude Code's Linux sandbox uses), not an agent without a sandbox, which
+can do whatever you can anyway. On macOS, where the sandbox (Seatbelt)
+has no PID namespace, stagent also refuses any process inside a sandbox,
+wherever its parents lead; so `stagent` run from a terminal app that is
+itself sandboxed is refused too. Locations set with `STAGENT_HOME`
+(tests, development) are not checked, nor is Windows, where a process
+keeps the pid of a parent that exited, so its parents cannot be told.
 
 Another user cannot stand in for your daemon or sessions. Every stagent command checks
 that the socket or named pipe it connects to belongs to you (on Windows,

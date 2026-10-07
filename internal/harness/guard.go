@@ -9,6 +9,7 @@ import (
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/ptable"
+	"github.com/obutora/stagent/internal/seatbelt"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -98,6 +99,10 @@ type Guard struct {
 	// PeerPID returns the pid of the process that connected c.
 	PeerPID func(c net.Conn) (int, error)
 	Table   Table
+	// Sandboxed tells whether pid runs in a macOS sandbox (nil: not
+	// asked). Seatbelt has no PID namespace, so a sandboxed command that
+	// double forks leaves the agent's tree but stays sandboxed.
+	Sandboxed func(pid int) bool
 }
 
 // NewGuard returns the guard of the stagent location l: nil, which refuses
@@ -109,7 +114,7 @@ func NewGuard(l *paths.Layout) *Guard {
 	if l.Isolated || runtime.GOOS == "windows" {
 		return nil
 	}
-	return &Guard{PeerPID: ipc.PeerPID, Table: Table{Process: ptable.Process, Argv: ptable.Argv}}
+	return &Guard{PeerPID: ipc.PeerPID, Table: Table{Process: ptable.Process, Argv: ptable.Argv}, Sandboxed: seatbelt.Load()}
 }
 
 // Check returns nil when c may be served, else the agent_refused error to
@@ -142,6 +147,8 @@ func (g *Guard) CheckPID(pid int) *wire.Error {
 		return wire.Errorf(wire.ErrAgentRefused, "%v (pid %d); stagent refuses connections it cannot trace to a non-agent process (ADR 0004)", err, pid)
 	case h != "":
 		return wire.Errorf(wire.ErrAgentRefused, "stagent refuses connections from processes started by a coding agent (%s); run this command in your own terminal (ADR 0004)", h)
+	case g.Sandboxed != nil && g.Sandboxed(pid):
+		return wire.Errorf(wire.ErrAgentRefused, "stagent refuses connections from processes in a macOS sandbox (pid %d), as a coding agent's commands run; run this command in your own terminal (ADR 0004)", pid)
 	}
 	return nil
 }

@@ -3,6 +3,23 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.7.1
+
+### Security
+
+- On macOS, stagent now also refuses connections from processes in a
+  sandbox (Seatbelt), as Claude Code and Codex run their commands. The
+  macOS sandbox has no PID namespace, so a sandboxed command allowed to
+  reach `~/.ssh-term/agent/run` (`sandbox.network.allowUnixSockets`)
+  could double fork (or `setsid`) out of the agent's process tree, and
+  so past the parent walk of 0.7.0, while staying sandboxed. Such a
+  connection, and one handed to such a child, now gets `agent_refused`
+  as a holder or the daemon answers an agent's; hooks and reads are
+  still served. stagent asks `sandbox_check`, which Apple does not
+  document; if a macOS lacks it or it answers otherwise, this check is
+  left out and the parent walk alone decides, as in 0.7.0 (ADR 0004,
+  #415).
+
 ## 0.7.0
 
 ### Fixed
