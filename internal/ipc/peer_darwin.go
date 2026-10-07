@@ -23,3 +23,24 @@ func peerUID(c *net.UnixConn) (int, error) {
 	}
 	return int(cred.Uid), nil
 }
+
+// PeerPID returns the pid LOCAL_PEERPID reports for c: the last process
+// that used the peer's socket (xnu's last_pid), normally the one that
+// connected — a process the socket was passed to once it uses it.
+func PeerPID(c net.Conn) (int, error) {
+	raw, err := rawConn(c)
+	if err != nil {
+		return -1, err
+	}
+	var pid int
+	var perr error
+	if err := raw.Control(func(fd uintptr) {
+		pid, perr = unix.GetsockoptInt(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERPID)
+	}); err != nil {
+		return -1, err
+	}
+	if perr != nil {
+		return -1, perr
+	}
+	return pid, nil
+}

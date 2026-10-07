@@ -86,6 +86,37 @@ the server:
   (waiting for approval); otherwise it is neither listed nor counted
   among the agents the list cannot show.
 
+Coding agents cannot drive the sessions. On Linux and macOS a holder
+refuses every connection from a process that claude, codex or omp started
+(stagent walks the connecting process's parents), and the daemon refuses
+them `config.set`, `presence.set`, `notify.test` and `daemon.shutdown`;
+hooks still report and the session list can still be read. An agent whose
+sandboxed commands run without asking could otherwise type into its own
+session — answering its own approval menus — or into another session,
+outside its sandbox ([ADR 0004](../../../docs/adr/0004-refuse-connections-from-agent-descendants.md)).
+So `stagent attach` run by an agent fails with that reason, and
+`stagent install` / `stagent integrate` run by an agent cannot replace the
+daemon: run them in your own terminal. A connection whose process has
+already exited, or whose parents cannot be followed, is refused as well.
+The check follows parents only: a process that leaves them (a double fork,
+such as `setsid -f`, reparents it to init or launchd) escapes it. That holds an
+agent sandboxed in its own PID namespace (bubblewrap, as Claude Code's
+Linux sandbox uses), not one sandboxed on macOS, nor an agent without a
+sandbox, which can do whatever you can anyway. Locations set with
+`STAGENT_HOME` (tests, development) are not checked, nor is Windows, where
+a process keeps the pid of a parent that exited, so its parents cannot be
+told.
+
+Another user cannot stand in for your daemon or sessions. Every stagent command checks
+that the socket or named pipe it connects to belongs to you (on Windows,
+one owned by `BUILTIN\Administrators` — your daemon started elevated —
+counts as yours) and never talks to another user's. If another user
+created `/tmp/stagent-<uid>`, a socket or `\\.\pipe\stagent-<SID>`
+first, kept shells and agent sessions cannot work on that host until they
+or an administrator remove it: the app shows the location and its owner,
+`stagent doctor` reports them under `blocked`, and commands fail with an
+error naming them. Plain SSH terminals keep working.
+
 Sessions also survive logging out. On Linux their sockets live in
 `/tmp/stagent-<uid>` (mode 0700), not in `$XDG_RUNTIME_DIR`, which is
 removed at logout. On systems where logind kills a user's processes at

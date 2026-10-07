@@ -30,6 +30,7 @@ import (
 
 	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/detect"
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/pty"
@@ -65,6 +66,9 @@ type Options struct {
 	// socket), the holder log file in passthrough (stderr is the user's
 	// terminal there).
 	Logf func(format string, args ...any)
+	// Guard refuses connections from coding agents' process trees (ADR
+	// 0004); nil = harness.NewGuard(Layout).
+	Guard *harness.Guard
 }
 
 // Exit codes of Run for failures before the program ran.
@@ -86,6 +90,8 @@ type Holder struct {
 	layout *paths.Layout
 	id     string
 	logf   func(string, ...any)
+	// guard refuses connections from coding agents (nil: none).
+	guard *harness.Guard
 
 	pty   pty.PTY
 	scr   *screen.Screen
@@ -96,8 +102,8 @@ type Holder struct {
 	local *localTerm // nil when detached
 	// stopLocalSize ends following the local terminal's size (handoff).
 	stopLocalSize context.CancelFunc
-	// prompt watches the screen for claude's permission menu while the
-	// daemon asks (holder.prompt_watch).
+	// prompt watches the screen for claude's or Codex's permission menu
+	// while the daemon asks (holder.prompt_watch).
 	prompt *promptWatch
 
 	sbWarned         bool
@@ -156,6 +162,9 @@ func Run(ctx context.Context, o Options) (int, error) {
 		return ExitUsage, fmt.Errorf("invalid session id %q (want 16 lowercase hex characters)", id)
 	}
 	h := &Holder{o: o, layout: l, id: id, atts: map[*attachment]struct{}{}, focus: map[any]struct{}{}, sizePos: -1}
+	if h.guard = o.Guard; h.guard == nil {
+		h.guard = harness.NewGuard(l)
+	}
 
 	if !o.Detached {
 		lt, err := openLocal()
@@ -250,6 +259,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 	}
 	h.scr = screen.New(cols, rows, respond)
 	h.prompt = newPromptWatch(h.scr.Lines, h.link.promptGone)
+	h.in.menuUp = h.menuShown
 	// vt.NewEmulator allocates a 4 MiB parser buffer and 10,000-line
 	// scrollbacks that screen.New immediately shrinks; hand those pages back
 	// now instead of carrying them in RSS for the life of the session.

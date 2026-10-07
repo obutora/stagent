@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/proc"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/wire"
@@ -43,6 +44,11 @@ func (b *Bridge) doSpawn(p wire.SpawnParams) (*wire.SpawnResult, error) {
 		}
 	} else if len(p.Command) == 0 || p.Command[0] == "" {
 		return nil, wire.Errorf(wire.ErrBadRequest, "session.spawn: command is empty")
+	}
+	// Its holder would start, refuse this bridge and keep running out of
+	// reach.
+	if werr := b.agentRefusal(); werr != nil {
+		return nil, werr
 	}
 	cols, rows := p.Cols, p.Rows
 	if cols <= 0 {
@@ -130,7 +136,8 @@ func (b *Bridge) awaitHolder(id string, pid int, logPath string) (*wire.Session,
 	ctx, cancel := context.WithTimeout(b.ctx, b.spawnWait)
 	defer cancel()
 	for {
-		if conn, err := b.dialHolder(id, 300*time.Millisecond); err == nil {
+		conn, err := b.dialHolder(id, 300*time.Millisecond)
+		if err == nil {
 			c := rpc.NewClient(conn, b.relay)
 			var s wire.Session
 			if err := c.Call(ctx, wire.MethodSessionInfo, wire.SessionRef{ID: id}, &s); err == nil {
@@ -140,6 +147,8 @@ func (b *Bridge) awaitHolder(id string, pid int, logPath string) (*wire.Session,
 				return &s, nil
 			}
 			c.Close()
+		} else if errors.Is(err, paths.ErrForeignOwner) {
+			return nil, err
 		}
 		if pid > 0 && !proc.Alive(pid) {
 			return nil, wire.Errorf(wire.ErrInternal, "holder exited during start%s", logTail(logPath))

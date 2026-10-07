@@ -4,9 +4,12 @@ package ipc
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"time"
+
+	"github.com/obutora/stagent/internal/paths"
 )
 
 // Listen serves addr (a socket path). A stale socket file left by a crashed
@@ -34,9 +37,35 @@ func Listen(addr string) (net.Listener, error) {
 	return &sameUserListener{ln}, nil
 }
 
-// Dial connects to addr.
+// Dial connects to addr and makes sure the process serving it runs as us:
+// a socket another user created first (e.g. in a shared /tmp/stagent-<uid>
+// they made) is closed unused and reported as a *paths.OwnerError.
 func Dial(addr string, timeout time.Duration) (net.Conn, error) {
-	return net.DialTimeout("unix", addr, timeout)
+	c, err := net.DialTimeout("unix", addr, timeout)
+	if err != nil {
+		return nil, err
+	}
+	uid, err := serverUID(c)
+	if err != nil {
+		c.Close()
+		return nil, fmt.Errorf("ipc: %s: cannot tell who serves it: %w", addr, err)
+	}
+	if uid != os.Getuid() {
+		c.Close()
+		return nil, &paths.OwnerError{Path: addr, Owner: paths.UIDOwner(uid)}
+	}
+	return c, nil
+}
+
+// serverUID returns the UID of the process at the other end of a dialed
+// connection. Tests replace it: without root they cannot serve a socket as
+// another user.
+var serverUID = func(c net.Conn) (int, error) {
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		return -1, errors.New("not a unix socket")
+	}
+	return peerUID(uc)
 }
 
 type sameUserListener struct{ net.Listener }

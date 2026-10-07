@@ -57,7 +57,7 @@ func tailscaleRoot(s *ptable.Snapshot, pid int) (daemon, session int) {
 		if parent == nil {
 			break
 		}
-		if baseName(parent.Name) == "tailscaled" {
+		if ptable.BaseName(parent.Name) == "tailscaled" {
 			daemon, session = parent.PID, p.PID
 		} else if daemon != 0 {
 			break
@@ -253,7 +253,7 @@ func ancestorsBelow(s *ptable.Snapshot, pid, top int) []int {
 // names, "" for other command lines.
 func argvIP(argv []string) string {
 	switch {
-	case argv0(argv) == "login":
+	case ptable.Argv0(argv) == "login":
 		for i, a := range argv[1:] {
 			if a == "-h" && i+2 < len(argv) {
 				return normIP(argv[i+2])

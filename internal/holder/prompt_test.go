@@ -12,10 +12,11 @@ import (
 	"github.com/obutora/stagent/internal/screen"
 )
 
-// testdata/claude_*: real screens of Claude Code, the fixtures of the app's
-// screen reader (test/services/terminal_chat/_fixtures): `.ansi` is what a
-// terminal of the size in the name is fed, `.txt` the app's plain rendering
-// (`|` + row, then the cursor line).
+// testdata/claude_*, codex_*: real screens of Claude Code and Codex, the
+// fixtures of the app's screen reader
+// (test/services/terminal_chat/_fixtures): `.ansi` is what a terminal of
+// the size in the name is fed, `.txt` the app's plain rendering (`|` +
+// row, then the cursor line).
 
 var fixtureSize = regexp.MustCompile(`_(\d+)x(\d+)$`)
 
@@ -52,7 +53,7 @@ func readFixture(t *testing.T, file string) []byte {
 	return b
 }
 
-func TestClaudePermissionMenu(t *testing.T) {
+func TestPermissionMenu(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		want bool
@@ -66,11 +67,21 @@ func TestClaudePermissionMenu(t *testing.T) {
 		{"claude_draft3_60x30", false},
 		{"claude_done_60x30", false},
 		{"claude_idle_60x30", false},
+		{"codex_approval_60x30", true},     // "Would you like to run the following command?"
+		{"codex_approval_45x30", true},     // the same, wrapped
+		{"codex_approval_nav_60x30", true}, // cursor moved to "2. Yes, and don't ask again"
+		{"codex_hooks_review_60x30", false},
+		{"codex_trust_60x30", false},
+		{"codex_update_60x30", false},
+		{"codex_working_draft3_60x30", false},
+		{"codex_draft3_60x30", false},
+		{"codex_done_60x30", false},
+		{"codex_idle_60x30", false},
 	} {
-		if _, got := claudePermissionMenu(fixtureScreen(t, tc.name).Lines()); got != tc.want {
+		if _, got := permissionMenu(fixtureScreen(t, tc.name).Lines()); got != tc.want {
 			t.Errorf("%s on the holder's screen: %v, want %v", tc.name, got, tc.want)
 		}
-		if _, got := claudePermissionMenu(fixtureText(t, tc.name)); got != tc.want {
+		if _, got := permissionMenu(fixtureText(t, tc.name)); got != tc.want {
 			t.Errorf("%s as the app renders it: %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -108,7 +119,7 @@ func TestClaudePermissionMenu(t *testing.T) {
 			"  ? for shortcuts",
 		},
 	} {
-		if _, ok := claudePermissionMenu(lines); ok {
+		if _, ok := permissionMenu(lines); ok {
 			t.Errorf("%s: read as a permission menu", name)
 		}
 	}
@@ -161,7 +172,7 @@ func otherFile(t *testing.T) []string {
 func TestMenuSignature(t *testing.T) {
 	sig := func(what string, lines []string) string {
 		t.Helper()
-		s, ok := claudePermissionMenu(lines)
+		s, ok := permissionMenu(lines)
 		if !ok {
 			t.Fatalf("%s: no menu", what)
 		}
@@ -190,10 +201,31 @@ func TestMenuSignature(t *testing.T) {
 			t.Errorf("%s: same signature as a.txt's dialog %q", what, got)
 		}
 	}
+
+	// Codex's dialog has no top rule: it starts under the transcript entry
+	// above it (`• Running …`), which is not part of it.
+	c := sig("codex", fixtureScreen(t, "codex_approval_60x30").Lines())
+	if !strings.HasPrefix(c, "Wouldyouliketorunthefollowingcommand?") || !strings.HasSuffix(c, "$printfhi>a.txt") {
+		t.Fatalf("codex signature %q: want the dialog from its title to the command", c)
+	}
+	for what, lines := range map[string][]string{
+		"as the app renders it":              fixtureText(t, "codex_approval_60x30"),
+		"cursor moved to 2.":                 fixtureScreen(t, "codex_approval_nav_60x30").Lines(),
+		"the transcript entry scrolled away": fixtureText(t, "codex_approval_60x30")[12:],
+	} {
+		if got := sig(what, lines); got != c {
+			t.Errorf("codex %s: signature %q, want %q", what, got, c)
+		}
+	}
+	if got := sig("another command", editRows(fixtureText(t, "codex_approval_60x30"), func(row string) string {
+		return strings.ReplaceAll(row, "printf hi", "printf ho")
+	})); got == c {
+		t.Errorf("another command: same signature as the first %q", got)
+	}
 }
 
 func TestScreenLinesMatchTheAppRendering(t *testing.T) {
-	for _, name := range []string{"claude_permission_60x30", "claude_plan_60x30"} {
+	for _, name := range []string{"claude_permission_60x30", "claude_plan_60x30", "codex_approval_60x30"} {
 		got := fixtureScreen(t, name).Lines()
 		want := fixtureText(t, name)
 		for i := range want {
@@ -372,5 +404,37 @@ func TestPromptWatchResizeAndOff(t *testing.T) {
 	time.Sleep(2 * promptEvalEvery)
 	w.set(1, false)
 	draw(scr, w, answered)
+	noReport(t, reports, settle)
+}
+
+// Codex blinks its terminal title while its approval is up, and an Esc
+// leaves the menu for the canceled request and an empty prompt (#320).
+func TestPromptWatchCodexMenuCanceled(t *testing.T) {
+	scr, w, reports := watchScreen(t)
+	w.set(1, true)
+	draw(scr, w, string(readFixture(t, "codex_approval_60x30.ansi")))
+	for _, title := range []string{"[ . ]", "[ ! ]", "[ . ]"} {
+		time.Sleep(promptEvalEvery)
+		draw(scr, w, "\x1b]0;"+title+" Action Required | Create a.txt | w\x07")
+	}
+	noReport(t, reports, settle)
+
+	draw(scr, w, textScreen([]string{
+		"• I’ll create a.txt with exactly hi (no trailing newline).",
+		"",
+		"✗ You canceled the request to run printf hi > a.txt",
+		"",
+		"• Failed (exit 1) printf hi > a.txt",
+		"  └ (no output)",
+		"",
+		"■ Conversation interrupted - use /feedback if something",
+		"  went wrong",
+		"",
+		"",
+		"› Ask Codex to do anything",
+		"",
+		"  ? for shortcuts",
+	}))
+	wantReport(t, reports, 1)
 	noReport(t, reports, settle)
 }

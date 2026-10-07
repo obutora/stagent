@@ -389,6 +389,43 @@ func TestCodexApprovalReturnsAtOnceAndClosesOnActivity(t *testing.T) {
 	await(t, events, "working", sessionState(wire.StateWorking))
 }
 
+// Codex blinks its terminal title while its prompt is up, so no activity
+// transition marks the answer, and an Esc ends the turn without Stop
+// (#320). The holder watches for Codex's menu as for claude's: its report
+// closes the approval and clears needs_approval.
+func TestCodexApprovalClosesWhenPromptLeavesScreen(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	holderConn, holderMsgs := e.client()
+	call(t, holderConn, wire.MethodHolderRegister, testSession(sid), nil)
+
+	_, reply := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessCodex, Event: "PermissionRequest", SessionID: sid,
+		Payload: json.RawMessage(`{"tool_name":"Bash","tool_input":{"command":"touch /tmp/approve"}}`)})
+	answered(t, reply, "codex PermissionRequest")
+	_, ap := decodeEvent[wire.Approval](t, await(t, events, "approval_requested", event(wire.EventApprovalRequested, nil)))
+	await(t, events, "needs_approval", sessionState(wire.StateNeedsApproval))
+	w := nextPromptWatch(t, holderMsgs, "watch for the codex prompt")
+	if !w.On || w.ID != sid || w.Gen <= 0 {
+		t.Fatalf("prompt_watch %+v", w)
+	}
+
+	holderConn.Notify(wire.MethodHolderPromptGone, wire.HolderPromptGoneParams{ID: sid, Gen: w.Gen})
+	m := await(t, events, "approval_resolved", event(wire.EventApprovalResolved, nil))
+	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd != (wire.ApprovalResolvedData{RequestID: ap.RequestID, By: "cancelled"}) {
+		t.Fatalf("approval_resolved %+v, want %s", rd, ap.RequestID)
+	}
+	m = await(t, events, "needs_approval cleared", sessionState(wire.StateIdle))
+	var s wire.Session
+	json.Unmarshal(m.Params, &s)
+	if s.StateSource != wire.SourceActivity {
+		t.Fatalf("session after the answer %+v", s)
+	}
+	if off := nextPromptWatch(t, holderMsgs, "watch off"); off != (wire.HolderPromptWatchParams{ID: sid, Gen: w.Gen}) {
+		t.Fatalf("prompt_watch after the approval closed %+v", off)
+	}
+}
+
 // A claude approval that output activity already closed releases its hook,
 // and only the last pending approval of a session clears needs_approval.
 func TestClaudeApprovalsCloseOneByOne(t *testing.T) {

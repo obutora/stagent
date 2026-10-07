@@ -6,6 +6,7 @@ package attachcli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -88,10 +89,17 @@ func Ls(args []string) int {
 
 // listSessions returns the daemon's sessions, newest activity first (never
 // nil). A daemon that is not running has none; it is not started for a
-// listing.
+// listing. A daemon address or run directory another user owns is an
+// error (*paths.OwnerError).
 func listSessions(l *paths.Layout) ([]wire.Session, error) {
 	conn, err := daemonclient.Dial(l, daemonDialTimeout)
 	if err != nil {
+		if errors.Is(err, paths.ErrForeignOwner) {
+			return nil, err
+		}
+		if oe := l.ForeignOwned(); oe != nil {
+			return nil, oe
+		}
 		return []wire.Session{}, nil
 	}
 	c := rpc.NewClient(conn, nil)

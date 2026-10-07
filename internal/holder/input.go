@@ -28,21 +28,45 @@ var submitGap = func() time.Duration {
 
 var errInputClosed = errors.New("session input closed")
 
+// heldSubmitPoll is how often the screen is read while a chat message's
+// Enter is held (inputQueue.held).
+const heldSubmitPoll = 50 * time.Millisecond
+
 // inputChunk is written to the PTY after waiting delay.
 type inputChunk struct {
 	data  []byte
 	delay time.Duration
+	// submit marks the Enter of a chat message (session.input with paste
+	// and submit): it is held while a permission menu is on the screen.
+	submit bool
 }
 
 // inputQueue serializes every writer of program input — the app, the local
 // terminal and the emulator's query replies — through one goroutine, so a
 // program that stops reading its input never blocks a caller that holds a
 // lock, and each request's chunks stay contiguous.
+//
+// A chat message's Enter that would land on a permission menu (one shown
+// after its text was pasted) would pick the menu's option under the cursor.
+// The queue holds it instead and writes it once the menu has been off the
+// screen for promptGoneAfter (as holder.prompt_gone: claude shows parallel
+// tool calls' prompts one after the other). Input that arrives meanwhile
+// keeps the hold while the menu is up (an answer to it) and drops the held
+// Enter once the menu is gone: the user went on editing, and the message
+// stays in the input box.
 type inputQueue struct {
 	w         io.Writer
 	ch        chan []inputChunk
 	quit      chan struct{}
 	closeOnce sync.Once
+	// menuUp reports whether a permission menu is on the screen (nil:
+	// never). Set before run.
+	menuUp func() bool
+
+	// The held Enter (run goroutine only): held, and when the menu was
+	// first seen gone (zero: it is up).
+	held      bool
+	goneSince time.Time
 }
 
 func newInputQueue(w io.Writer) *inputQueue {
@@ -50,11 +74,40 @@ func newInputQueue(w io.Writer) *inputQueue {
 }
 
 func (q *inputQueue) run() {
+	var poll *time.Ticker
+	defer func() {
+		if poll != nil {
+			poll.Stop()
+		}
+	}()
 	for {
+		var tick <-chan time.Time
+		switch {
+		case q.held && poll == nil:
+			poll = time.NewTicker(heldSubmitPoll)
+			fallthrough
+		case q.held:
+			tick = poll.C
+		case poll != nil:
+			poll.Stop()
+			poll = nil
+		}
 		select {
 		case <-q.quit:
 			return
+		case <-tick:
+			// Queued input first: once the menu is gone it drops the held
+			// Enter, which the tick would otherwise write.
+			if len(q.ch) > 0 {
+				continue
+			}
+			// Not the tick's time: a slow write may have delayed this
+			// tick, and the menu must be seen gone for promptGoneAfter.
+			q.checkHeld(time.Now())
 		case req := <-q.ch:
+			if q.held && typedRequest(req) && !q.menuShown() {
+				q.held = false // input after the menu went: drop the Enter
+			}
 			for _, c := range req {
 				if c.delay > 0 {
 					select {
@@ -63,11 +116,44 @@ func (q *inputQueue) run() {
 						return
 					}
 				}
+				if c.submit && q.menuShown() {
+					q.held, q.goneSince = true, time.Time{}
+					continue
+				}
 				// Errors mean the program is gone; the exit path follows.
 				writeAll(q.w, c.data)
 			}
 		}
 	}
+}
+
+// checkHeld writes the held Enter once the menu has been off the screen
+// for promptGoneAfter.
+func (q *inputQueue) checkHeld(now time.Time) {
+	switch {
+	case q.menuShown():
+		q.goneSince = time.Time{}
+	case q.goneSince.IsZero():
+		q.goneSince = now
+	case now.Sub(q.goneSince) >= promptGoneAfter:
+		q.held = false
+		writeAll(q.w, []byte{'\r'})
+	}
+}
+
+func (q *inputQueue) menuShown() bool {
+	return q.menuUp != nil && q.menuUp()
+}
+
+// typedRequest reports whether req holds anything typed, as opposed to
+// replies to the program's queries and focus or mouse reports.
+func typedRequest(req []inputChunk) bool {
+	for _, c := range req {
+		if isTyping(c.data) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeAll(w io.Writer, b []byte) {
@@ -114,6 +200,24 @@ const (
 	pasteEnd   = "\x1b[201~"
 )
 
+// stripPasteEnd removes every pasteEnd from s, including those that removing
+// one joins from the bytes around it (`\x1b[20\x1b[201~1~`), in one pass:
+// each byte goes on a stack, and a marker completed on top is popped.
+// Removing them one at a time would take quadratic time on nested markers.
+func stripPasteEnd(s string) string {
+	if !strings.Contains(s, pasteEnd) {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	for i := range len(s) {
+		b = append(b, s[i])
+		if len(b) >= len(pasteEnd) && string(b[len(b)-len(pasteEnd):]) == pasteEnd {
+			b = b[:len(b)-len(pasteEnd)]
+		}
+	}
+	return string(b)
+}
+
 // appCursorKeys are the SS3 forms of cursor keys a program that enabled
 // DECCKM expects.
 var appCursorKeys = map[string]string{
@@ -148,8 +252,9 @@ func encodeLoneEsc(b []byte) []byte {
 
 // composeInput turns session.input params into PTY writes: text raw, paste
 // (newlines as CR, like a terminal pastes; bracketed when the program
-// enabled it), keys, then CR after a short gap if submit. While the program
-// asks for win32-input-mode a lone Esc becomes that mode's key event.
+// enabled it), keys, then CR after a short gap if submit; with a paste that
+// CR is a chat message's (inputChunk.submit). While the program asks for
+// win32-input-mode a lone Esc becomes that mode's key event.
 func composeInput(p wire.InputParams, bracketed, appCursor, win32Input bool) ([]inputChunk, error) {
 	var b strings.Builder
 	b.WriteString(p.Text)
@@ -158,7 +263,7 @@ func composeInput(p wire.InputParams, bracketed, appCursor, win32Input bool) ([]
 		paste = strings.ReplaceAll(paste, "\n", "\r")
 		if bracketed {
 			// A pasted end marker would let the text escape the paste.
-			paste = strings.ReplaceAll(paste, pasteEnd, "")
+			paste = stripPasteEnd(paste)
 			b.WriteString(pasteStart + paste + pasteEnd)
 		} else {
 			b.WriteString(paste)
@@ -185,7 +290,7 @@ func composeInput(p wire.InputParams, bracketed, appCursor, win32Input bool) ([]
 		req = append(req, inputChunk{data: data})
 	}
 	if p.Submit {
-		c := inputChunk{data: []byte{'\r'}}
+		c := inputChunk{data: []byte{'\r'}, submit: p.Paste != ""}
 		if len(req) > 0 {
 			c.delay = submitGap
 		}

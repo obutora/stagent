@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/ptable"
@@ -320,7 +321,7 @@ func (f *follower) describe(s *ptable.Snapshot) []agent {
 		out = append(out, f.agent(s, c, cwds, cl))
 	}
 	if st := f.sticky; st != nil && find(out, st.key) == nil {
-		if p := s.Get(st.id.pid); p != nil && p.Start.UnixNano() == st.id.start && owns(p.PID) && harnessOf(p.Name, s.Argv(p.PID)) == st.harness {
+		if p := s.Get(st.id.pid); p != nil && p.Start.UnixNano() == st.id.start && owns(p.PID) && harness.Of(p.Name, s.Argv(p.PID)) == st.harness {
 			c := candidate{harness: st.harness, pane: st.pane, tty: st.tty}
 			c.pids = sameHarness(s, p.PID, st.harness, owns, nil)
 			out = append(out, f.agent(s, c, cwds, cl))
@@ -343,11 +344,11 @@ func (f *follower) roots(s *ptable.Snapshot, pid int) transcript.Roots {
 
 // sameHarness returns pid and the processes of the same harness below it
 // that run as stagent's user.
-func sameHarness(s *ptable.Snapshot, pid int, harness string, owns func(int) bool, acc []int) []int {
+func sameHarness(s *ptable.Snapshot, pid int, h string, owns func(int) bool, acc []int) []int {
 	acc = append(acc, pid)
 	for _, c := range s.Children(pid) {
-		if owns(c) && harnessOf(s.Get(c).Name, s.Argv(c)) == harness {
-			acc = sameHarness(s, c, harness, owns, acc)
+		if owns(c) && harness.Of(s.Get(c).Name, s.Argv(c)) == h {
+			acc = sameHarness(s, c, h, owns, acc)
 		}
 	}
 	return acc

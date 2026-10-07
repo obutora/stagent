@@ -21,7 +21,28 @@ Envelope (JSON-RPC 2.0 shape without the `jsonrpc` member):
 
 Error codes: `bad_request`, `unknown_method`, `not_found`, `unsupported`,
 `internal`, `unavailable`, `version_mismatch`, `session_ended`,
-`not_size_owner`, `not_configured`.
+`not_size_owner`, `not_configured`, `menu_open`, `foreign_owner`,
+`agent_refused`.
+
+`foreign_owner`: a request that needs the daemon or a session's holder
+(any daemon or session method, `session.spawn`) found the stagent location
+it would use — the run directory, a socket or a named pipe — owned by
+another user (see `hello`'s `blocked`). Nothing was sent there. The
+message names the location and its owner.
+
+`agent_refused`: the local connection came from a process that a coding
+agent (claude, codex, omp) started — stagent walks its parents — or from
+one it could not check: it exited first, or its parents were more than
+256 deep or kept changing (ADR 0004). A holder answers whatever such a
+connection asks first with it and closes the connection; the daemon
+refuses `config.set`, `presence.set`, `notify.test` and `daemon.shutdown`,
+and serves the rest (`hook.event`, `holder.*`, reads). The daemon decides
+when the connection is made. The message says why. Only Linux and macOS
+check, and only without `STAGENT_HOME`. `stagent bridge`, started by
+sshd, has no agent among its parents, so the app does not see this error
+unless the bridge itself runs under an agent; such a bridge answers
+`session.spawn` with it before starting a holder (which would refuse the
+bridge and keep running out of its reach).
 
 Requests on one connection are processed in order (input keystrokes keep
 their order). Notifications may arrive at any time between responses.
@@ -72,7 +93,7 @@ process that created its stdin pipe ends — Win32-OpenSSH's session process
 
 | method | params | result |
 |---|---|---|
-| `hello` | `{protocol, client}` | `{protocol, version, os, arch, home, capabilities[], host_id?}` |
+| `hello` | `{protocol, client}` | `{protocol, version, os, arch, home, capabilities[], host_id?, blocked?}` |
 | `ping` | – | `{}` |
 | `session.spawn` | `{command[]?, shell?, cwd?, cols, rows, env?{}}` | `{session}` — a detached session; app owns its size |
 
@@ -83,6 +104,20 @@ removing `notify` never change it; only `uninstall --level purge` removes
 it. The app maps it to the saved connection it last used for this host,
 to open notification links (`notify.click_base`). It is absent when it
 could not be read or created, and from stagent versions before 0.4.0.
+
+`blocked: {path, owner}` is present when another user owns this host's
+stagent location, so no daemon, kept shell or detached session can work
+here until that user or the host's administrator removes it: `path` is the
+run directory (`/tmp/stagent-<uid>` on Linux), the parent of a relocated
+data directory, or the daemon's socket or named pipe
+(`\\.\pipe\stagent-<SID>`); `owner` is that user's name, or their uid
+(Unix) / SID (Windows) when it does not resolve. Someone created it first,
+in a shared temporary directory or the shared pipe namespace; stagent
+checks the owner of every socket and pipe it connects to (on Windows a
+pipe owned by `BUILTIN\Administrators` counts as the user's own: an
+administrator's elevated daemon) and never connects to another user's.
+Plain SSH terminals are unaffected. Absent from stagent versions before
+0.7.0.
 
 `session.spawn` starts the command with the environment of the user's login
 shell (`$SHELL -l -i`, then `$SHELL -l`, captured once per bridge), not the
@@ -130,7 +165,7 @@ Windows bridge without it as needing an update.
 | `session.info` | `{id}` | `Session` |
 | `session.attach` | `{id, mode: "raw"\|"screen", fps?, since?}` | `{cols, rows, mode, offset, resumed}` then `output` / `resize` / `closed` notifications |
 | `session.detach` | `{id}` | `{}` |
-| `session.input` | `{id, text?, paste?, keys?[], submit?, local?}` | `{}` |
+| `session.input` | `{id, text?, paste?, keys?[], submit?, local?}` | `{}`; `menu_open` for a chat message (`paste` and `submit`) while a permission menu is on the screen |
 | `session.resize` | `{id, cols, rows, force?}` | `{}`; `not_size_owner` for a passthrough session without `force` |
 | `session.scrollback` | `{id, before?, max_bytes?}` | `{data, start, end, first}` |
 | `session.signal` | `{id, signal: "interrupt"\|"terminate"\|"kill"\|"hangup"}` | `{}` |
@@ -218,18 +253,37 @@ space up down right left home end pageup pagedown ctrl-c ctrl-d ctrl-z
 ctrl-l ctrl-r ctrl-u ctrl-o ctrl-t`.
 
 Input details: newlines inside `paste` are sent as `\r` (what a terminal
-sends for Enter) and any `ESC[201~` inside it is removed; `up down right left
-home end` use the SS3 form (`ESC O A` …) while the program has enabled
-application cursor keys (DECCKM); a `submit` that follows `text`/`paste` is
-written 30 ms later (250 ms on Windows) as a separate write so TUIs that
-debounce pasted input see Enter as a keystroke — on Windows a pseudo
-console hands programs key events rather than a bracketed paste, and Codex
-takes an Enter within about 120 ms of fast input as part of it. While the
+sends for Enter) and any `ESC[201~` inside it is removed, repeatedly until
+none is left (removing one may join the bytes around it into another);
+`up down right left home end` use the SS3 form (`ESC O A` …) while the
+program has enabled application cursor keys (DECCKM); a `submit` that
+follows `text`/`paste` is written 30 ms later (250 ms on Windows) as a
+separate write so TUIs that debounce pasted input see Enter as a keystroke
+— on Windows a pseudo console hands programs key events rather than a
+bracketed paste, and Codex takes an Enter within about 120 ms of fast
+input as part of it. While the
 program has enabled win32-input-mode (`CSI ? 9001 h`, which conhost behind
 a Windows pseudo console asks for), an Esc that starts no sequence (`esc`,
 or a lone `ESC` in `text`) is sent as that mode's Esc key press and release
 (`CSI 27;1;27;1;0;1 _`, `CSI 27;1;27;0;0;1 _`): Claude Code on Windows
 does not take a lone `ESC` byte written there as the Esc key.
+
+A chat message — `session.input` with both `paste` and `submit` — never
+lands on an approval menu: while claude's permission or plan approval menu
+or Codex's approval menu (`1. Yes…`) is on the holder's screen, nothing of
+it is written and the request fails with `menu_open` (the app's copy of the
+screen lags behind the host's). The holder looks again right before the
+`\r`: if a menu showed up after the paste was written, the `\r` is held
+and written once the menu has been off the screen for 400 ms (as
+`holder.prompt_gone`; claude shows parallel tool calls' prompts one after
+the other), so it cannot pick the menu's option. Input typed in the app or
+on the host while the menu is up (its answer) keeps the hold; input typed
+after the menu went drops the held `\r`, leaving the message in the
+program's input box (terminal query replies and focus or mouse reports do
+not count). The request has already succeeded in that case — the paste was
+written; sending it again would type the message twice. `text`/`keys`
+input (answers to menus, editing keys) is never refused or held. Protocol
+stays 1: older holders write chat messages regardless.
 
 `session.scrollback`: raw PTY bytes `[start, end)` of the session's output
 stream, newest first page when `before` is 0; `first` is the oldest retained
@@ -460,17 +514,23 @@ five checks. The agent's next hook sets the harness again.
 created_at`. Only programs running in a stagent session raise approvals,
 from their PermissionRequest hook; elsewhere (an IDE, `claude -p`, the
 SDK) the hook returns at once and nothing is registered or pushed. claude's
-hook is held, with no time limit, while its prompt is open. claude does not
-stop the hook when the prompt is answered (it runs until the approved tool
-finished), so the session's holder watches its screen (local IPC only):
-while a claude approval of the session holds its hook, the daemon sends
-the holder `holder.prompt_watch {id, gen, on: true}` (a new `gen` with
-every approval; `on: false` once none holds its hook, again to a holder
-that re-registers). The holder takes the claude permission menu — numbered
-options starting with `1. Yes`, one under the `❯` cursor, a key hint below
-them, plan approval included — that is on the screen during the watch as
-the watch's menu, identified by the dialog's text above the options (from
-its top rule: title, command or file with its preview, question; the
+hook is held, with no time limit, while its prompt is open; Codex shows its
+prompt only after the hook returned, so its hook returns at once. Neither
+tells when the prompt is answered: claude does not stop the hook (it runs
+until the approved tool finished), and an Esc on Codex's prompt ends the
+turn without Stop while Codex blinks its terminal title for as long as the
+prompt is up, so no output activity marks the answer. The session's holder
+therefore watches its screen (local IPC only): while a claude or Codex
+approval of the session is pending, the daemon sends the holder
+`holder.prompt_watch {id, gen, on: true}` (a new `gen` with every approval;
+`on: false` once none is pending, again to a holder that re-registers).
+The holder takes the permission menu — numbered options starting with `1.
+Yes`, one under the cursor (claude's `❯`, Codex's `›`), a key hint below
+them, claude's plan approval included — that is on the screen during the
+watch as the watch's menu, identified by the dialog's text above the
+options (from its top: claude's top rule, or for Codex the nearest line
+above that starts in the first column, i.e. the transcript entry over the
+dialog; that is the title, command or file with its preview, question; the
 cursor, the options and the transcript above do not count). Once no menu
 of that text has been on the screen for 400 ms — none, or another
 prompt's — it sends `holder.prompt_gone {id, gen}`, once per `gen`.
@@ -479,19 +539,19 @@ whose menu is still up when the next one starts keeps being watched (the
 next one does not take that menu) and is reported when it goes. The
 session's approvals registered up to that watch then close and their hooks
 return; one registered later (the next prompt) stays. A holder that never
-saw the menu (a resize forgets it until it is seen again at the new size)
-and one started before 0.4.0 (it ignores the notification) report nothing,
-and a watch that saw no menu when the next one started is left to the
-next one's report: the approval then closes with a later watch's report,
-when claude stops the hook (the tool finished, or claude was interrupted)
-or at Stop. Two prompts in a row for the very same command or file text
-look alike: the first closes when the second is answered, the second when
-claude stops its hook or at Stop. Codex shows its prompt only after the
-hook returned, so its hook returns at once and the approval closes on the
-next output activity (1 s after the hook or later) or at Stop. Any
-approval also closes at Stop, UserPromptSubmit and when the agent leaves
-the session. When a session's last approval closes, its hook-derived
-`needs_approval` goes and the terminal/activity state shows again.
+saw the menu (a resize forgets it until it is seen again at the new size),
+one started before 0.4.0 (it ignores the notification) and, for Codex, one
+of 0.5.0 or earlier (it knows only claude's menu) report nothing, and a
+watch that saw no menu when the next one started is left to the next one's
+report: the approval then closes with a later watch's report, when claude
+stops the hook (the tool finished, or claude was interrupted), for Codex on
+the next output activity (1 s after the hook or later), or at Stop. Two
+prompts in a row for the very same command or file text look alike: the
+first closes when the second is answered, the second when claude stops its
+hook or at Stop. Any approval also closes at Stop, UserPromptSubmit and
+when the agent leaves the session. When a session's last approval closes,
+its hook-derived `needs_approval` goes and the terminal/activity state
+shows again.
 
 `UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp), cwd, reason
 (old_terminal|bypassed|ide|ssh|no_terminal), first_seen_at,
@@ -962,7 +1022,11 @@ placing a new one):
   otherwise or when the service manager refuses. The holders keep their
   sessions and register them with the new daemon. `replaced_daemon` is the
   version replaced, once the new daemon answers; a failure is a note, and
-  `doctor` keeps reporting the mismatch.
+  `doctor` keeps reporting the mismatch. Run by a coding agent, `install`
+  cannot stop the daemon (`daemon.shutdown` fails with `agent_refused`;
+  the daemon is not killed instead): the note says so, and a person runs
+  it again in a terminal. `uninstall --level stop` and `integrate
+  --service` fail the same way.
 
 Sockets live in `run_dir`. On Linux (without `STAGENT_HOME`) that is
 `<TMPDIR or /tmp>/stagent-<uid>`, not `$XDG_RUNTIME_DIR`, which logind
@@ -970,6 +1034,8 @@ removes at the user's last logout and with it every detached session's
 socket. It is created with mode 0700; stagent refuses to use it (the
 command fails with an error naming it) when it is a symlink or not a
 directory, belongs to another user or is accessible by group or others.
+One that belongs to another user is reported as `blocked` by `hello` and
+`doctor`, and requests that need it fail with `foreign_owner`.
 Holders and the daemon touch their sockets and `run_dir` every hour so tmp
 cleaners keep them. `install` stops a daemon of an earlier version still
 listening at `$XDG_RUNTIME_DIR/stagent/stagent.sock` (best effort, reported
@@ -987,6 +1053,7 @@ in tmp when socket paths would be too long there.
   "layout": {"root": "...", "bin": "...", "run_dir": "...", "data_dir": "...", "data_on_network_fs": false},
   "daemon": {"running": true, "pid": 123, "version": "0.1.0", "sessions": 2,
              "bootstrap_swapped": null, "bootstrap_error": null},
+  "blocked": null,
   "harnesses": [
     {"id": "claude", "found": true, "path": "/usr/bin/claude", "version": "2.1.284",
      "config_path": "/home/u/.claude/settings.json", "integrated": true,
@@ -1061,6 +1128,9 @@ treats it as a known limitation.
 
 `host_id` is the host's id (see `hello`), absent until stagent created it;
 `doctor` only reads it.
+
+`blocked` is `hello`'s `blocked` (`{path, owner}`, or `null`); when set,
+`problems` names it too.
 
 `unwrapped` is the running daemon's list of agents started without a
 stagent session (`UnwrappedLaunch`, the same as `watch`'s); `[]` when the

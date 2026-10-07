@@ -4,22 +4,35 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
+// wslDistro makes te a WSL distribution with cmd.exe on its PATH.
+func wslDistro(te *testEnv) {
+	te.kernelRelease = func() string { return "6.6.87.2-microsoft-standard-WSL2\n" }
+	te.vars["WSL_DISTRO_NAME"] = "Ubuntu"
+	te.bins["cmd.exe"] = "/mnt/c/WINDOWS/system32/cmd.exe"
+}
+
 // wslHost makes te a WSL distribution whose Windows profile is a temporary
 // directory (the drive mount); it returns the .wslconfig path. cmd.exe
 // warns about the UNC working directory, as it does from a Linux path.
+//
+// stagent takes what wslpath prints for a Linux path ("/mnt/c/Users/…")
+// and rejects anything else; a Windows test host has no such path to the
+// temporary directory, so the tests that use the file skip there.
 func wslHost(t *testing.T, te *testEnv) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("emulating WSL's .wslconfig needs a Linux path to the profile (wslpath -u), which a Windows host cannot give")
+	}
 	profile := filepath.Join(t.TempDir(), "Users", "obuto")
 	if err := os.MkdirAll(profile, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	te.kernelRelease = func() string { return "6.6.87.2-microsoft-standard-WSL2\n" }
-	te.vars["WSL_DISTRO_NAME"] = "Ubuntu"
-	te.bins["cmd.exe"] = "/mnt/c/WINDOWS/system32/cmd.exe"
+	wslDistro(te)
 	te.run.respond = func(name string, args []string) (string, error) {
 		switch {
 		case name == "/mnt/c/WINDOWS/system32/cmd.exe":
@@ -255,7 +268,7 @@ func TestDoctorWSL(t *testing.T) {
 // the change is a skip.
 func TestWSLKeepRunningUnreachable(t *testing.T) {
 	te := newTestEnv(t, "linux")
-	wslHost(t, te)
+	wslDistro(te)
 	te.run.respond = func(string, []string) (string, error) {
 		return "", errors.New("exec format error")
 	}
@@ -285,7 +298,7 @@ func TestWSLKeepRunningUnreachable(t *testing.T) {
 // when it fails; off WSL it refuses.
 func TestWSLShutdown(t *testing.T) {
 	te := newTestEnv(t, "linux")
-	wslHost(t, te)
+	wslDistro(te)
 	te.bins["wsl.exe"] = "/mnt/c/WINDOWS/system32/wsl.exe"
 	te.run.respond = func(name string, args []string) (string, error) {
 		return "", nil

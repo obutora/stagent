@@ -101,6 +101,8 @@ type env struct {
 	daemonAt func(addr string) daemonAPI
 	// spawnDaemon starts this binary's daemon detached (no login service).
 	spawnDaemon func() error
+	// blocked reports a stagent location another user owns (ipc.Blocked).
+	blocked func() *paths.OwnerError
 
 	lookPath func(string) (string, error)
 	getenv   func(string) string
@@ -142,6 +144,7 @@ func newEnv() (*env, error) {
 		daemon:           ipcDaemon{l.DaemonAddr},
 		daemonAt:         func(addr string) daemonAPI { return ipcDaemon{addr} },
 		spawnDaemon:      func() error { return daemonclient.StartDaemon(l) },
+		blocked:          func() *paths.OwnerError { return ipc.Blocked(l) },
 		lookPath:         exec.LookPath,
 		getenv:           os.Getenv,
 		now:              time.Now,

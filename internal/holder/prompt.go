@@ -10,12 +10,13 @@ import (
 	"unicode/utf8"
 )
 
-// Prompt watch (holder.prompt_watch): while the daemon has a claude
-// approval of the session pending, the holder looks for claude's
-// permission menu on the screen and reports once the menu it saw is gone
-// (holder.prompt_gone): the prompt was answered, wherever that happened.
-// claude itself does not tell — its hook lives on until the approved tool
-// finished.
+// Prompt watch (holder.prompt_watch): while the daemon has a claude or
+// Codex approval of the session pending, the holder looks for the
+// program's permission menu on the screen and reports once the menu it saw
+// is gone (holder.prompt_gone): the prompt was answered, wherever that
+// happened. The programs themselves do not tell — claude's hook lives on
+// until the approved tool finished, and Codex's returned before its prompt
+// showed.
 //
 // A menu is told apart from the next one by its signature (menuSignature):
 // claude shows parallel tool calls' prompts one after the other, switching
@@ -164,7 +165,7 @@ func (w *promptWatch) armLocked(at time.Time) {
 
 func (w *promptWatch) evalLocked(now time.Time) {
 	w.lastEval = now
-	sig, up := claudePermissionMenu(w.lines())
+	sig, up := permissionMenu(w.lines())
 	kept := w.tracks[:0] // the tracks still to be reported, in order
 	for _, t := range w.tracks {
 		switch {
@@ -204,16 +205,29 @@ func awaited(tracks []*promptTrack, sig string) bool {
 	return false
 }
 
+// menuShown reports whether claude's or Codex's permission menu is on the
+// screen.
+func (h *Holder) menuShown() bool {
+	_, ok := permissionMenu(h.scr.Lines())
+	return ok
+}
+
 // ---------------------------------------------------------------------------
 // Menu recognition, after the app's screen reader
 // (lib/services/terminal_chat/agent_activity.dart): numbered options with
-// one under claude's ❯ cursor and a key hint below them. Of those menus,
-// claude's PermissionRequest dialogs are the ones whose first option is
-// "1. Yes…": a permission prompt ("Do you want to …?" → "1. Yes") and
-// plan approval ("Would you like to proceed?" → "1. Yes, and …").
+// one under the cursor (claude's ❯, Codex's ›) and a key hint below them.
+// Of those menus, the permission dialogs are the ones whose first option is
+// "1. Yes…": claude's permission prompt ("Do you want to …?" → "1. Yes")
+// and plan approval ("Would you like to proceed?" → "1. Yes, and …"),
+// Codex's approval ("Would you like to run the following command?" → "1.
+// Yes, proceed (y)").
 
-// promptOption: `❯ 1. Yes` / `  2. No`.
-var promptOption = regexp.MustCompile(`^(\s*)(?:(❯)\s*)?(\d{1,2})\.\s+(\S.*)$`)
+// promptOption: `❯ 1. Yes` (claude), `› 1. Yes, proceed (y)` (Codex),
+// `  2. No`.
+var promptOption = regexp.MustCompile(`^(\s*)(?:([❯›])\s*)?(\d{1,2})\.\s+(\S.*)$`)
+
+// codexCursor is the cursor of Codex's menus.
+const codexCursor = "›"
 
 // promptHint: key hints every captured menu shows under its options (`Esc
 // to cancel · Tab to amend`, `ctrl+g to edit in Vim` under plan approval).
@@ -231,16 +245,17 @@ const promptRuleChars = "─━═╌╍┄┅┈┉├┤┌┐└┘╭╮╰�
 const promptEdgeChars = "─━═▔"
 
 type promptItem struct {
-	indent      int
-	highlighted bool
-	number      int
-	label       string
-	start, end  int // screen lines of the option (end: its last wrapped line)
+	indent     int
+	cursor     string // "❯" or "›" on the highlighted option, else ""
+	number     int
+	label      string
+	start, end int // screen lines of the option (end: its last wrapped line)
 }
 
-// claudePermissionMenu reports whether lines (a screen, top to bottom) show
-// claude's permission or plan approval menu, and its signature.
-func claudePermissionMenu(lines []string) (sig string, ok bool) {
+// permissionMenu reports whether lines (a screen, top to bottom) show
+// claude's permission or plan approval menu or Codex's approval menu, and
+// its signature.
+func permissionMenu(lines []string) (sig string, ok bool) {
 	var groups [][]promptItem
 	cur := -1 // index in groups of the menu being read
 	// Blank lines and rules since the last line of the current menu; one is
@@ -282,9 +297,11 @@ func claudePermissionMenu(lines []string) (sig string, ok bool) {
 			continue
 		}
 		highlighted := 0
+		cursor := ""
 		for _, it := range group {
-			if it.highlighted {
+			if it.cursor != "" {
 				highlighted++
+				cursor = it.cursor
 			}
 		}
 		if highlighted != 1 {
@@ -301,29 +318,35 @@ func claudePermissionMenu(lines []string) (sig string, ok bool) {
 		if group[0].number != 1 || !strings.HasPrefix(group[0].label, "Yes") {
 			return "", false
 		}
-		return menuSignature(lines, group[0].start), true
+		return menuSignature(lines, group[0].start, cursor == codexCursor), true
 	}
 	return "", false
 }
 
 // menuSignature identifies the dialog whose first option is on line first:
-// the text above the options, from the dialog's top edge — the nearest rule
-// above them that starts in the first column (claude draws its dialogs
-// under a full-width `───` or, for plan approval, `▔▔▔`; rules inside the
-// dialog are indented or dashed) — or from the top of the screen when that
-// edge scrolled away. That is the dialog's title, the command or file it
-// asks about with its preview, and the question: it differs between the
-// prompts of two tool calls, and stays the same while the dialog is up,
-// whatever happens below it (the ❯ cursor moving between the options, Tab
-// to amend) or above it (the blinking ● of the tool line, the transcript).
-// Blanks, rule characters and the ●/⏺ marks are left out, so the same
-// dialog wrapped at another width has the same signature. Two prompts for
-// the very same tool call text share a signature: the second is not told
-// apart from the first.
-func menuSignature(lines []string, first int) string {
+// the text above the options, from the dialog's top edge, or from the top
+// of the screen when that edge scrolled away. claude draws its dialogs
+// under a full-width `───` or, for plan approval, `▔▔▔` (rules inside the
+// dialog are indented or dashed): the edge is the nearest rule above the
+// options that starts in the first column. Codex indents every line of its
+// dialog: the edge is the nearest line above the options that starts in
+// the first column (the transcript entry above, e.g. `• Running …`). That
+// is the dialog's title, the command or file it asks about with its
+// preview, and the question: it differs between the prompts of two tool
+// calls, and stays the same while the dialog is up, whatever happens below
+// it (the cursor moving between the options, Tab to amend) or above it (the
+// blinking ● of the tool line, the transcript). Blanks, rule characters
+// and the ●/⏺ marks are left out, so the same dialog wrapped at another
+// width has the same signature. Two prompts for the very same tool call
+// text share a signature: the second is not told apart from the first.
+func menuSignature(lines []string, first int, codex bool) string {
+	edge := isDialogEdge
+	if codex {
+		edge = startsInFirstColumn
+	}
 	top := 0
 	for j := first - 1; j >= 0; j-- {
-		if isDialogEdge(lines[j]) {
+		if edge(lines[j]) {
 			top = j + 1
 			break
 		}
@@ -353,6 +376,11 @@ func isDialogEdge(line string) bool {
 	return n >= 3
 }
 
+// startsInFirstColumn reports whether line has text in its first column.
+func startsInFirstColumn(line string) bool {
+	return line != "" && indentOf(line) == 0
+}
+
 func parsePromptItem(text string, line int) (promptItem, bool) {
 	m := promptOption.FindStringSubmatch(text)
 	if m == nil {
@@ -360,7 +388,7 @@ func parsePromptItem(text string, line int) (promptItem, bool) {
 	}
 	n, _ := strconv.Atoi(m[3])
 	return promptItem{
-		indent: len(m[1]), highlighted: m[2] != "", number: n, label: m[4],
+		indent: len(m[1]), cursor: m[2], number: n, label: m[4],
 		start: line, end: line,
 	}, true
 }

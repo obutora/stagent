@@ -83,6 +83,12 @@ type attached struct {
 func attachTerminal(l *paths.Layout, id string, key byte) (int, error) {
 	conn, err := ipc.Dial(l.HolderAddr(id), holderDialTimeout)
 	if err != nil {
+		if errors.Is(err, paths.ErrForeignOwner) {
+			return exitFailure, err
+		}
+		if oe := l.ForeignOwned(); oe != nil {
+			return exitFailure, oe
+		}
 		return exitFailure, sessionGone(l, id)
 	}
 	a := &attached{id: id, fd: int(os.Stdin.Fd()), closed: make(chan int, 1)}
@@ -105,9 +111,14 @@ func attachTerminal(l *paths.Layout, id string, key byte) (int, error) {
 	defer a.restore()
 
 	// The size first, so the snapshot is drawn at this terminal's size.
-	// A failure (the session ended meanwhile) shows in the attach reply.
+	// A failure (the session ended meanwhile) shows in the attach reply,
+	// except a refusal: the holder closes the connection after it.
 	if cols, rows, ok := localSize(); ok {
-		a.call(wire.MethodSessionResize, wire.ResizeParams{ID: id, Cols: cols, Rows: rows, Force: true}, nil)
+		err := a.call(wire.MethodSessionResize, wire.ResizeParams{ID: id, Cols: cols, Rows: rows, Force: true}, nil)
+		if we, ok := errors.AsType[*wire.Error](err); ok && we.Code == wire.ErrAgentRefused {
+			a.restore()
+			return exitFailure, errors.New(we.Message)
+		}
 	}
 	var res wire.AttachResult
 	if err := a.call(wire.MethodSessionAttach, wire.AttachParams{ID: id, Mode: wire.AttachRaw}, &res); err != nil {

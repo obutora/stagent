@@ -1,0 +1,30 @@
+
+
+[0;1;2m› [0;1mCreate a.txt containing hi with a shell[0m
+[0m  command (printf hi > a.txt).
+
+
+[0;2m• [0mI’ll create [0;38;2;166;227;161ma.txt[0m with exactly [0;38;2;166;227;161mhi[0m (no
+[0m  trailing newline).
+[0m 
+[0;1;38;2;138;138;138m•[0;1m Running [0;1;38;2;137;180;250mprintf[0;1;38;2;205;214;244m hi [0;1;38;2;148;226;213m>[0;1;38;2;205;214;244m a.txt[0m
+[0;1m [0m
+[0;1m [0m
+[0;1m  Would you like to run the following[0m
+[0;1m  command?[0m
+[0;1m [0m
+[0;1m  Environment: local[0m
+[0;1m [0m
+[0;1m  Reason: [0;1;3mAllow creating a.txt in the[0m
+[0;1m  [0;1;3mworkspace with the requested contents?[0m
+[0;1m [0m
+[0;1m  $ [0;1;38;2;137;180;250mprintf[0;1;38;2;205;214;244m hi [0;1;38;2;148;226;213m>[0;1;38;2;205;214;244m a.txt[0m
+[0;1m [0m
+[0;1m [0m
+[0;1;7m› 1. Yes, proceed (y)                        [0m
+[0;1m  2. Yes, and don't ask again for commands[0m
+[0;1m     that start with `printf hi > a.txt` (p)[0m
+[0;1m  3. No, and tell Codex what to do[0m
+[0;1m     differently (esc)[0m
+[0;1m [0m
+[0;1m  [0;1;2mPress [0;1menter[0;1;2m to confirm or [0;1mesc[0;1;2m to cancel    [0m

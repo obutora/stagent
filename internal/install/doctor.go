@@ -27,9 +27,12 @@ type DoctorReport struct {
 	Home     string `json:"home"`
 	// HostID is the host's id (hostid); absent until stagent created it
 	// (install, the bridge's hello or the daemon). doctor never creates it.
-	HostID       string            `json:"host_id,omitempty"`
-	Layout       LayoutInfo        `json:"layout"`
-	Daemon       DaemonReport      `json:"daemon"`
+	HostID string       `json:"host_id,omitempty"`
+	Layout LayoutInfo   `json:"layout"`
+	Daemon DaemonReport `json:"daemon"`
+	// Blocked names the stagent location another user owns (ipc.Blocked),
+	// so no daemon or kept shell can work; null when nothing is blocked.
+	Blocked      *wire.Blocked     `json:"blocked"`
 	Harnesses    []HarnessReport   `json:"harnesses"`
 	ShellWrapper ShellReport       `json:"shell_wrapper"`
 	Service      ServiceReport     `json:"service"`
@@ -273,6 +276,10 @@ func (e *env) doctor() *DoctorReport {
 		r.Problems = append(r.Problems, "manifest unreadable: "+e.mErr.Error())
 	case !e.haveM:
 		r.Problems = append(r.Problems, "not installed: no manifest at "+e.l.Manifest+" (run `stagent install`)")
+	}
+	if oe := e.blocked(); oe != nil {
+		r.Blocked = &wire.Blocked{Path: oe.Path, Owner: oe.Owner}
+		r.Problems = append(r.Problems, "another user ("+oe.Owner+") owns "+oe.Path+": no daemon or kept shell can work until they or the host's administrator remove it")
 	}
 	if st, err := e.daemon.Status(); err == nil {
 		r.Daemon = DaemonReport{Running: true, PID: st.PID, Version: st.Version, Sessions: st.Sessions, BootstrapSwapped: st.BootstrapSwapped}

@@ -1,0 +1,31 @@
+|• finished
+|
+|  10:57 AM
+|
+|
+|› Create a.txt containing hi with a shell command (printf
+|  hi > a.txt).
+|
+|
+|• I’ll create a.txt with exactly hi (no trailing newline).
+| 
+|• Running printf hi > a.txt
+| 
+| 
+|  Would you like to run the following command?
+| 
+|  Environment: local
+| 
+|  Reason: Do you want to allow creating a.txt in the
+|  workspace with the requested contents?
+| 
+|  $ printf hi > a.txt
+| 
+| 
+|› 1. Yes, proceed (y)                                       
+|  2. Yes, and don't ask again for commands that start with
+|     `printf hi > a.txt` (p)
+|  3. No, and tell Codex what to do differently (esc)
+| 
+|  Press enter to confirm or esc to cancel                   
+cursor=59,1 alt=false appCursor=false bracketed=true

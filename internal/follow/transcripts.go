@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/ptable"
 	"github.com/obutora/stagent/internal/transcript"
 	"github.com/obutora/stagent/internal/wire"
@@ -111,29 +112,68 @@ func (t *transcripts) resolve(a agentFacts) (path, cwd string) {
 }
 
 // matcher recognizes the transcripts of the agent's harness among open
-// files; nil for harnesses without file-based resolution.
-func (t *transcripts) matcher(a agentFacts) func(string) bool {
+// files and returns them spelled under the agent's roots, as the index
+// lists them: open files' paths have their symlinks resolved (Linux's
+// /proc/<pid>/fd), the roots may not, and claims compare the two. nil for
+// harnesses without file-based resolution.
+func (t *transcripts) matcher(a agentFacts) func(string) (string, bool) {
 	switch a.harness {
 	case wire.HarnessCodex:
-		sessions := realDir(filepath.Join(a.roots.Codex, "sessions"))
-		return func(p string) bool {
+		sessions := newSpelledDir(filepath.Join(a.roots.Codex, "sessions"))
+		return func(p string) (string, bool) {
 			name := filepath.Base(p)
-			return within(sessions, p) && strings.HasPrefix(name, "rollout-") && strings.HasSuffix(name, ".jsonl")
+			if !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, ".jsonl") {
+				return "", false
+			}
+			return sessions.below(p, -1)
 		}
 	case wire.HarnessOmp:
-		root := realDir(a.roots.Omp)
-		dir := ""
+		root := newSpelledDir(a.roots.Omp)
+		var dir *spelledDir
 		if o, _ := ompArgsOf(a); o.sessionDir != "" {
-			dir = realDir(absFrom(a.cwd, o.sessionDir))
+			d := newSpelledDir(absFrom(a.cwd, o.sessionDir))
+			dir = &d
 		}
-		return func(p string) bool {
+		return func(p string) (string, bool) {
 			// <root>/<project>/<session>.jsonl (sub-agent sessions are a
 			// level deeper), or <--session-dir>/<session>.jsonl.
-			return strings.HasSuffix(p, ".jsonl") &&
-				(samePath(filepath.Dir(filepath.Dir(p)), root) || dir != "" && samePath(filepath.Dir(p), dir))
+			if !strings.HasSuffix(p, ".jsonl") {
+				return "", false
+			}
+			if q, ok := root.below(p, 2); ok {
+				return q, true
+			}
+			if dir != nil {
+				return dir.below(p, 1)
+			}
+			return "", false
 		}
 	}
 	return nil
+}
+
+// spelledDir is a directory as configured and with its symlinks resolved.
+type spelledDir struct{ dir, real string }
+
+func newSpelledDir(dir string) spelledDir {
+	return spelledDir{filepath.Clean(dir), realDir(dir)}
+}
+
+// below returns p, a path below the directory in either spelling and depth
+// path elements deep (any depth when negative), spelled below its
+// configured form.
+func (d spelledDir) below(p string, depth int) (string, bool) {
+	for _, base := range [...]string{d.dir, d.real} {
+		rel, err := filepath.Rel(base, p)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			continue
+		}
+		if depth >= 0 && strings.Count(rel, string(filepath.Separator))+1 != depth {
+			continue
+		}
+		return filepath.Join(d.dir, rel), true
+	}
+	return "", false
 }
 
 // claudeSession is <config dir>/sessions/<pid>.json, which Claude Code
@@ -197,13 +237,14 @@ func validID(id string) bool {
 }
 
 // fromOpenFiles picks the newest matching file the agent's processes have
-// open.
-func fromOpenFiles(a agentFacts, match func(string) bool) string {
+// open, spelled as match returns it.
+func fromOpenFiles(a agentFacts, match func(string) (string, bool)) string {
 	var best string
 	var bestTime time.Time
 	for _, pid := range a.pids {
 		for _, p := range a.openFiles(pid) {
-			if !match(p) {
+			p, ok := match(p)
+			if !ok {
 				continue
 			}
 			if st, err := os.Stat(p); err == nil && (best == "" || st.ModTime().After(bestTime)) {
@@ -529,11 +570,11 @@ func (c *claims) collect() map[string][]int {
 	held := map[string][]int{}
 	for _, pid := range s.PIDs() {
 		p := s.Get(pid)
-		n := baseName(p.Name)
-		if harnessName(n) == "" && !interpreters[n] {
+		n := ptable.BaseName(p.Name)
+		if harness.Name(n) == "" && !harness.Interpreter(n) {
 			continue
 		}
-		h := harnessOf(p.Name, s.Argv(pid))
+		h := harness.Of(p.Name, s.Argv(pid))
 		if h != wire.HarnessCodex && h != wire.HarnessOmp || !c.owns(pid) {
 			continue
 		}
@@ -578,12 +619,6 @@ func realDir(dir string) string {
 		return r
 	}
 	return filepath.Clean(dir)
-}
-
-// within reports whether p lies below dir.
-func within(dir, p string) bool {
-	rel, err := filepath.Rel(dir, p)
-	return err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
 }
 
 // samePath compares cleaned paths, ignoring case on Windows where the

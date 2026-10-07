@@ -32,10 +32,17 @@ func Dial(l *paths.Layout, timeout time.Duration) (net.Conn, error) {
 }
 
 // DialOrStart connects to the daemon, starting it detached if nothing
-// answers, and waits up to wait for it to come up.
+// answers, and waits up to wait for it to come up. An address another user
+// owns (*paths.OwnerError) is reported as is: no daemon of ours could serve
+// it. The same holds for a run directory of theirs, which StartDaemon's
+// EnsureDirs reports before anything is started.
 func DialOrStart(l *paths.Layout, wait time.Duration) (net.Conn, error) {
-	if c, err := Dial(l, 300*time.Millisecond); err == nil {
+	c, err := Dial(l, 300*time.Millisecond)
+	if err == nil {
 		return c, nil
+	}
+	if errors.Is(err, paths.ErrForeignOwner) {
+		return nil, err
 	}
 	if err := StartDaemon(l); err != nil {
 		return nil, err
@@ -45,6 +52,9 @@ func DialOrStart(l *paths.Layout, wait time.Duration) (net.Conn, error) {
 		c, err := Dial(l, 300*time.Millisecond)
 		if err == nil {
 			return c, nil
+		}
+		if errors.Is(err, paths.ErrForeignOwner) {
+			return nil, err
 		}
 		if time.Now().After(deadline) {
 			return nil, errors.Join(errors.New("daemon did not come up"), err)
