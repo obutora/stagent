@@ -36,9 +36,21 @@ const heldSubmitPoll = 50 * time.Millisecond
 type inputChunk struct {
 	data  []byte
 	delay time.Duration
-	// submit marks the Enter of a chat message (session.input with paste
-	// and submit): it is held while a permission menu is on the screen.
+	// message marks the text of a chat message (session.input with paste
+	// and submit): if a menu is on the screen when its turn comes, nothing
+	// of its request is written.
+	message bool
+	// submit marks the Enter of a chat message: it is held while a menu is
+	// on the screen.
 	submit bool
+}
+
+// inputRequest is one writer's input; its chunks are written back to back.
+type inputRequest struct {
+	chunks []inputChunk
+	// sent, if not nil, gets whether the request was written (false: a
+	// chat message dropped for a menu). Buffered, so run never waits.
+	sent chan<- bool
 }
 
 // inputQueue serializes every writer of program input — the app, the local
@@ -46,21 +58,24 @@ type inputChunk struct {
 // program that stops reading its input never blocks a caller that holds a
 // lock, and each request's chunks stay contiguous.
 //
-// A chat message's Enter that would land on a permission menu (one shown
-// after its text was pasted) would pick the menu's option under the cursor.
-// The queue holds it instead and writes it once the menu has been off the
-// screen for promptGoneAfter (as holder.prompt_gone: claude shows parallel
-// tool calls' prompts one after the other). Input that arrives meanwhile
-// keeps the hold while the menu is up (an answer to it) and drops the held
-// Enter once the menu is gone: the user went on editing, and the message
-// stays in the input box.
+// A chat message must not land on a menu (Holder.menuShown): the menu's
+// keys would take its text, its Enter pick the option under the cursor.
+// session.input refuses one while a menu is up, and the queue looks again
+// when the message's turn comes: a menu shown meanwhile drops the whole
+// message.
+// A menu shown after its text was written holds its Enter instead, which
+// is written once the menu has been off the screen for promptGoneAfter (as
+// holder.prompt_gone: claude shows parallel tool calls' prompts one after
+// the other). Input that arrives meanwhile keeps the hold while the menu
+// is up (an answer to it) and drops the held Enter once the menu is gone:
+// the user went on editing, and the message stays in the input box.
 type inputQueue struct {
 	w         io.Writer
-	ch        chan []inputChunk
+	ch        chan inputRequest
 	quit      chan struct{}
 	closeOnce sync.Once
-	// menuUp reports whether a permission menu is on the screen (nil:
-	// never). Set before run.
+	// menuUp reports whether a menu is on the screen (nil: never). Set
+	// before run.
 	menuUp func() bool
 
 	// The held Enter (run goroutine only): held, and when the menu was
@@ -70,7 +85,7 @@ type inputQueue struct {
 }
 
 func newInputQueue(w io.Writer) *inputQueue {
-	return &inputQueue{w: w, ch: make(chan []inputChunk, 64), quit: make(chan struct{})}
+	return &inputQueue{w: w, ch: make(chan inputRequest, 64), quit: make(chan struct{})}
 }
 
 func (q *inputQueue) run() {
@@ -105,10 +120,11 @@ func (q *inputQueue) run() {
 			// tick, and the menu must be seen gone for promptGoneAfter.
 			q.checkHeld(time.Now())
 		case req := <-q.ch:
-			if q.held && typedRequest(req) && !q.menuShown() {
+			if q.held && typedRequest(req.chunks) && !q.menuShown() {
 				q.held = false // input after the menu went: drop the Enter
 			}
-			for _, c := range req {
+			sent := true
+			for _, c := range req.chunks {
 				if c.delay > 0 {
 					select {
 					case <-time.After(c.delay):
@@ -116,12 +132,19 @@ func (q *inputQueue) run() {
 						return
 					}
 				}
+				if c.message && q.menuShown() {
+					sent = false
+					break
+				}
 				if c.submit && q.menuShown() {
 					q.held, q.goneSince = true, time.Time{}
 					continue
 				}
 				// Errors mean the program is gone; the exit path follows.
 				writeAll(q.w, c.data)
+			}
+			if req.sent != nil {
+				req.sent <- sent
 			}
 		}
 	}
@@ -167,10 +190,22 @@ func writeAll(w io.Writer, b []byte) {
 }
 
 // push queues one request, waiting while the queue is full.
-func (q *inputQueue) push(ctx context.Context, req []inputChunk) error {
-	if len(req) == 0 {
+func (q *inputQueue) push(ctx context.Context, chunks []inputChunk) error {
+	if len(chunks) == 0 {
 		return nil
 	}
+	return q.enqueue(ctx, inputRequest{chunks: chunks})
+}
+
+// pushMessage queues a chat message (composeInput with paste and submit);
+// the channel then tells whether its text was written or dropped for a
+// menu.
+func (q *inputQueue) pushMessage(ctx context.Context, chunks []inputChunk) (<-chan bool, error) {
+	sent := make(chan bool, 1)
+	return sent, q.enqueue(ctx, inputRequest{chunks: chunks, sent: sent})
+}
+
+func (q *inputQueue) enqueue(ctx context.Context, req inputRequest) error {
 	select {
 	case q.ch <- req:
 		return nil
@@ -185,7 +220,7 @@ func (q *inputQueue) push(ctx context.Context, req []inputChunk) error {
 // best effort).
 func (q *inputQueue) tryPush(b []byte) {
 	select {
-	case q.ch <- []inputChunk{{data: b}}:
+	case q.ch <- inputRequest{chunks: []inputChunk{{data: b}}}:
 	default:
 	}
 }
@@ -252,9 +287,10 @@ func encodeLoneEsc(b []byte) []byte {
 
 // composeInput turns session.input params into PTY writes: text raw, paste
 // (newlines as CR, like a terminal pastes; bracketed when the program
-// enabled it), keys, then CR after a short gap if submit; with a paste that
-// CR is a chat message's (inputChunk.submit). While the program asks for
-// win32-input-mode a lone Esc becomes that mode's key event.
+// enabled it), keys, then CR after a short gap if submit; with a paste these
+// are a chat message's text (inputChunk.message) and Enter
+// (inputChunk.submit). While the program asks for win32-input-mode a lone
+// Esc becomes that mode's key event.
 func composeInput(p wire.InputParams, bracketed, appCursor, win32Input bool) ([]inputChunk, error) {
 	var b strings.Builder
 	b.WriteString(p.Text)
@@ -287,7 +323,7 @@ func composeInput(p wire.InputParams, bracketed, appCursor, win32Input bool) ([]
 		if win32Input {
 			data = encodeLoneEsc(data)
 		}
-		req = append(req, inputChunk{data: data})
+		req = append(req, inputChunk{data: data, message: p.Paste != "" && p.Submit})
 	}
 	if p.Submit {
 		c := inputChunk{data: []byte{'\r'}, submit: p.Paste != ""}

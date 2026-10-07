@@ -205,10 +205,13 @@ func awaited(tracks []*promptTrack, sig string) bool {
 	return false
 }
 
-// menuShown reports whether claude's or Codex's permission menu is on the
-// screen.
+// menuShown reports whether a menu of claude or Codex is on the screen,
+// whatever it asks: a chat message must land on none of them. Codex's
+// update notice (`1. Update now`) and folder trust prompt (`1. Trust and
+// continue`) at startup would take its Enter as their first option just
+// as an approval menu would.
 func (h *Holder) menuShown() bool {
-	_, ok := permissionMenu(h.scr.Lines())
+	_, ok := liveMenu(h.scr.Lines())
 	return ok
 }
 
@@ -234,9 +237,10 @@ const codexCursor = "›"
 // A numbered list in the transcript has none.
 var promptHint = regexp.MustCompile(`(?i)\besc\b|\benter\b|↑/↓|ctrl\+g`)
 
-// promptTranscriptMark: transcript entries (`● `, `⎿`, `✻ …`) and prompts
-// the user sent (`❯ `); a list above one is part of the conversation.
-var promptTranscriptMark = regexp.MustCompile(`^(?:[●•⏺⎿✻✢✳✶✽✔✗■]|[›❯]\s)`)
+// promptTranscriptMark: transcript entries (`● `, `⎿`, `✻ …`, Codex's `• `
+// and its status line's bullet blinking to `◦`) and prompts the user sent
+// (`❯ `); a list above one is part of the conversation.
+var promptTranscriptMark = regexp.MustCompile(`^(?:[●•◦⏺⎿✻✢✳✶✽✔✗■]|[›❯]\s)`)
 
 // promptRuleChars make up horizontal rules and box edges.
 const promptRuleChars = "─━═╌╍┄┅┈┉├┤┌┐└┘╭╮╰╯┬┴┼┝┥┠┨╞╡"
@@ -252,10 +256,10 @@ type promptItem struct {
 	start, end int // screen lines of the option (end: its last wrapped line)
 }
 
-// permissionMenu reports whether lines (a screen, top to bottom) show
-// claude's permission or plan approval menu or Codex's approval menu, and
-// its signature.
-func permissionMenu(lines []string) (sig string, ok bool) {
+// liveMenu returns the options of the menu lines (a screen, top to bottom)
+// show, if any: the lowest numbered list with one option under the cursor
+// and a key hint below it.
+func liveMenu(lines []string) (options []promptItem, ok bool) {
 	var groups [][]promptItem
 	cur := -1 // index in groups of the menu being read
 	// Blank lines and rules since the last line of the current menu; one is
@@ -297,11 +301,9 @@ func permissionMenu(lines []string) (sig string, ok bool) {
 			continue
 		}
 		highlighted := 0
-		cursor := ""
 		for _, it := range group {
 			if it.cursor != "" {
 				highlighted++
-				cursor = it.cursor
 			}
 		}
 		if highlighted != 1 {
@@ -315,12 +317,26 @@ func permissionMenu(lines []string) (sig string, ok bool) {
 		if !promptHintFollows(lines, group[len(group)-1].end) {
 			continue
 		}
-		if group[0].number != 1 || !strings.HasPrefix(group[0].label, "Yes") {
-			return "", false
-		}
-		return menuSignature(lines, group[0].start, cursor == codexCursor), true
+		return group, true
 	}
-	return "", false
+	return nil, false
+}
+
+// permissionMenu reports whether lines (a screen, top to bottom) show
+// claude's permission or plan approval menu or Codex's approval menu, and
+// its signature.
+func permissionMenu(lines []string) (sig string, ok bool) {
+	group, ok := liveMenu(lines)
+	if !ok || group[0].number != 1 || !strings.HasPrefix(group[0].label, "Yes") {
+		return "", false
+	}
+	cursor := ""
+	for _, it := range group {
+		if it.cursor != "" {
+			cursor = it.cursor
+		}
+	}
+	return menuSignature(lines, group[0].start, cursor == codexCursor), true
 }
 
 // menuSignature identifies the dialog whose first option is on line first:

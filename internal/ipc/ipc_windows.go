@@ -42,10 +42,18 @@ func Listen(addr string) (net.Listener, error) {
 // give it that owner. The owner is not pinned in Listen's security
 // descriptor ("O:"), so this check also passes for pipes of older versions.
 // Reading the owner needs READ_CONTROL, which the GENERIC_READ DialPipe
-// requests includes.
+// requests includes. A pipe whose DACL refuses us is reported as a
+// *paths.OwnerError too when its owner can be read and is someone else
+// (see deniedByForeignOwner); otherwise the access denied error stays.
 func Dial(addr string, timeout time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(timeout)
 	c, err := winio.DialPipe(addr, &timeout)
 	if err != nil {
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			if oe := deniedByForeignOwner(addr, deadline); oe != nil {
+				return nil, oe
+			}
+		}
 		return nil, err
 	}
 	owner, err := pipeOwner(c)
@@ -65,6 +73,29 @@ func Dial(addr string, timeout time.Duration) (net.Conn, error) {
 	return c, nil
 }
 
+// deniedByForeignOwner explains a pipe whose DACL refused Dial: it reads
+// the owner by name, which asks only for READ_CONTROL, and returns a
+// *paths.OwnerError when another user owns the pipe. Opening the pipe by
+// name takes a free instance, as DialPipe does, so a busy pipe is retried
+// until deadline. It returns nil when the owner cannot be read (the DACL
+// refuses READ_CONTROL as well, or no instance came free) or is ours: an
+// administrator's elevated daemon can refuse the same user's unelevated
+// processes, and that is not a foreign owner.
+func deniedByForeignOwner(addr string, deadline time.Time) *paths.OwnerError {
+	owner, err := namedPipeOwner(addr)
+	for errors.Is(err, windows.ERROR_PIPE_BUSY) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		owner, err = namedPipeOwner(addr)
+	}
+	if err != nil {
+		return nil
+	}
+	if ok, err := ownedByUs(owner); err != nil || ok {
+		return nil
+	}
+	return &paths.OwnerError{Path: addr, Owner: paths.SIDOwner(owner)}
+}
+
 // pipeOwner returns the owner SID of a dialed pipe. Tests replace it: they
 // cannot create a pipe as another user.
 var pipeOwner = func(c net.Conn) (*windows.SID, error) {
@@ -76,6 +107,20 @@ var pipeOwner = func(c net.Conn) (*windows.SID, error) {
 	if err != nil {
 		return nil, err
 	}
+	return sdOwner(sd)
+}
+
+// namedPipeOwner returns the owner SID of the pipe addr without dialing
+// it, for a pipe whose DACL refused Dial. Tests replace it, as pipeOwner.
+var namedPipeOwner = func(addr string) (*windows.SID, error) {
+	sd, err := windows.GetNamedSecurityInfo(addr, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return nil, err
+	}
+	return sdOwner(sd)
+}
+
+func sdOwner(sd *windows.SECURITY_DESCRIPTOR) (*windows.SID, error) {
 	owner, _, err := sd.Owner()
 	if err != nil {
 		return nil, err
