@@ -3,6 +3,44 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.7.2
+
+### Fixed
+
+- A chat message whose turn to be written comes after an approval menu
+  came up is no longer typed into the menu. The holder looked for a menu
+  only when `session.input` arrived, then wrote the message's text from
+  its input queue without looking again, so a menu shown in between could
+  take the text's first characters as its keys. The queue now looks again
+  right before writing the text and drops the whole message (text and
+  Enter) if a menu is up; `session.input` answers a chat message only once
+  its text is written, and with `menu_open` when it was dropped, so the
+  app sends it again after the menu as it does for one refused on arrival
+  (#423).
+- A chat message sent while Codex shows its update notice or folder trust
+  prompt at startup is no longer typed into it. The holder refused chat
+  messages only on approval menus (`1. Yes…`), so the message's Enter
+  picked `1. Update now` (Codex updated itself) or `1. Trust and continue`
+  (the folder was trusted). `session.input` with `paste` and `submit` now
+  fails with `menu_open` while any menu is on the screen — numbered
+  options with one under the cursor and a key hint below them, as the app
+  reads menus — and an Enter that would land on one is held as for an
+  approval (#440).
+- A numbered prompt sent to Codex no longer reads as a menu while Codex
+  works on it. Codex's status line (`• Working (3s • esc to interrupt)`)
+  blinks its bullet to `◦`, which the holder did not take for a
+  transcript entry, so the line's `esc` read as a menu's key hint under
+  the prompt's numbered lines and chat messages were refused with
+  `menu_open` (#440).
+- Windows: a `\\.\pipe\stagent-<SID>` another user created first with a
+  DACL that refuses the user is now reported with its owner — `blocked`
+  in `hello` and `stagent doctor`, `foreign_owner` for requests — instead
+  of failing as a plain access denied. stagent reads the owner by name
+  (`READ_CONTROL` only); a pipe that refuses that too still fails as
+  before, and one the user owns, or `BUILTIN\Administrators` owns (an
+  administrator's elevated daemon dialed unelevated), keeps its access
+  denied (#422).
+
 ## 0.7.1
 
 ### Security

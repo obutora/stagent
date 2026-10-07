@@ -118,8 +118,10 @@ in a shared temporary directory or the shared pipe namespace; stagent
 checks the owner of every socket and pipe it connects to (on Windows a
 pipe owned by `BUILTIN\Administrators` counts as the user's own: an
 administrator's elevated daemon) and never connects to another user's.
-Plain SSH terminals are unaffected. Absent from stagent versions before
-0.7.0.
+A Windows pipe whose DACL refuses the user is reported here too when its
+owner can still be read; when that is refused as well, the connection
+fails as an ordinary error and `blocked` is absent. Plain SSH terminals
+are unaffected. Absent from stagent versions before 0.7.0.
 
 `session.spawn` starts the command with the environment of the user's login
 shell (`$SHELL -l -i`, then `$SHELL -l`, captured once per bridge), not the
@@ -167,7 +169,7 @@ Windows bridge without it as needing an update.
 | `session.info` | `{id}` | `Session` |
 | `session.attach` | `{id, mode: "raw"\|"screen", fps?, since?}` | `{cols, rows, mode, offset, resumed}` then `output` / `resize` / `closed` notifications |
 | `session.detach` | `{id}` | `{}` |
-| `session.input` | `{id, text?, paste?, keys?[], submit?, local?}` | `{}`; `menu_open` for a chat message (`paste` and `submit`) while a permission menu is on the screen |
+| `session.input` | `{id, text?, paste?, keys?[], submit?, local?}` | `{}`; `menu_open` for a chat message (`paste` and `submit`) while a menu is on the screen, or one shown before the message's turn to be written |
 | `session.resize` | `{id, cols, rows, force?}` | `{}`; `not_size_owner` for a passthrough session without `force` |
 | `session.scrollback` | `{id, before?, max_bytes?}` | `{data, start, end, first}` |
 | `session.signal` | `{id, signal: "interrupt"\|"terminate"\|"kill"\|"hangup"}` | `{}` |
@@ -271,21 +273,32 @@ or a lone `ESC` in `text`) is sent as that mode's Esc key press and release
 does not take a lone `ESC` byte written there as the Esc key.
 
 A chat message — `session.input` with both `paste` and `submit` — never
-lands on an approval menu: while claude's permission or plan approval menu
-or Codex's approval menu (`1. Yes…`) is on the holder's screen, nothing of
-it is written and the request fails with `menu_open` (the app's copy of the
-screen lags behind the host's). The holder looks again right before the
-`\r`: if a menu showed up after the paste was written, the `\r` is held
-and written once the menu has been off the screen for 400 ms (as
-`holder.prompt_gone`; claude shows parallel tool calls' prompts one after
-the other), so it cannot pick the menu's option. Input typed in the app or
+lands on a menu: while one of claude's or Codex's menus is on the holder's
+screen — numbered options, one under the cursor (claude's `❯`, Codex's
+`›`), a key hint below them; an approval, claude's AskUserQuestion, Codex's
+update notice (`1. Update now`) or folder trust prompt (`1. Trust and
+continue`) — nothing of it is written and the request fails with
+`menu_open` (the app's copy of the screen lags behind the host's). The
+holder looks again when the message's
+turn in the input queue comes, right before writing its text: a menu shown
+meanwhile drops the whole message, and the request fails with `menu_open`
+too. So a chat message is answered only once its text is written (or
+dropped), after the input queued before it. Once the text is written, the
+holder looks again right before the `\r`: if a menu showed up after the
+paste was written, the `\r` is held and written once the menu has been
+off the screen for 400 ms (as `holder.prompt_gone`; claude shows parallel
+tool calls' prompts one after the other), so it cannot pick the menu's
+option. Input typed in the app or
 on the host while the menu is up (its answer) keeps the hold; input typed
 after the menu went drops the held `\r`, leaving the message in the
 program's input box (terminal query replies and focus or mouse reports do
 not count). The request has already succeeded in that case — the paste was
 written; sending it again would type the message twice. `text`/`keys`
 input (answers to menus, editing keys) is never refused or held. Protocol
-stays 1: older holders write chat messages regardless.
+stays 1: older holders write chat messages regardless, 0.7.x holders
+answer a chat message once it is queued and write its text without
+looking again, and holders before #440 refuse and hold only on approval
+menus (`1. Yes…`).
 
 `session.scrollback`: raw PTY bytes `[start, end)` of the session's output
 stream, newest first page when `before` is 0; `first` is the oldest retained

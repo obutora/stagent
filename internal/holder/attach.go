@@ -106,20 +106,45 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 		if err != nil {
 			return nil, err
 		}
-		// A chat message must not land on a permission menu: its text would
-		// be typed as the menu's keys, its Enter pick an option. The queue
-		// checks again before the Enter (inputQueue).
-		if p.Paste != "" && p.Submit && h.menuShown() {
-			return nil, wire.Errorf(wire.ErrMenuOpen, "a permission menu is on the screen")
+		// A chat message must not land on a menu (an approval, Codex's
+		// update notice or folder trust prompt): its text would be typed
+		// as the menu's keys, its Enter pick an option. The queue checks
+		// again before writing it and before the Enter (inputQueue).
+		message := p.Paste != "" && p.Submit
+		if message && h.menuShown() {
+			return nil, wire.Errorf(wire.ErrMenuOpen, "a menu is on the screen")
 		}
 		h.det.Input()
 		if p.Local {
 			h.localInput(cs, []byte(p.Text))
 		}
-		if err := h.in.push(ctx, req); err != nil {
+		if !message {
+			if err := h.in.push(ctx, req); err != nil {
+				return nil, wire.Errorf(wire.ErrSessionEnded, "%v", err)
+			}
+			return struct{}{}, nil
+		}
+		sent, err := h.in.pushMessage(ctx, req)
+		if err != nil {
 			return nil, wire.Errorf(wire.ErrSessionEnded, "%v", err)
 		}
-		return struct{}{}, nil
+		// Answered once the text is written, or with menu_open once a menu
+		// that came up meanwhile dropped it: the caller sends it again
+		// after the menu, and a written one must not be sent twice.
+		go func() {
+			select {
+			case ok := <-sent:
+				if ok {
+					c.Reply(m.ID, struct{}{})
+				} else {
+					c.ReplyError(m.ID, wire.Errorf(wire.ErrMenuOpen, "a menu came up before the message was written"))
+				}
+			case <-h.in.quit:
+				c.ReplyError(m.ID, wire.Errorf(wire.ErrSessionEnded, "%v", errInputClosed))
+			case <-c.Context().Done():
+			}
+		}()
+		return rpc.Async, nil
 
 	case wire.MethodSessionResize:
 		var p wire.ResizeParams

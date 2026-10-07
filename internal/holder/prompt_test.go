@@ -125,6 +125,74 @@ func TestPermissionMenu(t *testing.T) {
 	}
 }
 
+// A chat message is refused on any menu, not only on approvals (#440):
+// Codex's update notice and folder trust prompt take an Enter as their
+// first option. Numbered drafts in the input box and numbered lists in the
+// transcript are no menus.
+func TestLiveMenu(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"claude_permission_60x30", true},
+		{"claude_plan_60x30", true},
+		{"claude_ask_60x30", true},
+		{"claude_working_after_answer_60x30", false},
+		{"claude_draft3_60x30", false},
+		{"claude_done_60x30", false},
+		{"claude_idle_60x30", false},
+		{"codex_approval_60x30", true},
+		{"codex_hooks_review_60x30", true}, // "1. Review hooks"
+		{"codex_trust_60x30", true},        // "1. Trust and continue"
+		{"codex_update_60x30", true},       // "1. Update now"
+		{"codex_working_draft3_60x30", false},
+		{"codex_draft3_60x30", false},
+		{"codex_done_60x30", false},
+		{"codex_idle_60x30", false},
+	} {
+		if _, got := liveMenu(fixtureScreen(t, tc.name).Lines()); got != tc.want {
+			t.Errorf("%s on the holder's screen: %v, want %v", tc.name, got, tc.want)
+		}
+		if _, got := liveMenu(fixtureText(t, tc.name)); got != tc.want {
+			t.Errorf("%s as the app renders it: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// The three-line drafts with each line numbered.
+	numbered := strings.NewReplacer("first line", "1. first line", "second line", "2. second line", "third line", "3. third line")
+	for _, name := range []string{"claude_draft3_60x30", "codex_draft3_60x30", "codex_working_draft3_60x30"} {
+		if _, ok := liveMenu(editRows(fixtureText(t, name), numbered.Replace)); ok {
+			t.Errorf("%s with a numbered draft: read as a menu", name)
+		}
+	}
+	for name, lines := range map[string][]string{
+		"numbered list in the transcript": {
+			"● Steps:",
+			"  1. Build it",
+			"  2. Run the tests",
+			"",
+			"✻ Worked for 3s · done",
+		},
+		"numbered prompt the user sent to Codex": {
+			"› 1. build it",
+			"  2. then test",
+			"",
+			"• Working (0s • esc to interrupt)",
+		},
+		// Codex's status bullet blinks between • and ◦.
+		"numbered prompt the user sent to Codex, status bullet blinked": {
+			"› 1. build it",
+			"  2. then test",
+			"",
+			"◦ Working (0s • esc to interrupt)",
+		},
+	} {
+		if _, ok := liveMenu(lines); ok {
+			t.Errorf("%s: read as a menu", name)
+		}
+	}
+}
+
 // textScreen draws rows (the app's rendering of a screen) on a cleared
 // screen.
 func textScreen(rows []string) string {

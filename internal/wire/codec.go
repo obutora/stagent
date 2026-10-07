@@ -60,7 +60,7 @@ const (
 	// method, the daemon the ones that change settings or stop it.
 	ErrAgentRefused = "agent_refused"
 	// ErrMenuOpen: session.input with paste and submit was not written
-	// because an approval menu is on the screen.
+	// because a menu (an approval or any other) is on the screen.
 	ErrMenuOpen = "menu_open"
 	// ErrForeignOwner: the stagent location (socket, run directory, named
 	// pipe) belongs to another user; nothing was sent to it.
