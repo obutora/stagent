@@ -1,0 +1,29 @@
+[0;2m╭─────────────────────────────────────────────────╮[0m
+[0;2m│ [0;1;38;2;99;168;248m✨ Update available![0;1m 0.156.1 -> 0.159.0[0;1;2m         │[0m
+[0;2m│ [0mRun [0;38;2;99;168;248mnpm install -g @openai/codex[0m to update.[0;2m     │[0m
+[0;2m│                                                 │[0m
+[0;2m│ [0mSee full release notes:[0;2m                         │[0m
+[0;2m│ [0;4;38;2;99;168;248mhttps://github.com/openai/codex/releases/latest[0;2m │[0m
+[0;2m╰─────────────────────────────────────────────────╯[0m
+
+[0;2m╭──────────────────────────────────────────────────╮[0m
+[0;2m│ >_ [0;1mOpenAI Codex[0;1;2m (v0.156.1)                       │[0m
+[0;2m│                                                  │[0m
+[0;2m│ model:     [0mGPT-5.6-Sol medium[0;2m   [0;38;2;99;168;248m/model[0;2m to change │[0m
+[0;2m│ directory: [0m/tmp/chatcap/codex1[0;2m                   │[0m
+[0;2m╰──────────────────────────────────────────────────╯[0m
+
+[0m  [0;1mTip: Moving from Claude Code? Use /import to bring over[0m
+[0m  your setup, project, and recent chats.
+[0m 
+[0m 
+[0;1m› [0;1;2mAsk Codex to do anything[0m
+[0;1m [0m
+[0;1m  [0;1;38;2;246;226;183mGPT-5.6-Sol medium[0;1m · [0;1;38;2;171;223;167m/tmp/chatcap/codex1[0m
+
+
+
+
+
+
+

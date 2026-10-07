@@ -137,7 +137,7 @@ func (s *Store) rotate() error {
 		s.cur.Close()
 		s.cur = nil
 	}
-	f, err := os.OpenFile(s.segPath(s.end), os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(s.segPath(s.end), os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND|oNoFollow, 0o600)
 	if err != nil {
 		return err
 	}

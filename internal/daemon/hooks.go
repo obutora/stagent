@@ -19,8 +19,8 @@ type approval struct {
 	// hold is non-nil while a claude hook waits on the approval, and is
 	// closed when the approval closes so the hook returns (no decision).
 	hold chan struct{}
-	// gen is the prompt watch started with a held approval: a
-	// holder.prompt_gone of this watch or a later one closes it.
+	// gen is the prompt watch started with a claude or Codex approval (0:
+	// none): a holder.prompt_gone of this watch or a later one closes it.
 	gen  int64
 	done bool
 }
@@ -169,9 +169,9 @@ func (d *Daemon) hookMetaLocked(s *session, harness string, pl hookPayload) bool
 }
 
 // newApprovalLocked registers a pending approval of s. A claude hook waits
-// on it, and s's holder watches for claude's permission menu meanwhile
-// (prompt.go); Codex shows its prompt only once the hook returned, so its
-// hook is answered at once and the approval closes on output activity or
+// on it; Codex shows its prompt only once the hook returned, so its hook is
+// answered at once. For both, s's holder watches for the permission menu
+// meanwhile (prompt.go); a Codex approval also closes on output activity or
 // Stop.
 func (d *Daemon) newApprovalLocked(s *session, harness string, pl hookPayload, now int64) *approval {
 	ap := &approval{
@@ -186,8 +186,11 @@ func (d *Daemon) newApprovalLocked(s *session, harness string, pl hookPayload, n
 	}
 	d.approvals[ap.a.RequestID] = ap
 	d.emitLocked(s.s.ID, wire.EventApprovalRequested, ap.a)
-	if harness == wire.HarnessClaude {
+	switch harness {
+	case wire.HarnessClaude:
 		ap.hold = make(chan struct{})
+		d.startPromptWatchLocked(s, ap)
+	case wire.HarnessCodex:
 		d.startPromptWatchLocked(s, ap)
 	}
 	return ap
@@ -230,7 +233,7 @@ func (d *Daemon) resolveLocked(ap *approval) {
 	if s == nil || s.ended {
 		return
 	}
-	if ap.hold != nil {
+	if ap.gen > 0 {
 		d.endPromptWatchLocked(s)
 	}
 	if d.firstApprovalLocked(s.s.ID) != nil {

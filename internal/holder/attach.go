@@ -25,12 +25,29 @@ func (h *Holder) serve(ctx context.Context, ln net.Listener) {
 			return
 		}
 		go func() {
+			if werr := h.guard.Check(c); werr != nil {
+				h.logf("stagent run: refused a connection: %s", werr.Message)
+				refuse(ctx, c, werr)
+				return
+			}
 			cs := &connState{h: h}
 			rpc.Serve(ctx, c, cs.handle)
 			cs.detach()
 			h.dropFocus(cs)
 		}()
 	}
+}
+
+// refuse answers the first request on c with err, whatever it asks, and
+// closes c, so that the client can tell why (stagent attach shows it).
+func refuse(ctx context.Context, c net.Conn, err *wire.Error) {
+	rpc.Serve(ctx, c, func(_ context.Context, rc *rpc.Conn, m *wire.Msg) (any, error) {
+		if m.ID != nil {
+			rc.ReplyError(m.ID, err)
+			rc.Close()
+		}
+		return rpc.Async, nil
+	})
 }
 
 // connState is one client connection (normally the bridge, one per
@@ -88,6 +105,12 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 		req, err := composeInput(p, h.scr.BracketedPaste(), h.scr.AppCursorKeys(), h.scr.Win32InputMode())
 		if err != nil {
 			return nil, err
+		}
+		// A chat message must not land on a permission menu: its text would
+		// be typed as the menu's keys, its Enter pick an option. The queue
+		// checks again before the Enter (inputQueue).
+		if p.Paste != "" && p.Submit && h.menuShown() {
+			return nil, wire.Errorf(wire.ErrMenuOpen, "a permission menu is on the screen")
 		}
 		h.det.Input()
 		if p.Local {

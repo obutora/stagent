@@ -40,8 +40,8 @@ func (l *Layout) resolveIPC(isolated bool) error {
 // it unless it is a directory (not a symlink) owned by us that nobody else
 // can enter: in a world-writable temporary directory another user could have
 // created it first to read or replace our sockets. Such a directory is not
-// repaired: someone else's cannot be, and one of ours that was open to
-// others may already hold their files.
+// repaired: someone else's cannot be (it is reported as an *OwnerError), and
+// one of ours that was open to others may already hold their files.
 func ensurePrivateDir(dir string) error {
 	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return err
@@ -50,17 +50,25 @@ func ensurePrivateDir(dir string) error {
 	if err != nil {
 		return err
 	}
+	// Someone else's symlink blocks the place as much as their directory.
+	if owner, foreign := foreignOwner(st); foreign {
+		return &OwnerError{Path: dir, Owner: owner}
+	}
+	if _, ok := st.Sys().(*syscall.Stat_t); !ok {
+		return fmt.Errorf("refusing to use %s: owner unknown", dir)
+	}
 	if !st.IsDir() {
 		return fmt.Errorf("refusing to use %s: a symlink or not a directory", dir)
-	}
-	if sys, ok := st.Sys().(*syscall.Stat_t); !ok || int(sys.Uid) != os.Getuid() {
-		return fmt.Errorf("refusing to use %s: not owned by uid %d", dir, os.Getuid())
 	}
 	if perm := st.Mode().Perm(); perm&0o077 != 0 {
 		return fmt.Errorf("refusing to use %s: accessible by other users (mode %04o); remove it or run chmod 700 on it", dir, perm)
 	}
 	return nil
 }
+
+// getuid is os.Getuid, replaceable by tests: they cannot chown a directory to
+// another user without root.
+var getuid = os.Getuid
 
 func userTag() string { return strconv.Itoa(os.Getuid()) }
 

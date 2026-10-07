@@ -3,6 +3,83 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.7.0
+
+### Fixed
+
+- A Codex approval answered with Esc no longer keeps the session in
+  `needs_approval` (and in `approvals.list`) until the next turn ends.
+  Codex ends the turn without Stop on Esc, and blinks its terminal title
+  while the prompt is up, so the output never went quiet for the answer
+  to show as new activity. The holder now watches for Codex's approval
+  menu as it does for claude's (`holder.prompt_watch`): the approval
+  closes as `cancelled` once the menu leaves the screen, however it was
+  answered — Esc, Yes, on the PC or from SSH Term (#320).
+- A chat message sent from the app no longer answers an approval menu.
+  The app checked its own copy of the screen, which lags behind the
+  host's, and the holder wrote the message's Enter without looking, so a
+  menu that came up meanwhile took it as `1. Yes`. `session.input` with
+  `paste` and `submit` now fails with the new error `menu_open`, writing
+  nothing, while claude's or Codex's approval menu is on the screen; a
+  menu that shows up between the paste and the Enter holds the Enter until
+  the menu has been gone for 400 ms, and input typed after it went drops
+  the Enter, leaving the message in the input box. Answers to menus
+  (`text`, `keys`) are never held (#402).
+- `stagent follow` on Linux with the Codex or omp sessions directory
+  behind a symlink (a symlinked `~/.codex` or `CODEX_HOME`, or a home
+  under `/home -> /var/home`): a fresh agent no longer shows a
+  transcript another agent has open. The open file's path, which Linux
+  gives with symlinks resolved, now comes back spelled under the
+  sessions directory, as the directory listing spells it, so the other
+  agent's claim on it matches (#406).
+
+### Security
+
+- With the home on a network file system, scrollback lives in
+  `/var/tmp/stagent-<uid>/sessions`; stagent now refuses that parent
+  directory unless it is a real directory (not a symlink) owned by the
+  user and closed to others, as it does for the run directory in `/tmp`.
+  Another user who created it first could otherwise swap `sessions` to
+  read or forge scrollback. Segment files are also opened with
+  `O_NOFOLLOW`, so a planted symlink can no longer make the holder
+  truncate and overwrite the file it points to (#405).
+- A pasted chat message can no longer leave bracketed paste and be typed
+  as keys: stagent removed `ESC[201~` from pastes only once, so
+  `ESC[20ESC[201~1~` (e.g. copied from a malicious page) became the end
+  marker. It is now removed until none is left (#404).
+- stagent no longer talks to a daemon or session that another user
+  serves. The daemon already refused to start in a `/tmp/stagent-<uid>`
+  someone else created first, but hooks, the bridge, `stagent follow`,
+  `attach`, `ls` and `install` still connected to whatever socket was
+  there, as they did on Windows to a `\\.\pipe\stagent-<SID>` another user
+  created. Every connection now checks the owner of the socket (the
+  server's uid) or pipe (its owner SID; `BUILTIN\Administrators`, the
+  owner of an elevated administrator's daemon, counts as the user's own)
+  and refuses another user's. Such a blocked location is reported with its
+  owner: as `blocked` in `hello` and `stagent doctor`, and as the new
+  error `foreign_owner` for requests that need it (#403).
+- stagent now refuses connections from coding agents' process trees
+  (Linux, macOS). A holder refuses every connection from a process that
+  claude, codex or omp started, found by walking the connecting process's
+  parents, and the daemon refuses them `config.set`, `presence.set`,
+  `notify.test` and `daemon.shutdown`; hooks, holders and reads are still
+  served. An agent whose sandboxed commands run without asking could
+  otherwise type approvals or "user instructions" into its own session
+  with `session.input`, or commands into another kept shell outside its
+  sandbox. A connection whose process already exited, or whose parents
+  cannot be followed, is refused too. A process that leaves its parents
+  (a double fork, such as `setsid -f`) escapes the walk, so this holds agents
+  sandboxed in their own PID namespace (bubblewrap), not macOS sandboxes.
+  The new error `agent_refused` says why, and `stagent attach` shows it;
+  `stagent install` run by an agent no longer replaces the daemon (nor
+  kills it), so run it in your own terminal, and `stagent bridge` run by
+  one answers `session.spawn` with it instead of starting a holder it
+  could not reach. Locations set with `STAGENT_HOME` and Windows are not
+  checked (ADR 0004, #401).
+- Sessions started before the update keep running their old holder, which
+  has none of the above (no `agent_refused`, no `menu_open`), until they
+  are opened again; nothing restarts them.
+
 ## 0.6.0
 
 ### Added

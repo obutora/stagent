@@ -355,3 +355,27 @@ func TestDoctorNotifyLastError(t *testing.T) {
 		t.Fatalf("problems = %s", problems)
 	}
 }
+
+func TestDoctorReportsBlockedLocation(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	blocked := func() string {
+		t.Helper()
+		var doc struct {
+			Blocked json.RawMessage `json:"blocked"`
+		}
+		if err := json.Unmarshal(asciiJSON(te.doctor(), false), &doc); err != nil {
+			t.Fatal(err)
+		}
+		return string(doc.Blocked)
+	}
+	if got := blocked(); got != "null" {
+		t.Fatalf("blocked without a foreign owner = %s", got)
+	}
+	te.blocked = func() *paths.OwnerError { return &paths.OwnerError{Path: "/tmp/stagent-1000", Owner: "mallory"} }
+	if got := blocked(); got != `{"path":"/tmp/stagent-1000","owner":"mallory"}` {
+		t.Fatalf("blocked = %s", got)
+	}
+	if problems := strings.Join(te.doctor().Problems, "\n"); !strings.Contains(problems, "another user (mallory) owns /tmp/stagent-1000") {
+		t.Fatalf("problems = %s", problems)
+	}
+}

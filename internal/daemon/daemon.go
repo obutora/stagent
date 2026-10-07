@@ -23,6 +23,7 @@ import (
 	"github.com/obutora/stagent/internal/bootstrap"
 	"github.com/obutora/stagent/internal/eventlog"
 	"github.com/obutora/stagent/internal/follow"
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/notify"
 	"github.com/obutora/stagent/internal/paths"
@@ -59,6 +60,9 @@ type Options struct {
 	// Bootstrap is what `stagent daemon` found swapping its bootstrap port
 	// (macOS), reported by daemon.status.
 	Bootstrap bootstrap.Result
+	// Guard refuses some methods to coding agents' process trees (ADR
+	// 0004; default: harness.NewGuard(Layout)).
+	Guard *harness.Guard
 }
 
 const (
@@ -138,6 +142,9 @@ func New(opts Options) (*Daemon, error) {
 		} else {
 			opts.AgentProbe = p.Running
 		}
+	}
+	if opts.Guard == nil {
+		opts.Guard = harness.NewGuard(opts.Layout)
 	}
 	l := opts.Layout
 	if err := l.EnsureDirs(); err != nil {
@@ -287,10 +294,18 @@ type connState struct {
 	// foreground: the app on this connection said it is in the foreground
 	// (presence.set).
 	foreground bool
+
+	// refusal is decided when the connection is accepted (see
+	// agentRefusal); logged is owned by the connection's handler.
+	refusal *wire.Error
+	logged  bool
 }
 
 func (d *Daemon) serveConn(nc net.Conn) {
-	cs := &connState{nc: nc}
+	// Decided now, not on the first refused method: an agent's process
+	// could otherwise keep the connection open until the agent exits, and
+	// call them once its parents no longer lead to an agent.
+	cs := &connState{nc: nc, refusal: d.opts.Guard.Check(nc)}
 	d.mu.Lock()
 	if d.closed {
 		d.mu.Unlock()
@@ -313,7 +328,24 @@ func (d *Daemon) serveConn(nc net.Conn) {
 	d.connClosed(cs)
 }
 
+// agentRefusal is the error for the methods a connection from a coding
+// agent's process tree may not call (ADR 0004): those that change settings
+// or stop the daemon. Hooks, holders and readers are served.
+func (d *Daemon) agentRefusal(cs *connState) *wire.Error {
+	if cs.refusal != nil && !cs.logged {
+		cs.logged = true
+		d.logf("daemon: %s", cs.refusal.Message)
+	}
+	return cs.refusal
+}
+
 func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, error) {
+	switch m.Method {
+	case wire.MethodConfigSet, wire.MethodPresenceSet, wire.MethodNotifyTest, wire.MethodDaemonShutdown:
+		if werr := d.agentRefusal(cs); werr != nil {
+			return nil, werr
+		}
+	}
 	switch m.Method {
 	// holder → daemon
 	case wire.MethodHolderRegister:

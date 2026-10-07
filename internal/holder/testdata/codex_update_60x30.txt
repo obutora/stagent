@@ -1,0 +1,31 @@
+|
+|  Update available · 0.156.1 → 0.159.0
+|  Release notes:
+|  https://github.com/openai/codex/releases/latest
+|
+|› 1. Update now (runs `npm install -g @openai/codex`)       
+|  2. Skip
+|  3. Skip until next version
+|
+|  enter continue · esc skip
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=27,9 alt=false appCursor=false bracketed=true

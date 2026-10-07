@@ -235,12 +235,16 @@ func (e *env) serviceTarget() *target {
 }
 
 // stopRunningDaemon asks a running daemon to exit so the service's own
-// instance can take the IPC address.
-func (e *env) stopRunningDaemon() {
+// instance can take the IPC address. It fails only when the daemon refuses
+// (see agentRefused).
+func (e *env) stopRunningDaemon() error {
 	if st, err := e.daemon.Status(); err == nil {
-		e.daemon.Shutdown()
+		if err := e.daemon.Shutdown(); agentRefused(err) {
+			return err
+		}
 		e.waitDaemonGone(st.PID)
 	}
+	return nil
 }
 
 func (e *env) waitDaemonGone(pid int) bool {
@@ -290,7 +294,9 @@ func (e *env) serviceAddChanges() ([]*Change, error) {
 				return err
 			}
 			defer os.Remove(tmp)
-			e.stopRunningDaemon()
+			if err := e.stopRunningDaemon(); err != nil {
+				return err
+			}
 			if err := e.runCmd("schtasks", "/Create", "/TN", schtasksDaemon, "/XML", tmp, "/F"); err != nil {
 				return err
 			}
@@ -314,7 +320,9 @@ func (e *env) serviceAddChanges() ([]*Change, error) {
 			}
 			e.m.setService(ServiceEntry{Kind: kind, Name: systemdUnit, Path: t.path})
 			e.dirty = true
-			e.stopRunningDaemon()
+			if err := e.stopRunningDaemon(); err != nil {
+				return err
+			}
 			if err := e.runCmd("systemctl", "--user", "daemon-reload"); err != nil {
 				return err
 			}
@@ -334,7 +342,9 @@ func (e *env) serviceAddChanges() ([]*Change, error) {
 			}
 			e.m.setService(ServiceEntry{Kind: kind, Name: launchdLabel, Path: t.path})
 			e.dirty = true
-			e.stopRunningDaemon()
+			if err := e.stopRunningDaemon(); err != nil {
+				return err
+			}
 			for _, d := range e.launchdDomains() {
 				e.run.Run(cmdTimeout, "launchctl", "bootout", d+"/"+launchdLabel)
 			}

@@ -11,8 +11,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/ptable"
-	"github.com/obutora/stagent/internal/wire"
 )
 
 // Multiplexer kinds of the target frame.
@@ -268,7 +268,7 @@ func connectionRoot(s *ptable.Snapshot, pid int) int {
 		if p = s.Get(p.PPID); p == nil {
 			return 0
 		}
-		switch baseName(p.Name) {
+		switch ptable.BaseName(p.Name) {
 		case "sshd", "sshd-session", "dropbear":
 			return p.PID
 		}
@@ -588,7 +588,7 @@ func (w *walker) walk(pid int, lv level, parent *candidate, muxes *[]muxProc) {
 		*muxes = append(*muxes, muxProc{pid, kind})
 		return
 	}
-	if h := harnessOf(p.Name, argv); h != "" {
+	if h := harness.Of(p.Name, argv); h != "" {
 		if parent != nil && parent.harness == h {
 			parent.pids = append(parent.pids, pid)
 		} else {
@@ -660,7 +660,7 @@ func (w *walker) invocation(pid int, name string) invocation {
 // tmux
 
 func (w *walker) resolveTmux(pid int) resolution {
-	if baseName(w.s.Get(pid).Name) == "tmux: server" {
+	if ptable.BaseName(w.s.Get(pid).Name) == "tmux: server" {
 		return resolution{} // Linux names its processes "tmux: server" / "tmux: client"
 	}
 	socket := tmuxSocket(w.s.Argv(pid))
@@ -815,7 +815,7 @@ func zellijClientSession(argv []string) (session string, client bool) {
 func (w *walker) zellijServers() map[string]int {
 	out := map[string]int{}
 	for _, pid := range w.s.PIDs() {
-		if baseName(w.s.Get(pid).Name) != "zellij" || !w.l.owns(w.s, pid) {
+		if ptable.BaseName(w.s.Get(pid).Name) != "zellij" || !w.l.owns(w.s, pid) {
 			continue
 		}
 		argv := w.s.Argv(pid)
@@ -940,7 +940,7 @@ func screenClientSession(argv []string) (name string, client bool) {
 func (w *walker) screenServers(client int, name string) []int {
 	var all []int
 	for _, pid := range w.s.PIDs() {
-		if baseName(w.s.Get(pid).Name) != "screen" || !w.l.owns(w.s, pid) {
+		if ptable.BaseName(w.s.Get(pid).Name) != "screen" || !w.l.owns(w.s, pid) {
 			continue
 		}
 		if argv := w.s.Argv(pid); len(argv) == 0 || filepath.Base(argv[0]) != "SCREEN" {
@@ -1053,24 +1053,10 @@ func herdrClientSession(argv []string) (session string, client bool) {
 // ---------------------------------------------------------------------------
 // Process recognition
 
-// baseName normalizes a process name for comparison: lower case, without
-// directory and Windows executable suffix.
-func baseName(name string) string {
-	name = strings.ToLower(filepath.Base(strings.ReplaceAll(name, `\`, "/")))
-	return strings.TrimSuffix(name, ".exe")
-}
-
-func argv0(argv []string) string {
-	if len(argv) == 0 {
-		return ""
-	}
-	return baseName(argv[0])
-}
-
 // muxKind names the multiplexer a process belongs to — client, server or
 // one-shot CLI call — and "" for other processes.
 func muxKind(name string, argv []string) string {
-	for _, n := range [2]string{baseName(name), argv0(argv)} {
+	for _, n := range [2]string{ptable.BaseName(name), ptable.Argv0(argv)} {
 		switch {
 		case n == "tmux" || strings.HasPrefix(n, "tmux: "):
 			return muxTmux
@@ -1081,65 +1067,6 @@ func muxKind(name string, argv []string) string {
 		case n == "herdr":
 			return muxHerdr
 		}
-	}
-	return ""
-}
-
-// interpreters run agents distributed as scripts.
-var interpreters = map[string]bool{"node": true, "nodejs": true, "bun": true, "deno": true}
-
-// harnessPackages are the npm packages of the agents, for launchers that
-// run their script by path (Claude Code's cli.js).
-var harnessPackages = []struct{ dir, harness string }{
-	{"/@anthropic-ai/claude-code/", wire.HarnessClaude},
-	{"/@openai/codex/", wire.HarnessCodex},
-	{"/@oh-my-pi/pi-coding-agent/", wire.HarnessOmp},
-}
-
-// harnessOf recognizes an agent by its process name, its argv[0] (native
-// binaries, and scripts that set their process title) or the script an
-// interpreter runs; "" for other processes.
-func harnessOf(name string, argv []string) string {
-	if h := harnessName(baseName(name)); h != "" {
-		return h
-	}
-	if h := harnessName(argv0(argv)); h != "" {
-		return h
-	}
-	if !interpreters[argv0(argv)] {
-		return ""
-	}
-	for _, a := range argv[1:] {
-		if strings.HasPrefix(a, "-") {
-			continue
-		}
-		script := strings.ReplaceAll(a, `\`, "/")
-		base := baseName(script)
-		for _, ext := range []string{".js", ".mjs", ".cjs", ".ts"} {
-			base = strings.TrimSuffix(base, ext)
-		}
-		if h := harnessName(base); h != "" {
-			return h
-		}
-		for _, p := range harnessPackages {
-			if strings.Contains(script, p.dir) {
-				return p.harness
-			}
-		}
-		return ""
-	}
-	return ""
-}
-
-func harnessName(n string) string {
-	switch n {
-	case wire.HarnessClaude, wire.HarnessCodex, wire.HarnessOmp:
-		return n
-	}
-	// Codex's npm package has shipped its native binary as
-	// codex-<target triple>.
-	if strings.HasPrefix(n, "codex-x86_64-") || strings.HasPrefix(n, "codex-aarch64-") {
-		return wire.HarnessCodex
 	}
 	return ""
 }

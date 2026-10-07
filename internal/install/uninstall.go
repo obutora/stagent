@@ -1,6 +1,7 @@
 package install
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -92,7 +93,9 @@ func (e *env) stopDaemon(r *UninstallReport) {
 // (holders take it as deliberate and do not start another), then a kill
 // when it has not exited after settle. It returns the step taken.
 func (e *env) shutdownDaemon(st *wire.DaemonStatus) (action, target string, err error) {
-	e.daemon.Shutdown()
+	if err := e.daemon.Shutdown(); agentRefused(err) {
+		return "stop-daemon", e.l.DaemonAddr, err // and no kill instead: a person runs this
+	}
 	if e.waitDaemonGone(st.PID) {
 		return "stop-daemon", e.l.DaemonAddr, nil
 	}
@@ -246,3 +249,11 @@ func (e *env) removeTree(r *UninstallReport, dir string, sessions []wire.Session
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// agentRefused reports whether err is the daemon refusing a request from a
+// coding agent's process tree (ADR 0004): run by an agent, install and
+// uninstall cannot stop the daemon.
+func agentRefused(err error) bool {
+	we, ok := errors.AsType[*wire.Error](err)
+	return ok && we.Code == wire.ErrAgentRefused
+}

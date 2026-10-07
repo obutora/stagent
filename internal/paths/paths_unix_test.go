@@ -116,3 +116,76 @@ func TestEnsureDirsRefusesUnsafeSharedRunDir(t *testing.T) {
 		}
 	})
 }
+
+// networkLayout returns a layout whose DataDir was relocated as for a home on
+// a network file system, under a fresh stand-in for /var/tmp.
+func networkLayout(t *testing.T) *Layout {
+	t.Helper()
+	l := sharedLayout(t)
+	l.DataOnNetworkFS = true
+	l.DataDir = filepath.Join(t.TempDir(), "stagent-"+userTag(), "sessions")
+	return l
+}
+
+func TestEnsureDirsCreatesPrivateNetworkDataParent(t *testing.T) {
+	l := networkLayout(t)
+	if err := l.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Lstat(filepath.Dir(l.DataDir))
+	if err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+		t.Fatalf("data parent %v (%v), want a 0700 directory", st.Mode(), err)
+	}
+	if err := l.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureDirsRefusesUnsafeNetworkDataParent(t *testing.T) {
+	t.Run("owned by another user", func(t *testing.T) {
+		l := networkLayout(t)
+		parent := filepath.Dir(l.DataDir)
+		if err := os.Mkdir(parent, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		uid := os.Getuid() + 1
+		getuid = func() int { return uid }
+		t.Cleanup(func() { getuid = os.Getuid })
+		if err := l.EnsureDirs(); err == nil {
+			t.Fatal("accepted a data parent owned by another user")
+		}
+		if _, err := os.Stat(l.DataDir); err == nil {
+			t.Error("sessions created inside the refused parent")
+		}
+	})
+	t.Run("symlink", func(t *testing.T) {
+		l := networkLayout(t)
+		target := t.TempDir()
+		os.Chmod(target, 0o700)
+		if err := os.Symlink(target, filepath.Dir(l.DataDir)); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.EnsureDirs(); err == nil {
+			t.Fatal("accepted a symlink as data parent")
+		}
+		if _, err := os.Stat(filepath.Join(target, "sessions")); err == nil {
+			t.Error("sessions created through the symlink")
+		}
+	})
+	// The parent was open to others once and is ours and private now: what
+	// they left in it is not used.
+	t.Run("sessions planted in a parent made private", func(t *testing.T) {
+		l := networkLayout(t)
+		if err := os.Mkdir(filepath.Dir(l.DataDir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		target := t.TempDir()
+		os.Chmod(target, 0o700)
+		if err := os.Symlink(target, l.DataDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.EnsureDirs(); err == nil {
+			t.Fatal("accepted a symlink as sessions directory")
+		}
+	})
+}

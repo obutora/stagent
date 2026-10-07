@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
@@ -74,8 +75,12 @@ type Bridge struct {
 	dialDaemon        func() (net.Conn, error) // starts the daemon if needed
 	dialRunningDaemon func() (net.Conn, error)
 	dialHolder        func(id string, timeout time.Duration) (net.Conn, error)
+	blocked           func() *paths.OwnerError // see ipc.Blocked
 	spawnWait         time.Duration
 	resubscribeFor    time.Duration
+	// agentRefusal tells whether this bridge runs in a coding agent's
+	// process tree, where the holders it starts refuse it (ADR 0004).
+	agentRefusal func() *wire.Error
 
 	envOnce  sync.Once
 	baseEnv  []string                 // see sessionEnv
@@ -137,6 +142,8 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 	b.dialHolder = func(id string, timeout time.Duration) (net.Conn, error) {
 		return ipc.Dial(l.HolderAddr(id), timeout)
 	}
+	b.blocked = func() *paths.OwnerError { return ipc.Blocked(l) }
+	b.agentRefusal = func() *wire.Error { return harness.NewGuard(l).CheckPID(os.Getpid()) }
 	b.loginEnv = func() ([]string, error) {
 		exe, err := daemonclient.Exe()
 		if err != nil {
@@ -291,7 +298,7 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	if runtime.GOOS == "windows" {
 		caps = append(caps, wire.CapPersistShell)
 	}
-	return wire.HelloResult{
+	res := wire.HelloResult{
 		Protocol:     version.Protocol,
 		Version:      version.Version,
 		OS:           runtime.GOOS,
@@ -299,7 +306,11 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 		Home:         b.l.Home,
 		Capabilities: caps,
 		HostID:       hostID,
-	}, nil
+	}
+	if oe := b.blocked(); oe != nil {
+		res.Blocked = &wire.Blocked{Path: oe.Path, Owner: oe.Owner}
+	}
+	return res, nil
 }
 
 // validSessionID accepts the 16 lowercase hex chars of wire.NewSessionID,
@@ -324,12 +335,23 @@ func (b *Bridge) replyResult(id *int64, result any, err error) {
 	if err != nil {
 		var we *wire.Error
 		if !errors.As(err, &we) {
-			we = wire.Errorf(wire.ErrInternal, "%v", err)
+			we = upstreamError(err, wire.Errorf(wire.ErrInternal, "%v", err))
 		}
 		b.out.ReplyError(id, we)
 		return
 	}
 	b.out.Reply(id, result)
+}
+
+// upstreamError is the reply for a failed dial or directory check: another
+// user owning the stagent location is foreign_owner, anything else is
+// fallback.
+func upstreamError(err error, fallback *wire.Error) *wire.Error {
+	var oe *paths.OwnerError
+	if errors.As(err, &oe) {
+		return wire.Errorf(wire.ErrForeignOwner, "%v", oe)
+	}
+	return fallback
 }
 
 // relayResponse answers the app request id with an upstream response.
@@ -431,7 +453,7 @@ func (b *Bridge) forward(c *rpc.Client, m *wire.Msg, lost *wire.Error, onResult 
 func (b *Bridge) forwardHolder(id string, m *wire.Msg) {
 	c, err := b.holderConn(id)
 	if err != nil {
-		b.out.ReplyError(m.ID, wire.Errorf(wire.ErrNotFound, "session %s: no holder answers", id))
+		b.out.ReplyError(m.ID, upstreamError(err, wire.Errorf(wire.ErrNotFound, "session %s: no holder answers", id)))
 		return
 	}
 	b.forward(c, m, wire.Errorf(wire.ErrNotFound, "session %s: holder went away", id), nil)
@@ -495,7 +517,7 @@ func isDone(c *rpc.Client) bool {
 func (b *Bridge) forwardDaemon(m *wire.Msg) {
 	dc, err := b.daemonConn(b.dialDaemon)
 	if err != nil {
-		b.out.ReplyError(m.ID, wire.Errorf(wire.ErrUnavailable, "daemon: %v", err))
+		b.out.ReplyError(m.ID, upstreamError(err, wire.Errorf(wire.ErrUnavailable, "daemon: %v", err)))
 		return
 	}
 	var onResult func(*wire.Msg)

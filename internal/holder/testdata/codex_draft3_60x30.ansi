@@ -1,0 +1,30 @@
+[0m[0;2m╭─────────────────────────────────────────────────╮[0m
+[0m[0;2m│ [0;1;38;5;75m✨ Update available![0;1m 0.156.1 -> 0.160.0[0;1;2m         │[0m
+[0m[0;2m│ [0mRun [0;38;5;75mnpm install -g @openai/codex[0m to update.[0;2m     │[0m
+[0m[0;2m│                                                 │[0m
+[0m[0;2m│ [0mSee full release notes:[0;2m                         │[0m
+[0m[0;2m│ [0;4;38;5;75mhttps://github.com/openai/codex/releases/latest[0;2m │[0m
+[0m[0;2m╰─────────────────────────────────────────────────╯[0m
+[0m[0m
+[0m[0;2m╭──────────────────────────────────────────────────╮[0m
+[0m[0;2m│ >_ [0;1mOpenAI Codex[0;1;2m (v0.156.1)                       │[0m
+[0m[0;2m│                                                  │[0m
+[0m[0;2m│ model:     [0mGPT-5.6-Sol medium[0;2m   [0;38;5;75m/model[0;2m to change │[0m
+[0m[0;2m│ directory: [0m/tmp/cap167/w/codex[0;2m                   │[0m
+[0m[0;2m╰──────────────────────────────────────────────────╯[0m
+[0m[0m
+[0m  [0;1mTip: NEW: Network proxy can now be enabled from /[0m
+[0m  experimental. Restart Codex after enabling it.[0m
+[0m[0m
+[0m[0m
+[0m[0;1m› first line[0m
+[0m[0;1m  second line[0m
+[0m[0;1m [0m third line[0m
+[0m[0m
+[0m[0;1m  [0;1;38;5;223mGPT-5.6-Sol medium[0;1m · [0;1;38;5;151m/tmp/cap167/w/codex[0m
+[0m[0m
+[0m[0m
+[0m[0m
+[0m[0m
+[0m[0m
+[0m[0m[21;10H

@@ -190,6 +190,45 @@ func TestCodexTranscriptFromOpenFile(t *testing.T) {
 	}
 }
 
+// Open files come with their symlinks resolved (/proc/<pid>/fd); the roots
+// may go through one. The transcript comes back spelled under the roots, as
+// the index lists it and claims compare it.
+func TestOpenFileUnderSymlinkedRoot(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create a symlink: %v", err)
+	}
+	resolved := func(p string) string {
+		r, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r == p {
+			t.Fatalf("%s resolves to itself", p)
+		}
+		return r
+	}
+	roots := transcript.Roots{Codex: filepath.Join(link, "codex"), Omp: filepath.Join(link, "omp")}
+	start := time.Now().Add(-time.Hour)
+	rollout := codexRollout(t, roots.Codex, "/work", "codex-tui", start.Add(time.Minute), start.Add(time.Minute), 1)
+	session := ompSession(t, roots.Omp, "-work", "/work", start.Add(time.Minute), start.Add(time.Minute), 2)
+	sub := write(t, filepath.Join(roots.Omp, "-work", "x", "Helper.jsonl"), "{}\n", start.Add(3*time.Minute))
+	tr := newTranscripts()
+	codex := agentFacts{harness: "codex", pids: []int{7}, start: start, cwd: "/work", roots: roots,
+		argv: argvOf("codex"), claimed: noClaims,
+		openFiles: func(int) []string { return []string{resolved(rollout)} }}
+	if path, _ := tr.resolve(codex); path != rollout {
+		t.Fatalf("codex: got %q, want %q", path, rollout)
+	}
+	omp := agentFacts{harness: "omp", pids: []int{9}, start: start, cwd: "/work", roots: roots,
+		argv: argvOf("bun", "/home/u/.bun/bin/omp"), claimed: noClaims,
+		openFiles: func(int) []string { return []string{resolved(sub), resolved(session)} }}
+	if path, _ := tr.resolve(omp); path != session {
+		t.Fatalf("omp: got %q, want %q", path, session)
+	}
+}
+
 func TestParseOmpArgs(t *testing.T) {
 	for _, c := range []struct {
 		argv []string

@@ -128,10 +128,25 @@ func (l *Layout) SessionDataDir(sessionID string) string {
 }
 
 // EnsureDirs creates every directory of the layout with owner-only access.
-// A RunDir in the shared temporary directory is validated instead of
+// A RunDir in the shared temporary directory, and a DataDir moved to the
+// shared local disk (with its per-user parent), are validated instead of
 // repaired (ensurePrivateDir).
 func (l *Layout) EnsureDirs() error {
-	dirs := []string{l.Root, l.BinDir, l.StateDir, l.DataDir, l.LogDir}
+	dirs := []string{l.Root, l.BinDir, l.StateDir, l.LogDir}
+	// The parent must be ours before sessions is used in it: whoever owns
+	// /var/tmp/stagent-<uid> could swap sessions out. sessions itself is
+	// validated too, not chmodded: a parent that was ever open to others
+	// may hold their sessions (or a symlink to their directory).
+	if l.DataOnNetworkFS {
+		if err := ensurePrivateDir(filepath.Dir(l.DataDir)); err != nil {
+			return err
+		}
+		if err := ensurePrivateDir(l.DataDir); err != nil {
+			return err
+		}
+	} else {
+		dirs = append(dirs, l.DataDir)
+	}
 	// RunDir first: the holder socket directory is created inside it.
 	if l.sharedRunDir {
 		if err := ensurePrivateDir(l.RunDir); err != nil {

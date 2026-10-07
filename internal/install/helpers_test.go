@@ -130,6 +130,8 @@ func newTestEnv(t *testing.T, goos string) *testEnv {
 		settle: 50 * time.Millisecond,
 		sid:    "S-1-5-21-1-2-3-1001",
 		docs:   filepath.Join(home, "Documents"),
+		// Never probe a real address from tests.
+		blocked: func() *paths.OwnerError { return nil },
 	}
 	te.kill = func(pid int) error {
 		te.killed = append(te.killed, pid)

@@ -94,6 +94,17 @@ type HelloResult struct {
 	// HostID is the host's random id (hostid); absent when it could not be
 	// read or created. Older stagent versions never send it.
 	HostID string `json:"host_id,omitempty"`
+	// Blocked is set when another user owns this host's stagent location
+	// (the run directory, a socket or the daemon's named pipe), so no kept
+	// shell can work until the host's administrator removes it. Older
+	// stagent versions never send it.
+	Blocked *Blocked `json:"blocked,omitempty"`
+}
+
+// Blocked names a stagent location another user owns.
+type Blocked struct {
+	Path  string `json:"path"`  // e.g. /tmp/stagent-1000, \\.\pipe\stagent-<SID>
+	Owner string `json:"owner"` // user name when known, else uid / SID
 }
 
 // SessionRef names a session.
@@ -335,8 +346,9 @@ const (
 	MethodHolderUpdate   = "holder.update"   // notification, SessionPatch
 	MethodHolderNotify   = "holder.notify"   // notification, HolderNotifyParams
 	MethodHolderEnded    = "holder.ended"    // notification, ClosedParams
-	// notification, HolderPromptGoneParams: the claude permission menu the
-	// daemon asked to watch for (holder.prompt_watch) left the screen.
+	// notification, HolderPromptGoneParams: the claude or Codex permission
+	// menu the daemon asked to watch for (holder.prompt_watch) left the
+	// screen.
 	MethodHolderPromptGone = "holder.prompt_gone"
 
 	// hook → daemon (one request per connection)
@@ -353,9 +365,10 @@ const (
 	// auto-starting the daemon, so `uninstall --level stop` sticks.
 	MethodDaemonStopping = "daemon.stopping"
 	// daemon → holder notification, HolderPromptWatchParams: watch the
-	// screen for claude's permission menu while a claude approval of the
-	// session holds its hook (on), or stop (off). Holders before 0.4.0
-	// ignore it, like any notification they do not know.
+	// screen for the permission menu while a claude or Codex approval of
+	// the session is pending (on), or stop (off). Holders before 0.4.0
+	// ignore it, like any notification they do not know; 0.5.0 and earlier
+	// know only claude's menu.
 	MethodHolderPromptWatch = "holder.prompt_watch"
 )
 
@@ -364,7 +377,8 @@ type HolderRegisterResult struct {
 }
 
 // HolderPromptWatchParams starts (on) or ends a prompt watch. Gen names
-// the watch; a new one starts with every claude approval registered.
+// the watch; a new one starts with every claude or Codex approval
+// registered.
 type HolderPromptWatchParams struct {
 	ID  string `json:"id"`
 	Gen int64  `json:"gen"`
