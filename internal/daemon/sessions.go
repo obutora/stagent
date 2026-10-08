@@ -128,6 +128,12 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 		old.stopTimers()
 	}
 	s := &session{s: ws, holder: cs, base: ws.Harness}
+	// Its chat message from before a daemon restart is on the phone:
+	// resolved when the session settles.
+	if d.chatSent[ws.ID] {
+		delete(d.chatSent, ws.ID)
+		s.pushed = true
+	}
 	s.track = stateTrack{}.holderReport(ws.State, ws.StateSource, now)
 	s.s.State, s.s.StateSource = s.track.merged()
 	s.logged = s.s.State

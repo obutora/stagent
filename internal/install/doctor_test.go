@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/paths"
@@ -353,6 +354,23 @@ func TestDoctorNotifyLastError(t *testing.T) {
 	if !strings.Contains(problems, "notify: the last push to ntfy failed at ") || !strings.Contains(problems, ": 429 Too Many Requests") ||
 		strings.Contains(problems, "webhook") {
 		t.Fatalf("problems = %s", problems)
+	}
+
+	// The chat destination's line names the kind; revoked says what to do.
+	at := time.UnixMilli(1767225600000).Format(time.RFC3339)
+	for _, c := range []struct{ failure, line string }{
+		{`{"at": 1767225600000, "status": 404, "error": "404 Not Found: Unknown Webhook (10015)", "kind": "revoked"}`,
+			"notify: the last push to chat failed at " + at + " (revoked): 404 Not Found: Unknown Webhook (10015); " +
+				"the destination was disabled on the service side; set a new URL from the app"},
+		{`{"at": 1767225600000, "status": 403, "error": "403 Forbidden: bot was blocked by the user", "kind": "unreachable"}`,
+			"notify: the last push to chat failed at " + at + " (unreachable): 403 Forbidden: bot was blocked by the user"},
+		{`{"at": 1767225600000, "error": "not a Discord webhook"}`,
+			"notify: the last push to chat failed at " + at + ": not a Discord webhook"},
+	} {
+		writeFile(t, te.l.NotifyErrors, `{"chat": `+c.failure+`}`)
+		if problems := te.doctor().Problems; !slices.Contains(problems, c.line) {
+			t.Errorf("problems = %q, want %q", problems, c.line)
+		}
 	}
 }
 

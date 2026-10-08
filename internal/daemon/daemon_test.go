@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -872,14 +873,22 @@ func TestConfigSetStoresNotifySettings(t *testing.T) {
 	if !hostid.Valid(hostID) {
 		t.Fatalf("daemon start left no host id (%q)", hostID)
 	}
-	res, raw := set(`{"notify": {"host_label": "開発機", "click_base": "sshtermx://open", "ntfy": {"server": "https://ntfy.example", "token": "tk", "topic": "t1", "enabled": true}}}`)
+	res, raw := set(`{"notify": {"host_label": "開発機", "click_base": "sshtermx://open", "click_page": "https://sshterm.iru-yo.com/open", "ntfy": {"server": "https://ntfy.example", "token": "tk", "topic": "t1", "enabled": true}}}`)
 	want := wire.NtfyConfig{Enabled: true, Server: "https://ntfy.example", Topic: "t1", Token: "tk"}
 	if res.Config.Notify.Ntfy != want || res.Config.Notify.HostLabel != "開発機" || res.Config.Notify.ClickBase != "sshtermx://open" ||
-		res.Config.Notify.DebounceMs != 100 || !res.Config.Notify.Webhook.Enabled {
+		res.Config.Notify.ClickPage != "https://sshterm.iru-yo.com/open" || res.Config.Notify.DebounceMs != 100 || !res.Config.Notify.Webhook.Enabled {
 		t.Fatalf("config.set result %+v", res.Config.Notify)
 	}
 	if err := c.Call(context.Background(), wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{"notify": {"click_base": "open"}}`)}, nil); err == nil {
 		t.Fatal("a click_base without a scheme was accepted")
+	}
+	// Refused click_pages write nothing (the file is checked below).
+	for _, page := range []string{"http://sshterm.iru-yo.com/open", "sshtermx://open", "/open", "https://sshterm.iru-yo.com/open?x=1", "https://sshterm.iru-yo.com/open#h=1"} {
+		var we *wire.Error
+		patch, _ := json.Marshal(map[string]any{"notify": map[string]any{"click_page": page}})
+		if err := c.Call(context.Background(), wire.MethodConfigSet, wire.ConfigSetParams{Config: patch}, nil); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
+			t.Errorf("click_page %q: %v, want bad_request", page, err)
+		}
 	}
 	var doc struct {
 		Notify map[string]json.RawMessage `json:"notify"`
@@ -895,7 +904,7 @@ func TestConfigSetStoresNotifySettings(t *testing.T) {
 	b, _ := os.ReadFile(e.layout.Config)
 	var got, wantFile any
 	json.Unmarshal(b, &got)
-	json.Unmarshal([]byte(`{"future_key": 1, "notify": {"debounce_ms": 100, "host_label": "開発機", "click_base": "sshtermx://open",
+	json.Unmarshal([]byte(`{"future_key": 1, "notify": {"debounce_ms": 100, "host_label": "開発機", "click_base": "sshtermx://open", "click_page": "https://sshterm.iru-yo.com/open",
 	  "webhook": {"enabled": true, "url": "https://hook.example", "extra": true},
 	  "ntfy": {"server": "https://ntfy.example", "token": "tk", "topic": "t1", "enabled": false}}}`), &wantFile)
 	if !reflect.DeepEqual(got, wantFile) {
@@ -985,6 +994,112 @@ func TestNotifyTestAndLastErrors(t *testing.T) {
 	<-titles
 	if got := lastError(c); got == nil || len(got) != 0 {
 		t.Fatalf("last_error after a success %+v", got)
+	}
+}
+
+// config.set changing notify.chat.url (to null included) forgets the
+// chat destination's last failure; disabling it or changing another
+// channel keeps it.
+func TestConfigSetChatURLClearsLastError(t *testing.T) {
+	const failures = `{"ntfy": {"at": 1767225600000, "status": 429, "error": "429 Too Many Requests"},
+	  "chat": {"at": 1767225600000, "status": 404, "error": "404 Not Found: Unknown Webhook (10015)", "kind": "revoked"}}`
+	cfg := fastConfig()
+	cfg.Notify.Chat = wire.ChatConfig{Enabled: true, URL: "discord://123456/AAold"}
+	e := startDaemon(t, cfg, Options{})
+	e.stop()
+	restart := func() *rpc.Client {
+		t.Helper()
+		e.stop()
+		if err := os.WriteFile(e.layout.NotifyErrors, []byte(failures), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		e = startDaemonAt(t, cfg, Options{})
+		c, _ := e.client()
+		return c
+	}
+	set := func(c *rpc.Client, patch string) map[string]wire.NotifyFailure {
+		t.Helper()
+		var res wire.ConfigResult
+		call(t, c, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(patch)}, &res)
+		return res.Notify.LastError
+	}
+
+	c := restart()
+	if got := set(c, `{"notify": {"chat": {"enabled": false}}}`); got[wire.ChannelChat].Kind != wire.FailureRevoked || len(got) != 2 {
+		t.Fatalf("after disabling the chat: %+v", got)
+	}
+	if got := set(c, `{"notify": {"chat": {"url": "discord://123456/AAold"}, "ntfy": {"topic": "t2"}}}`); len(got) != 2 {
+		t.Fatalf("after setting the same chat url and another topic: %+v", got)
+	}
+	if got := set(c, `{"notify": {"chat": {"enabled": true, "url": "discord://123456/AAnew"}}}`); len(got) != 1 || got[wire.ChannelNtfy].Status != 429 {
+		t.Fatalf("after a new chat url: %+v", got)
+	}
+	if b, _ := os.ReadFile(e.layout.NotifyErrors); strings.Contains(string(b), "revoked") {
+		t.Fatalf("the failures file kept the chat failure: %s", b)
+	}
+
+	c = restart()
+	if got := set(c, `{"notify": {"chat": {"url": null}}}`); len(got) != 1 || got[wire.ChannelNtfy].Status != 429 {
+		t.Fatalf("after removing the chat url: %+v", got)
+	}
+}
+
+// notify.test pushes only to the channels it names; an unknown name is
+// bad_request and named channels that are all off are not_configured.
+// config.set refuses a chat URL of no known service without writing
+// anything or repeating the URL.
+func TestNotifyTestChannelsAndChatURL(t *testing.T) {
+	got := make(chan string, 8)
+	server := func(name string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got <- name }))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	ntfy, hook := server(wire.ChannelNtfy), server(wire.ChannelWebhook)
+	e := startDaemon(t, fastConfig(), Options{})
+	c, _ := e.client()
+	call(t, c, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{"notify": {
+	  "ntfy": {"enabled": true, "server": "` + ntfy.URL + `", "topic": "t"},
+	  "webhook": {"enabled": true, "url": "` + hook.URL + `"},
+	  "chat": {"enabled": false, "url": "tgram://123456789:AAsecret/@my_channel"}}}`)}, nil)
+	before, err := os.ReadFile(e.layout.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	call(t, c, wire.MethodNotifyTest, wire.NotifyTestParams{Channels: []string{wire.ChannelWebhook}}, nil)
+	if ch := <-got; ch != wire.ChannelWebhook {
+		t.Fatalf("notify.test webhook pushed to %s", ch)
+	}
+	call(t, c, wire.MethodNotifyTest, json.RawMessage(`{}`), nil)
+	if a, b := <-got, <-got; a == b {
+		t.Fatalf("notify.test without channels pushed to %s and %s", a, b)
+	}
+	var we *wire.Error
+	if err := c.Call(t.Context(), wire.MethodNotifyTest, wire.NotifyTestParams{Channels: []string{"ntfy", "email"}}, nil); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
+		t.Fatalf("notify.test with an unknown channel: %v, want bad_request", err)
+	}
+	if err := c.Call(t.Context(), wire.MethodNotifyTest, wire.NotifyTestParams{Channels: []string{wire.ChannelChat}}, nil); !errors.As(err, &we) || we.Code != wire.ErrNotConfigured {
+		t.Fatalf("notify.test of a disabled chat: %v, want not_configured", err)
+	}
+	select {
+	case ch := <-got:
+		t.Fatalf("a refused notify.test pushed to %s", ch)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	for _, u := range []string{
+		"https://hooks.slack.com/triggers/T000/123/AAsecret",
+		"https://discord.com.example/api/webhooks/1/AAsecret",
+		"tgram://123456789:AAsecret/not-a-chat",
+	} {
+		err := c.Call(t.Context(), wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{"notify": {"chat": {"enabled": true, "url": "` + u + `"}}}`)}, nil)
+		if !errors.As(err, &we) || we.Code != wire.ErrBadRequest || strings.Contains(we.Message, "secret") {
+			t.Fatalf("config.set chat url %s: %v, want bad_request without the URL", u, err)
+		}
+	}
+	if after, _ := os.ReadFile(e.layout.Config); !bytes.Equal(after, before) {
+		t.Fatalf("a refused config.set wrote %s", after)
 	}
 }
 

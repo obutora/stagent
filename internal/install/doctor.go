@@ -352,7 +352,15 @@ func (e *env) doctor() *DoctorReport {
 	r.Notify.LastError, _ = notify.LoadFailures(e.l.NotifyErrors)
 	for _, ch := range slices.Sorted(maps.Keys(r.Notify.LastError)) {
 		f := r.Notify.LastError[ch]
-		r.Problems = append(r.Problems, "notify: the last push to "+ch+" failed at "+time.UnixMilli(f.At).Format(time.RFC3339)+": "+f.Error)
+		line := "notify: the last push to " + ch + " failed at " + time.UnixMilli(f.At).Format(time.RFC3339)
+		if f.Kind != "" {
+			line += " (" + f.Kind + ")"
+		}
+		line += ": " + f.Error
+		if f.Kind == wire.FailureRevoked {
+			line += "; the destination was disabled on the service side; set a new URL from the app"
+		}
+		r.Problems = append(r.Problems, line)
 	}
 
 	for _, a := range e.inventory(false) {

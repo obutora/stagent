@@ -71,6 +71,9 @@ const (
 	CapHooks      = "hooks" // approvals / hook-derived state
 	CapTranscript = "transcript"
 	CapPush       = "push" // ntfy / webhook
+	// CapPushChat: notify.chat (Discord, Slack, Telegram) and notify.test
+	// channels. Older stagent versions store notify.chat without sending.
+	CapPushChat = "push_chat"
 	// CapPersist: session.spawn shell, attach resume (since/offset/end),
 	// signal hangup, runtime mode changes (handoff).
 	CapPersist = "persist"
@@ -326,8 +329,8 @@ type ConfigResult struct {
 // NotifyStatus reports the push channels' health (config.get / config.set,
 // `stagent doctor`).
 type NotifyStatus struct {
-	// LastError holds, per channel ("ntfy", "webhook"), the last failed
-	// push; a successful push to the channel removes it. Never null.
+	// LastError holds, per channel ("ntfy", "webhook", "chat"), the last
+	// failed push; a successful push to the channel removes it. Never null.
 	LastError map[string]NotifyFailure `json:"last_error"`
 }
 
@@ -335,6 +338,12 @@ type NotifyStatus struct {
 // only the keys it names change, null deletes a key.
 type ConfigSetParams struct {
 	Config json.RawMessage `json:"config"`
+}
+
+// NotifyTestParams picks the channels notify.test pushes to (Channel*);
+// none means every enabled channel.
+type NotifyTestParams struct {
+	Channels []string `json:"channels,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
