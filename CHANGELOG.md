@@ -3,6 +3,75 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.8.0
+
+### Added
+
+- Pushes can go to Discord, Slack and Telegram: `notify.chat {enabled,
+  url}`, a chat destination next to the generic webhook (both can be on
+  and both get every push). The one-line `url` names the service — a
+  Discord webhook (`https://discord.com/api/webhooks/<id>/<token>`,
+  `discord://<id>/<token>`), a Slack Incoming Webhook
+  (`https://hooks.slack.com/services/…`, `slack://<a>/<b>/<c>`) or a
+  Telegram bot and chat (`tgram://<bot token>/<chat id>`) — and stagent
+  builds each service's message itself: the reason's emoji, the
+  host-labelled title and the body, as a Discord embed (yellow for a
+  warning, no mentions), Slack text (`&<>` escaped, no unfurling) or
+  Telegram plain text (no link preview). `config.set` refuses any other
+  `url`, Slack Workflow webhooks included, with `bad_request`. The `url`
+  is a secret: it never shows in `last_error` (channel `chat`),
+  `notify.test` errors, `stagent doctor` or the log. The bridge announces
+  `push_chat` (#471).
+- `notify.test {channels?: ["ntfy" | "webhook" | "chat"]}` tests only the
+  channels named; without `channels`, every enabled one as before. An
+  unknown name is `bad_request`, named channels that are all off
+  `not_configured` (#471).
+- `notify.click_page`: the open page (`https://sshterm.iru-yo.com/open`,
+  set by the app) that chat destinations and the generic webhook link to,
+  with `h=<host_id>` and `s=<session id>` in its fragment
+  (`<click_page>#h=…&s=…`). A push of one session gets an "Open in SSH
+  Term" link (in `notify.lang`): a link button on Discord
+  (`?with_components=true`) and Telegram (inline keyboard), a link at the
+  end of the text on Slack; a digest, `notify.test` and a push of no
+  session get none. The generic webhook's JSON gains `click_url` (the
+  host only, `#h=…`, for a digest and `notify.test`); its other keys stay.
+  No `click_page`, no link. ntfy's `Click` still uses `notify.click_base`.
+  `config.set` refuses a `click_page` that is not an absolute https URL
+  without query and fragment with `bad_request` (#472).
+- On Discord and Telegram, the chat destination replaces and resolves
+  like ntfy: the next message of a session is sent first, then the
+  older one deleted (Discord `DELETE …/messages/<id>`, Telegram
+  `deleteMessage`; one Telegram no longer deletes after 48 hours is
+  marked resolved instead), and when the session settles its message is
+  edited, not deleted: ☑️ in place of the reason's emoji, "(resolved)"
+  after the title in `notify.lang` (ja `（解決済み）`), the body as it
+  was and the same "Open in SSH Term" button (Discord: grey embed,
+  components sent again; Telegram: `editMessageText` with `reply_markup`
+  sent again). A digest's message is marked resolved once all its
+  sessions have settled and is never deleted by a later message of one
+  of them. The unresolved messages survive a daemon restart in
+  `state/chat-messages.json` (mode 0600: ids, sent time and the SHA-256
+  of `notify.chat.url`, never the URL or its token); a session gone over
+  the restart has its message marked resolved at once. Changing
+  `notify.chat.url` or removing `chat` forgets the messages of the old
+  URL without editing them. A failed delete or edit is never retried nor
+  a failed push (`last_error`): a 404 lets the message go, a 429 or a
+  connection error lets it go with one log line. Slack messages are only
+  sent, and the generic webhook still gets no clear (#473).
+- A failed push to the chat destination says why: `last_error.chat` gains
+  `kind` (`revoked`, `unreachable`, `rate_limited`, `rejected`, `server`,
+  `network`; Telegram by `error_code`) and its `error` adds the service's
+  short reason after the status line (`404 Not Found: Unknown Webhook
+  (10015)`; Discord's `message` and code, Telegram's `description`,
+  Slack's error body; 200 characters at most, dropped whole if it holds
+  the URL or a token). A queued push answered 429 with a wait of 5 s or
+  less is sent once more after the wait (`notify.test` is not); only a
+  failed resend is recorded. Pushes keep going after a failure, and the
+  log shows only the first of a run of the same kind. `config.set`
+  changing `notify.chat.url` removes `last_error.chat`; `stagent doctor`
+  names the kind and, for `revoked`, says to set a new URL from the app
+  (#474).
+
 ## 0.7.2
 
 ### Fixed

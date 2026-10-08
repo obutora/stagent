@@ -20,6 +20,8 @@ const (
 	PhraseTerminal             // push body of a program's own notification
 	PhraseBell                 // in-app body of a bare BEL
 	PhraseTest                 // notify.test
+	PhraseOpen                 // the chat destination's button to the open page
+	PhraseResolved             // title suffix of a chat message marked resolved
 	// Digest titles (%d: count) and the line closing a long digest body.
 	PhraseDigest
 	PhraseDigestTurnComplete
@@ -47,6 +49,8 @@ var phrases = map[string][phraseCount]string{
 		PhraseDigestWaitingInput:  "%d agents waiting for input",
 		PhraseDigestExited:        "%d sessions exited",
 		PhraseDigestMore:          "…and %d more",
+		PhraseOpen:                "Open in SSH Term",
+		PhraseResolved:            " (resolved)",
 	},
 	wire.LangJa: {
 		PhraseWaitingInput:        "入力待ち",
@@ -64,6 +68,8 @@ var phrases = map[string][phraseCount]string{
 		PhraseDigestWaitingInput:  "入力待ちの agent %d 件",
 		PhraseDigestExited:        "%d 件のセッションが終了しました",
 		PhraseDigestMore:          "…ほか %d 件",
+		PhraseOpen:                "SSH Term で開く",
+		PhraseResolved:            "（解決済み）",
 	},
 	wire.LangKo: {
 		PhraseWaitingInput:        "입력 대기",
@@ -81,6 +87,8 @@ var phrases = map[string][phraseCount]string{
 		PhraseDigestWaitingInput:  "입력 대기 중인 에이전트 %d개",
 		PhraseDigestExited:        "세션 %d개가 종료되었습니다",
 		PhraseDigestMore:          "…외 %d개",
+		PhraseOpen:                "SSH Term에서 열기",
+		PhraseResolved:            " (해결됨)",
 	},
 	wire.LangZh: {
 		PhraseWaitingInput:        "等待输入",
@@ -98,6 +106,8 @@ var phrases = map[string][phraseCount]string{
 		PhraseDigestWaitingInput:  "%d 个智能体等待输入",
 		PhraseDigestExited:        "%d 个会话已退出",
 		PhraseDigestMore:          "…另有 %d 条",
+		PhraseOpen:                "在 SSH Term 中打开",
+		PhraseResolved:            "（已解决）",
 	},
 }
 

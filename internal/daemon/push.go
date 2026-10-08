@@ -82,7 +82,8 @@ func (d *Daemon) pushLocked(s *session, p wire.NotificationData) {
 
 // settlePushLocked: s settled what its notifications were about (its
 // approval closed, it went back to working, it ended). Pushes still held
-// back are dropped, and the one on the phone is cleared (ntfy).
+// back are dropped, and the one on the phone is cleared (ntfy) or marked
+// resolved (chat destination).
 func (d *Daemon) settlePushLocked(s *session) {
 	s.pushGen++
 	for _, t := range s.graceTimers {

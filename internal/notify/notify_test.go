@@ -44,7 +44,7 @@ const testHostID = "0123456789abcdef0123456789abcdef"
 // newSender returns a Sender keeping its failures in a temporary file.
 func newSender(t *testing.T) *Sender {
 	t.Helper()
-	s := NewSender(filepath.Join(t.TempDir(), "notify-errors.json"), testHostID, t.Logf)
+	s := NewSender(filepath.Join(t.TempDir(), "notify-errors.json"), "", testHostID, t.Logf)
 	t.Cleanup(s.Close)
 	return s
 }
@@ -154,7 +154,7 @@ func TestPushNtfyWithoutReplacementSupport(t *testing.T) {
 		}))
 		var mu sync.Mutex
 		var logs []string
-		s := NewSender(filepath.Join(t.TempDir(), "e.json"), testHostID, func(f string, a ...any) {
+		s := NewSender(filepath.Join(t.TempDir(), "e.json"), "", testHostID, func(f string, a ...any) {
 			mu.Lock()
 			logs = append(logs, f)
 			mu.Unlock()
@@ -222,6 +222,37 @@ func TestClickURL(t *testing.T) {
 	} {
 		if got := ClickURL(c.base, c.host, c.session); got != c.want {
 			t.Errorf("ClickURL(%q, %q, %q) = %q, want %q", c.base, c.host, c.session, got, c.want)
+		}
+	}
+}
+
+// notify.click_page is an absolute https URL with neither a query nor a
+// fragment; h and s go into the fragment.
+func TestPageURL(t *testing.T) {
+	for _, c := range []struct{ page, host, session, want string }{
+		{"https://sshterm.iru-yo.com/open", testHostID, "00112233aabbccdd", "https://sshterm.iru-yo.com/open#h=" + testHostID + "&s=00112233aabbccdd"},
+		{"https://sshterm.iru-yo.com/open", testHostID, "", "https://sshterm.iru-yo.com/open#h=" + testHostID},
+		{"https://example.com", testHostID, "", "https://example.com#h=" + testHostID},
+		{"https://sshterm.iru-yo.com/open", "", "00112233aabbccdd", ""},
+		{"", testHostID, "00112233aabbccdd", ""},
+		// Not a click_page (a hand-edited config.json): no link.
+		{"http://sshterm.iru-yo.com/open", testHostID, "", ""},
+	} {
+		if got := PageURL(c.page, c.host, c.session); got != c.want {
+			t.Errorf("PageURL(%q, %q, %q) = %q, want %q", c.page, c.host, c.session, got, c.want)
+		}
+	}
+	for _, p := range []string{"https://sshterm.iru-yo.com/open", "https://example.com", "https://example.com:8443/a/b/"} {
+		if !ValidClickPage(p) {
+			t.Errorf("ValidClickPage(%q) = false", p)
+		}
+	}
+	for _, p := range []string{
+		"", "http://sshterm.iru-yo.com/open", "sshtermx://open", "/open", "https:///open", "https:open",
+		"https://sshterm.iru-yo.com/open?x=1", "https://sshterm.iru-yo.com/open?", "https://sshterm.iru-yo.com/open#", "https://sshterm.iru-yo.com/open#h=1",
+	} {
+		if ValidClickPage(p) {
+			t.Errorf("ValidClickPage(%q) = true", p)
 		}
 	}
 }
@@ -315,7 +346,7 @@ func TestLastErrors(t *testing.T) {
 	ln.Close()
 
 	path := filepath.Join(t.TempDir(), "notify-errors.json")
-	s := NewSender(path, "", t.Logf)
+	s := NewSender(path, "", "", t.Logf)
 	defer s.Close()
 	cfg := wire.NotifyConfig{
 		Ntfy:    wire.NtfyConfig{Enabled: true, Server: srv.URL, Topic: "topic-secret"},
@@ -353,7 +384,7 @@ func TestLastErrors(t *testing.T) {
 	}
 
 	// A restarted sender loads them.
-	s2 := NewSender(path, "", t.Logf)
+	s2 := NewSender(path, "", "", t.Logf)
 	defer s2.Close()
 	if got := s2.LastErrors(); !reflect.DeepEqual(got, last) {
 		t.Fatalf("reloaded %+v, want %+v", got, last)
@@ -375,7 +406,7 @@ func TestLastErrors(t *testing.T) {
 		t.Fatalf("file after ntfy success %+v %v", reloaded, err)
 	}
 	cfg.Webhook.Enabled = false
-	s3 := NewSender(path, "", t.Logf)
+	s3 := NewSender(path, "", "", t.Logf)
 	defer s3.Close()
 	if err := s3.Push(context.Background(), cfg, n); err != nil {
 		t.Fatal(err)

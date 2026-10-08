@@ -104,6 +104,9 @@ type Daemon struct {
 	closed    bool
 	// promptGens numbers holder prompt watches (holder.prompt_watch).
 	promptGens int64
+	// chatSent: sessions with a chat message from before the restart
+	// whose holder answered; it is theirs again once they register.
+	chatSent map[string]bool
 
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
@@ -174,7 +177,7 @@ func New(opts Options) (*Daemon, error) {
 		opts:      opts,
 		layout:    l,
 		log:       elog,
-		sender:    notify.NewSender(l.NotifyErrors, hostID, opts.Logf),
+		sender:    notify.NewSender(l.NotifyErrors, l.ChatMessages, hostID, opts.Logf),
 		index:     transcript.OpenIndex(l.Index, roots),
 		roots:     roots,
 		started:   time.Now(),
@@ -188,14 +191,33 @@ func New(opts Options) (*Daemon, error) {
 		conns:     map[*connState]struct{}{},
 		tails:     map[*tailSub]struct{}{},
 		shutdown:  make(chan struct{}),
+		chatSent:  map[string]bool{},
 	}
 	d.digest = notify.NewDigester(func(ns []wire.NotificationData) {
 		d.mu.Lock()
 		cfg := d.eff.Notify
 		d.mu.Unlock()
-		d.sender.Send(cfg, notify.Fold(ns, cfg.Lang))
+		d.sender.SendDigest(cfg, ns)
 	})
+	d.restoreChat()
 	return d, nil
+}
+
+// restoreChat takes back the chat messages sent before the restart: one of
+// a session whose holder still answers is the session's again once the
+// holder registers (and resolved when the session settles); any other is
+// marked resolved now. Messages sent through another chat URL than the
+// configured one are forgotten.
+func (d *Daemon) restoreChat() {
+	cfg := d.eff.Notify
+	d.sender.Reconfigure(cfg)
+	for _, id := range d.sender.ChatSessions(cfg) {
+		if d.holderAnswers(id) {
+			d.chatSent[id] = true
+		} else {
+			d.sender.ResolveChat(cfg, id)
+		}
+	}
 }
 
 // Serve accepts connections on ln until Shutdown. It closes ln.
@@ -437,7 +459,11 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		}
 		return d.configSet(p.Config)
 	case wire.MethodNotifyTest:
-		d.notifyTest(cs.c, m.ID)
+		var p wire.NotifyTestParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		d.notifyTest(cs.c, m.ID, p.Channels)
 		return rpc.Async, nil
 	case wire.MethodPresenceSet:
 		var p wire.PresenceSetParams
@@ -679,6 +705,12 @@ func (d *Daemon) configSet(patch json.RawMessage) (wire.ConfigResult, error) {
 		!strings.HasPrefix(c.Notify.Webhook.URL, "https://") && !strings.HasPrefix(c.Notify.Webhook.URL, "http://") {
 		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "webhook url must be http(s)")
 	}
+	if u := c.Notify.Chat.URL; u != "" {
+		// The message names the formats, never the URL (a secret).
+		if _, err := notify.ParseChat(u); err != nil {
+			return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "notify.chat.url: %v", err)
+		}
+	}
 	if !wire.ValidLang(c.Notify.Lang) {
 		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "notify.lang must be en, ja, ko or zh")
 	}
@@ -690,12 +722,16 @@ func (d *Daemon) configSet(patch json.RawMessage) (wire.ConfigResult, error) {
 			return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "notify.click_base must be an absolute URL")
 		}
 	}
+	if cp := c.Notify.ClickPage; cp != "" && !notify.ValidClickPage(cp) {
+		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "notify.click_page must be an absolute https URL with no query or fragment")
+	}
 	if err := writeFileAtomic(d.layout.Config, b); err != nil {
 		return wire.ConfigResult{}, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.cfg, d.eff = c, c.WithDefaults()
+	d.sender.Reconfigure(d.eff.Notify)
 	r := d.eff.Retention
 	if err := d.log.SetRetention(r.EventsMax, time.Duration(r.EventsDays)*24*time.Hour); err != nil {
 		d.logf("daemon: event log retention: %v", err)
@@ -764,12 +800,19 @@ func writeFileAtomic(path string, b []byte) error {
 	return nil
 }
 
-// notifyTest pushes a test notification right away (no digest) and emits
-// it in-app, answering with the push error if a channel failed, or
-// not_configured (nothing sent) when no channel is enabled.
-func (d *Daemon) notifyTest(c *rpc.Conn, id *int64) {
+// notifyTest pushes a test notification right away (no digest) to the
+// enabled channels among channels (none: all of them) and emits it in-app,
+// answering with the push error if a channel failed, bad_request for an
+// unknown channel, or not_configured (nothing sent) when none of them is
+// enabled.
+func (d *Daemon) notifyTest(c *rpc.Conn, id *int64, channels []string) {
 	d.mu.Lock()
-	cfg := d.eff.Notify
+	cfg, err := notify.Only(d.eff.Notify, channels)
+	if err != nil {
+		d.mu.Unlock()
+		c.ReplyResult(id, nil, wire.Errorf(wire.ErrBadRequest, "notify.test: %v", err))
+		return
+	}
 	n := wire.NotificationData{Title: "SSH Term", Body: notify.Text(cfg.Lang, notify.PhraseTest), Level: wire.LevelInfo, Reason: reasonTest}
 	if !notify.Enabled(cfg) {
 		d.mu.Unlock()

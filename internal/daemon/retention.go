@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -53,7 +55,8 @@ type dataDir struct {
 // older than ScrollbackDays, then oldest first while the total exceeds
 // ScrollbackTotalMiB. Registered sessions and holders that still answer on
 // their address (e.g. not yet re-registered after a daemon restart) are
-// never touched.
+// never touched. A chat message from before the restart whose holder
+// stopped answering without registering is marked resolved.
 func (d *Daemon) sweepNow() {
 	d.mu.Lock()
 	if d.closed {
@@ -65,7 +68,22 @@ func (d *Daemon) sweepNow() {
 	for id := range d.sessions {
 		live[id] = true
 	}
+	notifyCfg := d.eff.Notify
+	unregistered := slices.Collect(maps.Keys(d.chatSent))
 	d.mu.Unlock()
+
+	for _, id := range unregistered {
+		if d.holderAnswers(id) {
+			continue
+		}
+		d.mu.Lock()
+		pending := d.chatSent[id]
+		delete(d.chatSent, id)
+		d.mu.Unlock()
+		if pending {
+			d.sender.ResolveChat(notifyCfg, id)
+		}
+	}
 
 	entries, err := os.ReadDir(d.layout.DataDir)
 	if err != nil {

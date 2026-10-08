@@ -1,11 +1,14 @@
 // Package notify sends notifications to offline push channels: an ntfy
-// topic and/or a generic webhook. Sending is asynchronous through a small
+// topic, a generic webhook and/or a chat destination (Discord, Slack,
+// Telegram). Sending is asynchronous through a small
 // bounded queue; nothing here ever carries terminal output (callers only
 // pass wire.NotificationData, whose body is a fixed phrase). Every push is
 // titled with the host it comes from, and the last failure of each channel
 // is kept (on disk, across restarts) until a push to it succeeds. On ntfy,
 // the notifications of one session share a sequence ID: a newer one
-// replaces the older, and Clear dismisses it.
+// replaces the older, and Clear dismisses it. On Discord and Telegram, a
+// newer message of a session replaces the older (sent, then the older
+// deleted), and Clear marks it resolved (see chatref.go).
 package notify
 
 import (
@@ -24,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,11 +49,25 @@ type Sender struct {
 	hostname func() (string, error)
 	hostID   string // h= of the Click link; "" means no link
 	path     string // last failures file
+	chatPath string // unresolved chat messages file ("": kept in memory only)
 
 	mu       sync.Mutex
 	failures map[string]wire.NotifyFailure // by channel, never nil
+	// chatRefs: the unresolved chat messages. Only the worker changes
+	// them (and writes chatPath); others read them under mu.
+	chatRefs []chatRef
+	// chatURL: the fingerprint of the configured chat URL, once
+	// Reconfigure has named one (chatURLSet). A chat outcome of another
+	// URL (a push queued before the change) is not recorded.
+	chatURL    string
+	chatURLSet bool
 	// noReplace: an ntfy server ignored a sequence ID (logged once).
 	noReplace atomic.Bool
+	// sleep waits out a 429 before the resend (time.Sleep).
+	sleep func(time.Duration)
+	// chatLogged is the kind of the chat failure the worker logged last,
+	// "" after a success: the same kind again is not logged.
+	chatLogged string
 
 	once  sync.Once
 	queue chan job
@@ -57,23 +75,42 @@ type Sender struct {
 	wg    sync.WaitGroup
 }
 
-// job is a push of n or, when clear is set, the dismissal of the ntfy
-// notification of session n.SessionID.
+// job is a push of n (sessions: a digest's) or, by op, what follows a
+// session settling or the config changing.
 type job struct {
-	cfg   wire.NotifyConfig
-	n     wire.NotificationData
-	clear bool
+	cfg      wire.NotifyConfig
+	n        wire.NotificationData
+	sessions []string // a digest's sessions (n has none); nil otherwise
+	op       jobOp
 }
 
+type jobOp int
+
+const (
+	opPush jobOp = iota
+	// opClear: session n.SessionID settled: its ntfy notification is
+	// cleared and its chat messages resolved.
+	opClear
+	// opResolve: its chat messages only (a session gone over a restart).
+	opResolve
+	// opForget: chat messages sent through another chat URL are forgotten.
+	opForget
+)
+
 // NewSender returns a Sender keeping the last failure per channel in the
-// file failures (loaded now, rewritten when it changes) and linking ntfy
-// pushes to hostID (see ClickURL). logf (may be nil) receives delivery
-// errors.
-func NewSender(failures, hostID string, logf func(format string, args ...any)) *Sender {
+// file failures and the unresolved chat messages in the file
+// chatMessages (both loaded now, rewritten when they change; chatMessages
+// may be "": in memory only) and linking pushes to hostID (see ClickURL,
+// PageURL). logf (may be nil) receives delivery errors.
+func NewSender(failures, chatMessages, hostID string, logf func(format string, args ...any)) *Sender {
 	if logf == nil {
 		logf = log.Printf
 	}
 	f, err := LoadFailures(failures)
+	if err != nil {
+		logf("notify: %v", err)
+	}
+	refs, err := loadChatRefs(chatMessages)
 	if err != nil {
 		logf("notify: %v", err)
 	}
@@ -83,7 +120,10 @@ func NewSender(failures, hostID string, logf func(format string, args ...any)) *
 		hostname: os.Hostname,
 		hostID:   hostID,
 		path:     failures,
+		chatPath: chatMessages,
+		sleep:    time.Sleep,
 		failures: f,
+		chatRefs: refs,
 		queue:    make(chan job, queueSize),
 		done:     make(chan struct{}),
 	}
@@ -91,7 +131,33 @@ func NewSender(failures, hostID string, logf func(format string, args ...any)) *
 
 // Enabled reports whether cfg has any channel to send to.
 func Enabled(cfg wire.NotifyConfig) bool {
-	return (cfg.Ntfy.Enabled && cfg.Ntfy.Topic != "") || (cfg.Webhook.Enabled && cfg.Webhook.URL != "")
+	return (cfg.Ntfy.Enabled && cfg.Ntfy.Topic != "") || (cfg.Webhook.Enabled && cfg.Webhook.URL != "") ||
+		(cfg.Chat.Enabled && cfg.Chat.URL != "")
+}
+
+// Only keeps the channels of cfg that channels names (wire.Channel*)
+// enabled; none named keeps them all. An unknown name is an error.
+func Only(cfg wire.NotifyConfig, channels []string) (wire.NotifyConfig, error) {
+	if len(channels) == 0 {
+		return cfg, nil
+	}
+	var ntfy, webhook, chat bool
+	for _, c := range channels {
+		switch c {
+		case wire.ChannelNtfy:
+			ntfy = true
+		case wire.ChannelWebhook:
+			webhook = true
+		case wire.ChannelChat:
+			chat = true
+		default:
+			return cfg, fmt.Errorf("unknown channel %q (ntfy, webhook or chat)", c)
+		}
+	}
+	cfg.Ntfy.Enabled = cfg.Ntfy.Enabled && ntfy
+	cfg.Webhook.Enabled = cfg.Webhook.Enabled && webhook
+	cfg.Chat.Enabled = cfg.Chat.Enabled && chat
+	return cfg, nil
 }
 
 // Wants reports whether the reasons of cfg (with defaults applied) push n:
@@ -124,14 +190,35 @@ func (s *Sender) Send(cfg wire.NotifyConfig, n wire.NotificationData) bool {
 	return s.enqueue(job{cfg: cfg, n: n})
 }
 
-// Clear queues the dismissal of session sessionID's ntfy notification
-// (ntfy's clear: marked read and removed from the notification drawer),
-// behind the pushes queued before it. Webhooks get nothing.
-func (s *Sender) Clear(cfg wire.NotifyConfig, sessionID string) bool {
-	if !cfg.Ntfy.Enabled || cfg.Ntfy.Topic == "" || sessionID == "" {
+// SendDigest queues the notifications of one digest window (see Fold) like
+// Send. A chat message of several remembers their sessions: it is marked
+// resolved once they have all settled.
+func (s *Sender) SendDigest(cfg wire.NotifyConfig, ns []wire.NotificationData) bool {
+	if !Enabled(cfg) || len(ns) == 0 {
 		return true
 	}
-	return s.enqueue(job{cfg: cfg, n: wire.NotificationData{SessionID: sessionID}, clear: true})
+	j := job{cfg: cfg, n: Fold(ns, cfg.Lang)}
+	if len(ns) > 1 {
+		j.sessions = []string{}
+		for _, n := range ns {
+			if n.SessionID != "" && !slices.Contains(j.sessions, n.SessionID) {
+				j.sessions = append(j.sessions, n.SessionID)
+			}
+		}
+	}
+	return s.enqueue(j)
+}
+
+// Clear queues what follows session sessionID settling, behind the pushes
+// queued before it: the dismissal of its ntfy notification (ntfy's clear:
+// marked read and removed from the notification drawer) and its chat
+// messages marked resolved. The generic webhook gets nothing.
+func (s *Sender) Clear(cfg wire.NotifyConfig, sessionID string) bool {
+	ntfy := cfg.Ntfy.Enabled && cfg.Ntfy.Topic != ""
+	if sessionID == "" || !ntfy && cfg.Chat.URL == "" {
+		return true
+	}
+	return s.enqueue(job{cfg: cfg, n: wire.NotificationData{SessionID: sessionID}, op: opClear})
 }
 
 func (s *Sender) enqueue(j job) bool {
@@ -153,7 +240,8 @@ func (s *Sender) enqueue(j job) bool {
 	}
 }
 
-// Close stops the worker after the queued pushes (each bounded by Timeout).
+// Close stops the worker after the queued pushes (each request bounded by
+// Timeout; a chat 429 adds a wait of Timeout at most and one resend).
 func (s *Sender) Close() {
 	select {
 	case <-s.done:
@@ -186,32 +274,86 @@ func (s *Sender) run() {
 func (s *Sender) deliver(j job) {
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
-	if j.clear {
-		// Not a failed push (last_error): the notification stays, as on
-		// a server without clear.
-		if err := clearNtfy(ctx, s.client, j.cfg.Ntfy, j.n.SessionID); err != nil {
-			s.logf("notify: ntfy clear: %v (the server may predate clear, ntfy 2.16)", plain(err))
+	switch j.op {
+	case opClear:
+		if j.cfg.Ntfy.Enabled && j.cfg.Ntfy.Topic != "" {
+			// Not a failed push (last_error): the notification stays, as
+			// on a server without clear.
+			if err := clearNtfy(ctx, s.client, j.cfg.Ntfy, j.n.SessionID); err != nil {
+				s.logf("notify: ntfy clear: %v (the server may predate clear, ntfy 2.16)", plain(err))
+			}
 		}
+		s.resolveChatRefs(j.cfg, j.n.SessionID)
+		return
+	case opResolve:
+		s.resolveChatRefs(j.cfg, j.n.SessionID)
+		return
+	case opForget:
+		s.forgetChatRefs(j.cfg)
 		return
 	}
-	if err := s.Push(ctx, j.cfg, j.n); err != nil {
+	n := labelled(j.n, j.cfg.HostLabel, s.hostname)
+	outs, m := s.push(ctx, j.cfg, n, true)
+	// Pushes keep going to a chat destination that fails (even one the
+	// service disabled); while the same kind of failure repeats, only the
+	// first is logged.
+	var logged []error
+	for _, o := range outs {
+		if o.channel == wire.ChannelChat {
+			var ce *chatError
+			kind := ""
+			if errors.As(o.err, &ce) {
+				kind = ce.kind
+			}
+			if o.err != nil && kind != "" && kind == s.chatLogged {
+				continue
+			}
+			s.chatLogged = kind
+		}
+		if o.err != nil {
+			logged = append(logged, fmt.Errorf("%s: %w", o.channel, o.err))
+		}
+	}
+	if err := errors.Join(logged...); err != nil {
 		s.logf("notify: %v", err)
 	}
+	s.keepChatRef(j.cfg, n, j.sessions, m)
+}
+
+// outcome is the result of a push to one channel.
+type outcome struct {
+	channel string
+	err     error
 }
 
 // Push sends n, titled with the host (labelled), to every enabled channel
 // of cfg synchronously and records each channel's outcome (LastErrors).
-// notify.test reports its error, which never contains the ntfy topic or
-// the webhook URL.
+// notify.test reports its error, which never contains the ntfy topic, the
+// webhook URL or the chat URL. A 429 is not resent.
 func (s *Sender) Push(ctx context.Context, cfg wire.NotifyConfig, n wire.NotificationData) error {
-	n = labelled(n, cfg.HostLabel, s.hostname)
+	outs, _ := s.push(ctx, cfg, labelled(n, cfg.HostLabel, s.hostname), false)
 	var errs []error
+	for _, o := range outs {
+		if o.err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", o.channel, o.err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// push sends n, labelled already, to every enabled channel of cfg and
+// records and returns each channel's outcome, and names the message the
+// chat destination took (zero when none). With resend, a chat send
+// answered 429 with a wait of Timeout at most is sent once more after that
+// wait, and only the resend's outcome counts.
+func (s *Sender) push(ctx context.Context, cfg wire.NotifyConfig, n wire.NotificationData, resend bool) ([]outcome, ChatMessage) {
+	var out []outcome
 	push := func(channel string, send func() error) {
 		err := plain(send())
-		s.record(channel, err)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", channel, err))
+		if channel != wire.ChannelChat || s.chatURLCurrent(cfg.Chat.URL) {
+			s.record(channel, err)
 		}
+		out = append(out, outcome{channel, err})
 	}
 	if cfg.Ntfy.Enabled && cfg.Ntfy.Topic != "" {
 		push(wire.ChannelNtfy, func() error {
@@ -223,9 +365,32 @@ func (s *Sender) Push(ctx context.Context, cfg wire.NotifyConfig, n wire.Notific
 		})
 	}
 	if cfg.Webhook.Enabled && cfg.Webhook.URL != "" {
-		push(wire.ChannelWebhook, func() error { return pushWebhook(ctx, s.client, cfg.Webhook, n) })
+		push(wire.ChannelWebhook, func() error {
+			return pushWebhook(ctx, s.client, cfg.Webhook, n, PageURL(cfg.ClickPage, s.hostID, n.SessionID))
+		})
 	}
-	return errors.Join(errs...)
+	var m ChatMessage
+	if cfg.Chat.Enabled && cfg.Chat.URL != "" {
+		link := s.chatLink(cfg, n)
+		send := func(ctx context.Context) error {
+			var err error
+			m, err = pushChat(ctx, s.client, cfg.Chat.URL, n, link, Text(cfg.Lang, PhraseOpen))
+			return chatFailure(cfg.Chat.URL, plain(err))
+		}
+		push(wire.ChannelChat, func() error {
+			err := send(ctx)
+			if wait, ok := resendable(err); resend && ok {
+				s.sleep(wait)
+				// The first send may have used up ctx: the resend gets
+				// a Timeout of its own.
+				rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), Timeout)
+				defer cancel()
+				err = send(rctx)
+			}
+			return err
+		})
+	}
+	return out, m
 }
 
 // labelled prefixes n's title with the host: hostLabel, else the host name
@@ -249,7 +414,8 @@ func labelled(n wire.NotificationData, hostLabel string, hostname func() (string
 	return n
 }
 
-// ClickURL is the link a push of sessionID (may be "") opens: clickBase
+// ClickURL is the link an ntfy push of sessionID (may be "") opens (its
+// Click): clickBase
 // with h=<hostID> and, for a session, s=<sessionID> added to its query.
 // It is "" — no link — when clickBase or hostID is empty or clickBase is
 // not an absolute URL. Nothing else goes into the link.
@@ -269,6 +435,41 @@ func ClickURL(clickBase, hostID, sessionID string) string {
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// ValidClickPage reports whether clickPage is a notify.click_page: an
+// absolute https URL with neither a query nor a fragment.
+func ValidClickPage(clickPage string) bool {
+	_, ok := parseClickPage(clickPage)
+	return ok
+}
+
+func parseClickPage(clickPage string) (*url.URL, bool) {
+	if strings.ContainsAny(clickPage, "?#") {
+		return nil, false
+	}
+	u, err := url.Parse(clickPage)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return nil, false
+	}
+	return u, true
+}
+
+// PageURL is the link to the open page clickPage for a push of sessionID
+// (may be ""): h=<hostID> and, for a session, s=<sessionID> in its
+// fragment (`<click_page>#h=…&s=…`), so they never reach the page's
+// server. It is "" — no link — when hostID is empty or clickPage is not
+// a notify.click_page (ValidClickPage; empty included).
+func PageURL(clickPage, hostID, sessionID string) string {
+	u, ok := parseClickPage(clickPage)
+	if !ok || hostID == "" {
+		return ""
+	}
+	v := url.Values{"h": {hostID}}
+	if sessionID != "" {
+		v.Set("s", sessionID)
+	}
+	return u.String() + "#" + v.Encode()
 }
 
 // LastErrors returns the last failed push per channel (never nil).
@@ -294,6 +495,10 @@ func (s *Sender) record(channel string, err error) {
 		if errors.As(err, &se) {
 			f.Status = se.code
 		}
+		var ce *chatError
+		if errors.As(err, &ce) {
+			f.Kind = ce.kind
+		}
 		s.failures[channel] = f
 	}
 	b, err := json.Marshal(s.failures)
@@ -303,6 +508,14 @@ func (s *Sender) record(channel string, err error) {
 	if err != nil {
 		s.logf("notify: last errors: %v", err)
 	}
+}
+
+// chatURLCurrent reports whether rawURL is the configured chat URL (any is
+// before Reconfigure names one).
+func (s *Sender) chatURLCurrent(rawURL string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.chatURLSet || s.chatURL == chatFingerprint(rawURL)
 }
 
 // LoadFailures reads a last failures file (Sender). A missing file is no
@@ -454,8 +667,13 @@ func ntfyTags(n wire.NotificationData) string {
 	return strings.Join(tags, ",")
 }
 
-func pushWebhook(ctx context.Context, client *http.Client, c wire.WebhookConfig, n wire.NotificationData) error {
-	b, err := json.Marshal(n)
+// pushWebhook posts n as JSON with click_url (the open page, PageURL)
+// added when click is not empty.
+func pushWebhook(ctx context.Context, client *http.Client, c wire.WebhookConfig, n wire.NotificationData, click string) error {
+	b, err := json.Marshal(struct {
+		wire.NotificationData
+		ClickURL string `json:"click_url,omitempty"`
+	}{n, click})
 	if err != nil {
 		return err
 	}
@@ -472,16 +690,27 @@ func pushWebhook(ctx context.Context, client *http.Client, c wire.WebhookConfig,
 }
 
 // statusError is a response other than 2xx. Its text is the status line
-// only: the request URL (ntfy topic, webhook URL) is a secret.
+// only — the request URL (ntfy topic, webhook URL, chat URL) is a secret —
+// followed, for the chat destination, by the service's reason
+// (chatFailure).
 type statusError struct {
-	code   int
-	status string // e.g. "429 Too Many Requests"
+	code       int
+	status     string // e.g. "429 Too Many Requests"
+	reason     string // chatFailure's, "" for none
+	body       []byte // the start of the reply, never shown as it is
+	retryAfter string // the Retry-After header
 }
 
-func (e *statusError) Error() string { return e.status }
+func (e *statusError) Error() string {
+	if e.reason == "" {
+		return e.status
+	}
+	return e.status + ": " + e.reason
+}
 
 // plain drops the request URL from a net/http error (*url.Error), keeping
-// the cause: the URL holds the ntfy topic or the webhook URL, both secrets.
+// the cause: the URL holds the ntfy topic, the webhook URL or the chat
+// URL (a Telegram bot token), all secrets.
 func plain(err error) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {
@@ -503,7 +732,7 @@ func do(client *http.Client, req *http.Request) ([]byte, error) {
 		if status == "" {
 			status = fmt.Sprintf("%d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 		}
-		return nil, &statusError{resp.StatusCode, status}
+		return nil, &statusError{code: resp.StatusCode, status: status, body: body, retryAfter: resp.Header.Get("Retry-After")}
 	}
 	return body, nil
 }

@@ -293,7 +293,7 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 		fmt.Fprintln(os.Stderr, "stagent bridge: host id:", err)
 	}
 	caps := []string{
-		wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush, wire.CapPersist,
+		wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush, wire.CapPushChat, wire.CapPersist,
 	}
 	if runtime.GOOS == "windows" {
 		caps = append(caps, wire.CapPersistShell)

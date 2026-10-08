@@ -39,6 +39,9 @@ type Layout struct {
 	// NotifyErrors holds the last failed push per channel:
 	// <StateDir>/notify-errors.json
 	NotifyErrors string
+	// ChatMessages holds the unresolved messages the chat destination
+	// took (ids only, never the URL): <StateDir>/chat-messages.json
+	ChatMessages string
 	DataDir      string // per-session scrollback segments; local disk even when Home is on NFS
 	LogDir       string // <Root>/log — stderr of detached processes
 	RunDir       string // sockets (unix) / lock and pid files (all OSes), 0700
@@ -94,6 +97,7 @@ func resolve(home string, isolated bool) (*Layout, error) {
 	l.Index = filepath.Join(l.StateDir, "index.json")
 	l.WrapperRun = filepath.Join(l.StateDir, "wrapper-run")
 	l.NotifyErrors = filepath.Join(l.StateDir, "notify-errors.json")
+	l.ChatMessages = filepath.Join(l.StateDir, "chat-messages.json")
 	l.DataDir = filepath.Join(l.StateDir, "sessions")
 	if !isolated && isNetworkFS(home) {
 		l.DataOnNetworkFS = true

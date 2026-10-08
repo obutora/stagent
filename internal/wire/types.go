@@ -280,6 +280,7 @@ type Config struct {
 type NotifyConfig struct {
 	Ntfy    NtfyConfig    `json:"ntfy"`
 	Webhook WebhookConfig `json:"webhook"`
+	Chat    ChatConfig    `json:"chat"`
 	// DebounceMs: minimum stable time of a state before it notifies.
 	DebounceMs int `json:"debounce_ms"`
 	// DigestWindowMs: notifications within this window fold into one digest.
@@ -287,10 +288,15 @@ type NotifyConfig struct {
 	// HostLabel prefixes the title of every push so the user can tell the
 	// hosts apart; empty means the host name (no default is filled in).
 	HostLabel string `json:"host_label"`
-	// ClickBase is the link a push opens when tapped (ntfy's Click), with
-	// h=<host_id> and, for one session, s=<session id> added to its query;
-	// empty means no link. The app sets it; stagent knows no app scheme.
+	// ClickBase is the link an ntfy push opens when tapped (ntfy's Click),
+	// with h=<host_id> and, for one session, s=<session id> added to its
+	// query; empty means no link. The app sets it; stagent knows no app
+	// scheme.
 	ClickBase string `json:"click_base"`
+	// ClickPage is the open page (開くページ) the chat destination and the
+	// generic webhook link to: an https URL, h=<host_id> and, for one
+	// session, s=<session id> go into its fragment; empty means no link.
+	ClickPage string `json:"click_page"`
 	// Reasons selects what is pushed; in-app notification events are not
 	// affected. Missing keys take the defaults (WithDefaults).
 	Reasons NotifyReasons `json:"reasons"`
@@ -365,19 +371,46 @@ type WebhookConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// Push channel names (keys of NotifyStatus.LastError).
+// ChatConfig sends to a chat service in its own message format (chat
+// destination). URL names the service and is a secret: Discord
+// (https://discord.com/api/webhooks/<id>/<token>, also discordapp.com, or
+// discord://<id>/<token>), Slack Incoming Webhooks
+// (https://hooks.slack.com/services/<a>/<b>/<c> or slack://<a>/<b>/<c>) or
+// Telegram (tgram://<bot token>/<chat id>).
+type ChatConfig struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
+}
+
+// Push channel names (keys of NotifyStatus.LastError, notify.test's
+// channels).
 const (
 	ChannelNtfy    = "ntfy"
 	ChannelWebhook = "webhook"
+	ChannelChat    = "chat"
 )
 
 // NotifyFailure is the last failed push to one channel. Error never
-// contains the ntfy topic or the webhook URL.
+// contains the ntfy topic, the webhook URL or the chat URL; for the chat
+// destination it is the status line followed by the service's short
+// reason (`404 Not Found: Unknown Webhook (10015)`).
 type NotifyFailure struct {
 	At     int64  `json:"at"`               // unix ms
 	Status int    `json:"status,omitempty"` // HTTP status; 0 for a transport error
 	Error  string `json:"error"`
+	Kind   string `json:"kind,omitempty"` // Failure*, the chat destination only
 }
+
+// Kinds of a failed push to the chat destination (NotifyFailure.Kind). A
+// client shows Error for a kind it does not know.
+const (
+	FailureRevoked     = "revoked"      // the service disabled the destination (webhook deleted, bot token revoked)
+	FailureUnreachable = "unreachable"  // the destination cannot be reached (bot blocked, channel gone or archived)
+	FailureRateLimited = "rate_limited" // 429
+	FailureRejected    = "rejected"     // any other 4xx: the message stagent built was refused
+	FailureServer      = "server"       // 5xx
+	FailureNetwork     = "network"      // no status line: the request did not get an answer
+)
 
 // RetentionConfig bounds on-disk data.
 type RetentionConfig struct {

@@ -152,7 +152,11 @@ the bridge starts them in the GUI login session so that the agent can use
 the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
-`persist`, and on Windows `persist_shell`. `persist` announces everything
+`push_chat`, `persist`, and on Windows `persist_shell`. `push_chat`
+announces the chat destination (`notify.chat`) and `notify.test`'s
+`channels`: an older stagent stores `notify.chat` like any unknown key
+without sending to it, so an app configures chat destinations only on
+hosts that announce it. `persist` announces everything
 this document marks with it: `session.spawn` `shell`, attach resume
 (`since`, `offset`, `resumed`, `output.end`), the `hangup` signal,
 input-mode restoring snapshots and sessions changing from `passthrough`
@@ -318,7 +322,7 @@ max 1 MiB.
 | `approvals.list` | – | `{approvals[]}` |
 | `config.get` | – | `{config, notify: {last_error}}` |
 | `config.set` | `{config}` — a JSON Merge Patch (RFC 7396) of `Config` | `{config, notify: {last_error}}` (the effective config, with defaults applied) |
-| `notify.test` | – | `{}`; pushes a test to the enabled channels right away and emits a `notification` event (reason `test`); `not_configured` (nothing sent, no event) when no channel is enabled; `unavailable` with the failure when a channel failed |
+| `notify.test` | `{channels?: ["ntfy" \| "webhook" \| "chat"]}` | `{}`; pushes a test right away to the enabled channels among `channels` (absent or empty: every enabled channel) and emits a `notification` event (reason `test`); `bad_request` for a channel name not in the list; `not_configured` (nothing sent, no event) when none of them is enabled; `unavailable` with the failure when a channel failed |
 | `presence.set` | `{foreground}` | `{}`; the app is (not) in the foreground (see "Push notifications") |
 
 Nothing in the protocol answers an approval: the program's own screen does
@@ -346,13 +350,16 @@ one. Keys the patch does not name — including keys this stagent version
 does not know — stay as they are, and defaults are never written to the
 file (it holds only explicitly set values; `config.json` is mode 0600). The
 merged document must still be a valid `Config` (for example a webhook URL
-must be http(s)); otherwise the call fails with `bad_request` and nothing
+must be http(s), a chat URL one of the formats under "Chat
+destinations", and `notify.click_page` empty or an absolute https URL
+with no query and no fragment); otherwise the call fails with
+`bad_request` and nothing
 is written. The result, like `config.get`, is the effective config with
 defaults filled in. Example: `{"config": {"disable_handoff": true}}`
 turns handoff off for `stagent run --handoff=auto` without touching any
 other setting.
 
-Every push (ntfy, webhook, including `notify.test`) is titled with the
+Every push (ntfy, webhook, chat, including `notify.test`) is titled with the
 host it comes from: `notify.host_label`, or the host name when it is empty
 (no prefix when that is unknown too). A single notification reads
 `<label> · <title>` (e.g. `開発機 · claude · api`), a digest
@@ -362,18 +369,31 @@ A notification about one session carries its `session_id`. On ntfy its
 sequence ID (`X-Sequence-ID`) is the session id — or, for an id outside
 ntfy's rule (1–64 of `[A-Za-z0-9_-]`; stagent's never are), the first 32
 hex digits of its SHA-256: a newer notification of the session replaces
-the older one. When `notify.click_base` is set, ntfy pushes carry a
-`Click` link: `click_base` with `h=<host_id>` and, for a session,
-`s=<session id>` added to its query (e.g.
-`sshtermx://open?h=<host_id>&s=<session id>`). A digest and `notify.test`
-link to the host only (`h`) and have no sequence ID. Nothing else goes
-into the link; an empty `click_base` (or a host without `host_id`) sends
-no `Click`. stagent knows no app scheme: the app sets `click_base`.
+the older one. A digest and `notify.test` have no sequence ID.
+
+#### Click link
+
+A push links to the session it is about (`h=<host_id>`, `s=<session
+id>`), or to the host only (`h`) when it is about no session (a digest,
+`notify.test`). Which link depends on the channel:
+
+| channel | link | pushes linked |
+|---|---|---|
+| ntfy (`Click`) | `notify.click_base` with `h` and `s` added to its query, e.g. `sshtermx://open?h=<host_id>&s=<session id>` | every push (`h` only without a session) |
+| chat destination (a button, on Slack a link; see "Chat destinations") | `notify.click_page` with `h` and `s` in its fragment, e.g. `https://sshterm.iru-yo.com/open#h=<host_id>&s=<session id>` | a push of one session only: none for a digest, `notify.test` or a push of no session |
+| generic webhook (`click_url`) | as the chat destination | every push (`#h=<host_id>` only without a session) |
+
+The fragment is `h=<host_id>&s=<session id>` (form-encoded, `h` first);
+it never reaches the open page's server, but the message — link included —
+stays with the chat service. Nothing else goes into a link. An empty
+`click_base` or `click_page` (or a host without `host_id`) means no link
+on its channels: no `Click`, no button, no `click_url`. stagent knows no
+app scheme and no page: the app sets both.
 
 #### Push notifications
 
 Every notification is a `notification` event for the app. It is also
-pushed (ntfy, webhook) only when all of these hold:
+pushed (ntfy, webhook, chat) only when all of these hold:
 
 - It is about a session started through stagent. Hooks of programs that
   were not (an IDE, `claude -p`, the SDK; no `STAGENT_SESSION_ID` and no
@@ -420,6 +440,53 @@ going; it never checks the server's version and adds no cooldown beyond
 `debounce_ms` and the digest. A failed clear is not a failed push
 (`last_error`).
 
+On the chat destination (see "Chat destinations"), Discord and Telegram
+replace and resolve too; the daemon keeps the ids of the messages they
+took:
+
+- Replace: the next message of a session is sent first, then the
+  session's older message is deleted (Discord `DELETE
+  /webhooks/<id>/<token>/messages/<message id>`, Telegram
+  `deleteMessage`), so one unresolved message per session stays in the
+  channel. A message the service does not delete (Telegram's after 48
+  hours, another refusal) is edited to resolved instead (below).
+- Resolve: when the session settles (above), its message is edited, not
+  deleted: ☑️ in place of the reason's emoji and `（解決済み）` after the
+  title in `notify.lang` (en ` (resolved)`, ko ` (해결됨)`, zh
+  `（已解决）`), the body unchanged and the same link button. Discord
+  `PATCH` of the same path (`?with_components=true` with the button) with
+  a grey embed (`0x99AAB5`) and `components` sent again; Telegram
+  `editMessageText {chat_id, message_id, text, link_preview_options}`
+  with `reply_markup` sent again (without it the button would go). Then
+  the daemon forgets the message.
+- Digest: a digest's message remembers the sessions in it and is edited
+  to resolved once all of them have settled. A later message of one of
+  them never deletes the digest; replacing deletes a session's own
+  messages only. A digest replaces the older own messages of its
+  sessions.
+- Slack (Incoming Webhooks name no message) only gets pushes: nothing is
+  deleted or edited.
+- The daemon keeps the unresolved messages in `state/chat-messages.json`
+  (mode 0600): per message its sessions (a digest: those not settled
+  yet), the Discord message id or the Telegram chat id and message id,
+  the time it was sent, the SHA-256 of the `notify.chat.url` it went
+  through — never the URL or its token — and the title, body and link
+  the resolved edit writes again. The file is written when a message is
+  sent and when one is let go. After a restart, a message of a session
+  whose holder still answers is the session's again (resolved when it
+  settles); any other is edited to resolved at once.
+- When `notify.chat.url` changes or `chat` is removed, the messages sent
+  through the old URL are forgotten without an edit: they stay as they
+  look.
+- A failed delete or edit is not a failed push (`last_error`) and is not
+  retried: a 404 (the message, webhook or bot's chat is gone) lets the
+  message go; a 429 or a connection error lets it go with one log line;
+  a refused delete is followed by the resolved edit, and a refused edit
+  lets the message go with one log line.
+
+The generic webhook (`notify.webhook`) gets no clear: a receiver that
+turns every POST into a notification would show one for it.
+
 `notify.lang` (`en` default, `ja`, `ko`, `zh`) is the language of the
 fixed phrases stagent writes — notification bodies such as `Turn
 complete`, digest titles and the `notify.test` body — in events and
@@ -427,15 +494,56 @@ pushes alike. `reason` never changes; the app can build its own text from
 it.
 
 `notify.last_error` (in the `config.get` / `config.set` result and in
-`stagent doctor`) holds, per channel (`ntfy`, `webhook`), the last failed
-push: `{at (unix ms), status? (HTTP status; absent for a connection
-error), error}`. A successful push to the channel removes its entry;
-channels without a failure are absent and `last_error` is `{}` when none
-failed. `error` is the HTTP status line (`429 Too Many Requests`) or the
-connection error, never the ntfy topic or the webhook URL; `notify.test`'s
-`unavailable` message is built the same way. Queued pushes and
+`stagent doctor`) holds, per channel (`ntfy`, `webhook`, `chat`), the last
+failed push: `{at (unix ms), status? (HTTP status; absent for a
+connection error), error, kind? (chat only)}`. A successful push to the channel removes its
+entry; channels without a failure are absent and `last_error` is `{}` when
+none failed. `error` is the HTTP status line (`429 Too Many Requests`) or
+the connection error, never the ntfy topic, the webhook URL or the chat
+URL; `notify.test`'s `unavailable` message is built the same way (a chat
+URL that names no service, in a hand-edited `config.json`, fails with the
+list of formats). Queued pushes and
 `notify.test` both count. The daemon keeps the entries in
-`state/notify-errors.json` (mode 0600), so they survive its restarts.
+`state/notify-errors.json` (mode 0600), so they survive its restarts,
+next to `state/chat-messages.json` (mode 0600, the chat destination's
+unresolved messages, see above).
+
+The chat destination's `error` is the status line followed by the
+service's short reason, `<status line>: <reason>` — Discord's `message`
+and `(code)`, Telegram's `description`, Slack's body when it is only
+lowercase letters and `_` — e.g. `404 Not Found: Unknown Webhook (10015)`,
+`403 Forbidden: bot was blocked by the user`, `404 Not Found:
+channel_not_found`. The reason is 200 characters at most, without control
+characters (and without the status line's own text repeated); a reason
+holding the URL, a token (the webhook token, the bot token) or the URL's
+path is dropped whole, leaving the status line: the URL and its tokens
+never show. Its `kind` says what failed (a client that does not know the
+value shows `error`):
+
+| `kind` | failure |
+|---|---|
+| `revoked` | the service disabled the destination: Discord codes 10015 (Unknown Webhook) and 50027 (Invalid Webhook Token), Telegram 401, Slack `no_service`, `no_active_hooks`, `invalid_token`, `team_disabled`, `no_team` |
+| `unreachable` | the destination cannot be reached: Telegram 403 (bot blocked, removed from the group, never messaged) and 400 `chat not found` or a group upgraded to a supergroup (stagent does not follow `migrate_to_chat_id`: get the new chat id), Slack `channel_not_found`, `channel_is_archived`, `action_prohibited` |
+| `rate_limited` | 429 |
+| `rejected` | any other 4xx (the message stagent built was refused) |
+| `server` | 5xx |
+| `network` | no status line (connection error, timeout) |
+
+Telegram is classified by its `error_code`, not the `description` text
+(except for the two 400s above). A queued push answered 429 whose wait —
+Discord's JSON `retry_after` (seconds, fractional) or `Retry-After`,
+Telegram's `parameters.retry_after`, Slack's `Retry-After` — is 5 s
+(`notify.Timeout`) or less is sent once more after that wait (the worker
+waits: other channels' pushes wait with it); a longer or unnamed wait
+drops the push. Only a failed resend is recorded. `notify.test` is never
+resent (it fails right away, kind `rate_limited`), and neither is a 5xx
+or a network failure. Pushes keep going after any failure, `revoked` and
+`unreachable` included (fixing it on the service side is enough); while
+the same kind repeats, the daemon logs only the first. `config.set`
+changing `notify.chat.url` (to `null` included) removes `last_error.chat`:
+a failure of the old URL says nothing about the new one, so a push still
+queued for the old URL does not bring it back; `enabled: false` alone
+keeps it.
 
 If the daemon restarts while the bridge is connected, daemon requests in
 flight fail with `unavailable` and the bridge restores the watch itself:
@@ -444,6 +552,56 @@ events the app missed arrive as `event`, every current session as
 current `unwrapped` list (empty after a restart) as `unwrapped.updated`. The
 app needs no daemon-restart handling. Session requests go to the holders
 directly and are unaffected.
+
+#### Chat destinations (`notify.chat`)
+
+`notify.chat {enabled, url}` sends every push to a chat service in the
+service's own message format; stagent builds it (no template). It is a
+channel of its own (`chat` in `last_error` and `notify.test`), next to
+the generic webhook (`notify.webhook`, which gets the `notification`
+object with `click_url?` added): both can be enabled and both get every push. `url` is
+one line and names the service:
+
+| service | `url` |
+|---|---|
+| Discord | `https://discord.com/api/webhooks/<id>/<token>` (also `discordapp.com`) or `discord://<id>/<token>` |
+| Slack (Incoming Webhook) | `https://hooks.slack.com/services/<a>/<b>/<c>` or `slack://<a>/<b>/<c>` |
+| Telegram | `tgram://<bot token>/<chat id>` |
+
+`config.set` refuses (`bad_request`, nothing written) any other `url`: an
+https URL on another host or path, with a port, user, query or fragment,
+a Discord id that is not a number, a Telegram bot token not of the form
+`<number>:<letters, digits, _ and ->` or a chat id that is neither a
+number (negative for groups) nor `@<channel name>`. Slack Workflow
+Builder webhooks (`https://hooks.slack.com/triggers/…`, `/workflows/…`)
+are refused too: they take the generic webhook. Whether the destination
+answers is `notify.test`'s job (`{channels: ["chat"]}`).
+
+A message starts with the emoji of its `reason` (🔒 `needs_approval`, ⏳
+`waiting_input`, ✅ `turn_complete`, ⚠️ abnormal / 🏁 normal `exited`, 🔔
+`digest`; none for `terminal` and `test`), then the host-labelled title,
+then on the next line the body (the fixed phrase in `notify.lang`):
+
+| service | request (JSON, `Content-Type: application/json`) | the message's ids |
+|---|---|---|
+| Discord | `POST https://discord.com/api/webhooks/<id>/<token>?wait=true` `{embeds: [{title, description: body, color?}], allowed_mentions: {parse: []}}`; `color` is yellow (`0xFEE75C`) for level `warn`; no mention in the text pings. With a link: `&with_components=true` and `components: [{type: 1, components: [{type: 2, style: 5, label, url}]}]` (a link button) | the reply's `id` |
+| Slack | `POST https://hooks.slack.com/services/<a>/<b>/<c>` `{text: "*<title>*\n<body>", unfurl_links: false}`; `&`, `<` and `>` escaped (`&amp;` `&lt;` `&gt;`), so no link or mention of the text's own. With a link: `\n<url\|label>` at the end of `text` (the url's `&` as `&amp;`) | none (Incoming Webhooks name no message) |
+| Telegram | `POST https://api.telegram.org/bot<bot token>/sendMessage` `{chat_id, text: "<title>\n<body>", link_preview_options: {is_disabled: true}}`; no `parse_mode`: plain text. With a link: `reply_markup: {inline_keyboard: [[{text: label, url}]]}` (a url button) | the reply's `result.chat.id` and `result.message_id` |
+
+The link (see "Click link") is the open page `notify.click_page` with
+`#h=<host_id>&s=<session id>`, only on a push of one session; `label` is
+`Open in SSH Term` in `notify.lang` (ja `SSH Term で開く`, ko `SSH
+Term에서 열기`, zh `在 SSH Term 中打开`).
+
+Discord and Telegram messages are replaced and resolved (see "Push
+notifications"); Slack messages are only sent.
+
+`url` is a secret: anyone who knows it can post to the channel, and a
+Telegram one holds the bot token, which controls the bot. The host keeps
+it in plain text in `config.json` (mode 0600; Windows has no permission
+bits), and `config.get` returns it. It never goes into `last_error`,
+`notify.test`'s errors (`config.set`'s `bad_request` names the formats,
+not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 
 ### Notifications
 
@@ -521,7 +679,7 @@ five checks. The agent's next hook sets the harness again.
 | `session_started` | `{harness, command[], cwd, mode}` |
 | `session_ended` | `{exit_code, hung_up?}` — `hung_up`: a client ended it with `session.signal hangup`, or (Windows) the console of a passthrough session closed |
 | `state_changed` | `{from, to, source}` |
-| `notification` | `{title, body, level (info\|warn), reason, count?, session_id?}` — reason `waiting_input\|needs_approval\|turn_complete\|exited\|terminal\|test\|digest`; `session_id` names the session it is about (absent for a digest, `notify.test` and approvals of no session); webhooks post this object |
+| `notification` | `{title, body, level (info\|warn), reason, count?, session_id?}` — reason `waiting_input\|needs_approval\|turn_complete\|exited\|terminal\|test\|digest`; `session_id` names the session it is about (absent for a digest, `notify.test` and approvals of no session); the generic webhook posts this object with `click_url?` added (see "Click link"; absent without `notify.click_page`) |
 | `approval_requested` | `Approval` |
 | `approval_resolved` | `{request_id, by: "cancelled"}` |
 
@@ -590,8 +748,9 @@ without a terminal (cannot be shown).
 live_session_id?`.
 
 `Config`: see `wire.Config` — `notify {ntfy {enabled, server, topic,
-token?}, webhook {enabled, url, headers?}, debounce_ms, digest_window_ms,
-host_label, click_base, reasons {needs_approval, waiting_input,
+token?}, webhook {enabled, url, headers?}, chat {enabled, url},
+debounce_ms, digest_window_ms,
+host_label, click_base, click_page, reasons {needs_approval, waiting_input,
 turn_complete, exited, terminal}, lang, skip_when_claude_app_notifies},
 retention {events_days, events_max, scrollback_days,
 scrollback_total_mib, scrollback_session_mib}, idle_after_ms,
@@ -602,14 +761,20 @@ holders read it at every start, so it applies from the next start on, also
 in shells that are already open. `notify.host_label` (no default: empty
 means the host name) names this host in the title of every push (see
 `notify.test`); the app sets it to the connection's name. `notify.click_base`
-(no default: empty means no link) is the link a push opens when tapped
-(see `notify.test`); it must be an absolute URL. `notify.reasons` selects
+(no default: empty means no link) is the link an ntfy push opens when
+tapped (see "Click link"); it must be an absolute URL.
+`notify.click_page` (no default: empty means no link) is the open page
+that chat destinations and the generic webhook link to (see "Click
+link"); it must be an absolute https URL with no query and no fragment.
+`notify.reasons` selects
 what is pushed (see "Push notifications"): booleans, defaults `true`,
 `true`, `true` and `terminal` `false`; `exited` is `off`, `error`
 (default: abnormal exits only) or `all`. `notify.lang` is `en` (default),
 `ja`, `ko` or `zh`; the app sets it to its own language.
-`notify.skip_when_claude_app_notifies` defaults to false. Missing keys take
-their defaults; another `exited` or `lang` is `bad_request`.
+`notify.skip_when_claude_app_notifies` defaults to false. `notify.chat` is
+the chat destination (see "Chat destinations"). Missing keys take their
+defaults; another `exited` or `lang`, or a chat `url` of no known format,
+is `bad_request`.
 
 ## `stagent follow` (terminal chat view, follow protocol 1)
 
@@ -1204,7 +1369,11 @@ records stagent's edit and the file still has the line.
 `notify.last_error` is the daemon's last push failure per channel (see
 `config.get`), read from its file, so it is reported whether or not the
 daemon runs; `{}` when none. Each failing channel adds a `problems` line
-(`notify: the last push to ntfy failed at <RFC 3339 time>: <error>`).
+(`notify: the last push to ntfy failed at <RFC 3339 time>: <error>`); the
+chat destination's names its `kind` (`notify: the last push to chat
+failed at <RFC 3339 time> (<kind>): <error>`), and a `revoked` one adds
+`; the destination was disabled on the service side; set a new URL from
+the app`.
 
 ## Command-line tools
 
