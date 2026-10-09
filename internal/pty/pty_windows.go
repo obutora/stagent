@@ -62,7 +62,7 @@ func Start(argv []string, dir string, env []string, cols, rows int) (PTY, error)
 	if err != nil {
 		return nil, err
 	}
-	app, cmdline, err := commandLine(path, argv[1:])
+	app, cmdline, err := CommandLine(path, argv[1:])
 	if err != nil {
 		return nil, err
 	}
@@ -146,8 +146,10 @@ func spawn(hpc windows.Handle, app, cmdline, dir string, env []string) (*windows
 	return &pi, nil
 }
 
-// commandLine returns the application to start and its full command line.
-func commandLine(path string, args []string) (app, cmdline string, err error) {
+// CommandLine returns the application to start and its full command line
+// for the program at path with args (`stagent task run` starts its agent
+// the same way).
+func CommandLine(path string, args []string) (app, cmdline string, err error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".cmd", ".bat":
 		// cmd.exe parses the line itself: every argument is quoted so

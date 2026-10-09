@@ -181,6 +181,19 @@ func (osSource) Owner(pid int) (string, error) {
 	return statusOwner(b)
 }
 
+// CurrentOwner returns the user this process runs as, in the form of
+// Snapshot.Owner, read the way Owner reads every other process:
+// /proc/self/status. geteuid would disagree with it under proot's fake
+// root (-0), which fakes the uid system calls but leaves /proc untouched,
+// and every process would look like another user's.
+func CurrentOwner() (string, error) {
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return "", err
+	}
+	return statusOwner(b)
+}
+
 // statusOwner returns the uid of a /proc/<pid>/status whose real and
 // effective uids ("Uid:\t<real>\t<effective>\t<saved>\t<fs>") are one.
 func statusOwner(b []byte) (string, error) {

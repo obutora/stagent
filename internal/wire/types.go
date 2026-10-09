@@ -76,6 +76,12 @@ type Session struct {
 	// when unset): while that file exists, someone is at the session.
 	PresenceFile string `json:"presence_file,omitempty"`
 	ExitCode     *int   `json:"exit_code,omitempty"`
+	// TaskID is the task the session belongs to (omitted: none). The
+	// daemon decides it: a worktree task's sessions are those whose cwd is
+	// in its worktree; an in_place task's are its prepared session and the
+	// ones session.spawn started with its task_id. A holder registers with
+	// the task_id it was started with (`stagent run --task`).
+	TaskID string `json:"task_id,omitempty"`
 }
 
 // NewSessionID returns a random 16-hex-char id (paths.sessionIDLen).
@@ -87,20 +93,44 @@ func NewSessionID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// DetectHarness maps a command's executable to a harness id.
+// DetectHarness maps a command's executable to a harness id. For a task's
+// prepared session it is the command `stagent task run` ends in
+// (AgentArgv).
 func DetectHarness(argv []string) string {
+	argv = AgentArgv(argv)
 	if len(argv) == 0 {
 		return HarnessOther
 	}
-	base := strings.ToLower(filepath.Base(strings.ReplaceAll(argv[0], `\`, "/")))
-	for _, ext := range []string{".exe", ".cmd", ".bat", ".ps1"} {
-		base = strings.TrimSuffix(base, ext)
-	}
-	switch base {
+	switch base := programName(argv[0]); base {
 	case HarnessClaude, HarnessCodex, HarnessOmp:
 		return base
 	}
 	return HarnessOther
+}
+
+// AgentArgv is the program a command runs in the end: for `stagent task
+// run [flags] <id> -- <command…>` (a task's prepared session) the command
+// after "--", which that one becomes; argv itself otherwise.
+func AgentArgv(argv []string) []string {
+	if len(argv) < 4 || programName(argv[0]) != "stagent" || argv[1] != "task" || argv[2] != "run" {
+		return argv
+	}
+	for i := 3; i < len(argv); i++ {
+		if argv[i] == "--" {
+			return argv[i+1:]
+		}
+	}
+	return argv
+}
+
+// programName is the lower-case base name of argv0 without a Windows
+// program extension.
+func programName(argv0 string) string {
+	base := strings.ToLower(filepath.Base(strings.ReplaceAll(argv0, `\`, "/")))
+	for _, ext := range []string{".exe", ".cmd", ".bat", ".ps1"} {
+		base = strings.TrimSuffix(base, ext)
+	}
+	return base
 }
 
 // EnvSessionID is exported to the agent process so hooks can name the PTY
@@ -182,6 +212,10 @@ type NotificationData struct {
 	// digest, notify.test and approvals of no session. ntfy's sequence ID
 	// and the s= of the Click link are both made from it.
 	SessionID string `json:"session_id,omitempty"`
+	// TaskNumber is the number of the session's task (0: none). Not part
+	// of the event: pushes title the notification "#N <title>" (see
+	// notify's labelled), a digest of several never.
+	TaskNumber int `json:"-"`
 }
 
 // Approval is a pending permission request reported by a harness hook. It
@@ -274,6 +308,17 @@ type Config struct {
 	// wrappers) end the program with its terminal unless STAGENT_HANDOFF
 	// says otherwise.
 	DisableHandoff bool `json:"disable_handoff"`
+	// Repos holds settings per source checkout (元のチェックアウト), keyed
+	// by its canonical path (task.Canonical).
+	Repos map[string]RepoConfig `json:"repos,omitempty"`
+}
+
+// RepoConfig is one source checkout's settings.
+type RepoConfig struct {
+	// WorktreeInclude: git pathspec globs (`:(glob)`, from the checkout's
+	// root) of gitignored files a new task worktree gets a copy of, on top
+	// of the checkout's .worktreeinclude (コピーするファイル).
+	WorktreeInclude []string `json:"worktree_include,omitempty"`
 }
 
 // NotifyConfig configures offline push channels.

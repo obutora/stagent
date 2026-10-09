@@ -107,7 +107,8 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 			return nil, err
 		}
 		// A chat message must not land on a menu (an approval, Codex's
-		// update notice or folder trust prompt): its text would be typed
+		// update notice or folder trust prompt, claude's workspace trust
+		// prompt): its text would be typed
 		// as the menu's keys, its Enter pick an option. The queue checks
 		// again before writing it and before the Enter (inputQueue).
 		message := p.Paste != "" && p.Submit

@@ -208,8 +208,9 @@ func awaited(tracks []*promptTrack, sig string) bool {
 // menuShown reports whether a menu of claude or Codex is on the screen,
 // whatever it asks: a chat message must land on none of them. Codex's
 // update notice (`1. Update now`) and folder trust prompt (`1. Trust and
-// continue`) at startup would take its Enter as their first option just
-// as an approval menu would.
+// continue`) and claude's workspace trust prompt (`❯ No, exit`) at startup
+// would take its Enter as their highlighted option just as an approval menu
+// would; for claude's that is No, which ends claude.
 func (h *Holder) menuShown() bool {
 	_, ok := liveMenu(h.scr.Lines())
 	return ok
@@ -223,7 +224,8 @@ func (h *Holder) menuShown() bool {
 // "1. Yes…": claude's permission prompt ("Do you want to …?" → "1. Yes")
 // and plan approval ("Would you like to proceed?" → "1. Yes, and …"),
 // Codex's approval ("Would you like to run the following command?" → "1.
-// Yes, proceed (y)").
+// Yes, proceed (y)"). claude's workspace trust prompt has options without
+// numbers and is recognized by its title (trustMenu).
 
 // promptOption: `❯ 1. Yes` (claude), `› 1. Yes, proceed (y)` (Codex),
 // `  2. No`.
@@ -258,7 +260,8 @@ type promptItem struct {
 
 // liveMenu returns the options of the menu lines (a screen, top to bottom)
 // show, if any: the lowest numbered list with one option under the cursor
-// and a key hint below it.
+// and a key hint below it, or else claude's workspace trust prompt
+// (trustMenu).
 func liveMenu(lines []string) (options []promptItem, ok bool) {
 	var groups [][]promptItem
 	cur := -1 // index in groups of the menu being read
@@ -319,7 +322,72 @@ func liveMenu(lines []string) (options []promptItem, ok bool) {
 		}
 		return group, true
 	}
+	return trustMenu(lines)
+}
+
+// trustTitle is the title of claude's workspace trust prompt (#491), shown
+// at startup in a folder not trusted yet, before the initial prompt is sent.
+const trustTitle = "Accessing workspace:"
+
+// trustCursor: the highlighted option of claude's trust prompt, which has
+// no numbers: `❯ No, exit` over `  Yes, I trust this folder`.
+var trustCursor = regexp.MustCompile(`^(\s*❯\s+)\S`)
+
+// trustMenu returns the options of claude's workspace trust prompt, if
+// lines show it: unnumbered options in one column, one of them under ❯,
+// with a key hint below them, in the dialog (under its top edge, see
+// menuSignature) titled trustTitle. Its options without a number are
+// recognized in that dialog only: anywhere else such a list is no menu.
+func trustMenu(lines []string) (options []promptItem, ok bool) {
+	for i := len(lines) - 1; i >= 0; i-- {
+		m := trustCursor.FindStringSubmatchIndex(lines[i])
+		if m == nil {
+			continue
+		}
+		col := utf8.RuneCountInString(lines[i][:m[3]])
+		option := func(j int) bool {
+			t := strings.TrimSpace(lines[j])
+			return t != "" && indentOf(lines[j]) == col
+		}
+		first, last := i, i
+		for first > 0 && option(first-1) {
+			first--
+		}
+		for last+1 < len(lines) && option(last+1) {
+			last++
+		}
+		if first == last || !trustDialog(lines, first) || !promptHintFollows(lines, last) {
+			return nil, false
+		}
+		for j := first; j <= last; j++ {
+			it := promptItem{indent: col, label: strings.TrimSpace(lines[j]), start: j, end: j}
+			if j == i {
+				it.indent = indentOf(lines[j])
+				it.cursor = "❯"
+				it.label = strings.TrimSpace(lines[j][m[3]:])
+			}
+			options = append(options, it)
+		}
+		return options, true
+	}
 	return nil, false
+}
+
+// trustDialog reports whether the dialog the options from line first on
+// are in is titled trustTitle: its first line under the top edge.
+func trustDialog(lines []string, first int) bool {
+	for j := first - 1; j >= 0; j-- {
+		if !isDialogEdge(lines[j]) {
+			continue
+		}
+		for _, line := range lines[j+1 : first] {
+			if t := strings.TrimSpace(line); t != "" {
+				return t == trustTitle
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // permissionMenu reports whether lines (a screen, top to bottom) show

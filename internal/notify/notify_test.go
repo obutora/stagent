@@ -284,12 +284,15 @@ func TestPushWebhookAndErrors(t *testing.T) {
 }
 
 // Every push is titled with the host label, else the host name, else not
-// at all; a digest takes a colon.
+// at all; a digest takes a colon. A session's task puts its "#N" before
+// the title; a digest of several has none.
 func TestLabelled(t *testing.T) {
 	host := func() (string, error) { return "myhost", nil }
 	noHost := func() (string, error) { return "", errors.New("no host name") }
 	one := wire.NotificationData{Title: "claude · api", Reason: "turn_complete"}
 	digest := wire.NotificationData{Title: "3 agents finished their turn", Reason: "digest", Count: 3}
+	ofTask := wire.NotificationData{Title: "claude · api-493", Reason: "needs_approval", TaskNumber: 493}
+	taskDigest := wire.NotificationData{Title: "3 agents finished their turn", Reason: "digest", Count: 3, TaskNumber: 493}
 	for _, c := range []struct {
 		label    string
 		hostname func() (string, error)
@@ -303,6 +306,10 @@ func TestLabelled(t *testing.T) {
 		{"開発機", host, digest, "開発機: 3 agents finished their turn"},
 		{"", host, digest, "myhost: 3 agents finished their turn"},
 		{"", noHost, digest, "3 agents finished their turn"},
+		{"開発機", host, ofTask, "開発機 · #493 claude · api-493"},
+		{"", host, ofTask, "myhost · #493 claude · api-493"},
+		{"", noHost, ofTask, "#493 claude · api-493"},
+		{"", host, taskDigest, "myhost: 3 agents finished their turn"},
 	} {
 		got := labelled(c.n, c.label, c.hostname)
 		if got.Title != c.want {

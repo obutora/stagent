@@ -449,6 +449,46 @@ func TestWatchIsRestoredAfterDaemonRestart(t *testing.T) {
 	}
 }
 
+// The tasks come back with the watch too: task.updated for each task the
+// restarted daemon has, task.removed for one the app knew that is gone.
+func TestWatchRestoresTasksAfterDaemonRestart(t *testing.T) {
+	l, a := startBridge(t)
+	first := serveFake(t, l.DaemonAddr, func(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any, error) {
+		if m.Method != wire.MethodWatch {
+			return struct{}{}, nil
+		}
+		c.Reply(m.ID, wire.WatchResult{Tasks: []wire.Task{{ID: "t1", State: wire.TaskReady}, {ID: "t2", State: wire.TaskRemoving}}})
+		c.Notify(wire.NotifyTaskUpdated, wire.Task{ID: "t3", State: wire.TaskPreparing})
+		return rpc.Async, nil
+	})
+	if e := a.call(t, wire.MethodWatch, wire.WatchParams{}, nil); e != nil {
+		t.Fatal(e)
+	}
+	a.nextNotify(t, wire.NotifyTaskUpdated)
+
+	first.stop()
+	serveFake(t, l.DaemonAddr, func(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any, error) {
+		if m.Method != wire.MethodWatch {
+			return struct{}{}, nil
+		}
+		return wire.WatchResult{Tasks: []wire.Task{{ID: "t1", State: wire.TaskReady}, {ID: "t3", State: wire.TaskFailed}}}, nil
+	})
+	updated := map[string]string{}
+	for range 2 {
+		var tk wire.Task
+		json.Unmarshal(a.nextNotify(t, wire.NotifyTaskUpdated).Params, &tk)
+		updated[tk.ID] = tk.State
+	}
+	if updated["t1"] != wire.TaskReady || updated["t3"] != wire.TaskFailed {
+		t.Fatalf("task.updated after resubscribe: %v", updated)
+	}
+	var gone wire.TaskRemoved
+	json.Unmarshal(a.nextNotify(t, wire.NotifyTaskRemoved).Params, &gone)
+	if gone.ID != "t2" {
+		t.Fatalf("task.removed = %+v, want t2", gone)
+	}
+}
+
 func TestSpawnRejectsInvalidRequests(t *testing.T) {
 	_, a := startBridge(t)
 	for _, p := range []wire.SpawnParams{

@@ -191,3 +191,26 @@ func TestGitHubRequestsDoNotStallTheDaemonQueue(t *testing.T) {
 		t.Fatalf("github.activity = %s %v", m.Result, m.Error)
 	}
 }
+
+func TestGitHubStatusReportsClosedIssuesAndMergedPulls(t *testing.T) {
+	stubGH(t,
+		stubcmd.Rule{Args: "issue view 12 -R o/r --json state", Stdout: `{"state":"CLOSED"}` + "\n"},
+		stubcmd.Rule{Args: "pr view 12-fix -R o/r --json state", Stdout: `{"state":"MERGED"}` + "\n"},
+		stubcmd.Rule{Args: "pr view 13 -R o/r --json state", Stdout: `{"state":"MERGED"}` + "\n"},
+	)
+	_, a := startBridge(t, withGitHub())
+	var res wire.GitHubStatusResult
+	if e := a.call(t, wire.MethodGitHubStatus, wire.GitHubStatusParams{Items: []wire.GitHubStatusQuery{
+		{Repo: "o/r", Kind: wire.GitHubKindIssue, Number: 12, Branch: "12-fix"},
+		{Repo: "o/r", Kind: wire.GitHubKindPR, Number: 13},
+	}}, &res); e != nil {
+		t.Fatal(e)
+	}
+	want := []wire.GitHubStatusItem{
+		{Repo: "o/r", Kind: wire.GitHubKindIssue, Number: 12, Branch: "12-fix", State: "CLOSED", PRState: "MERGED"},
+		{Repo: "o/r", Kind: wire.GitHubKindPR, Number: 13, State: "MERGED"},
+	}
+	if !reflect.DeepEqual(res.Items, want) {
+		t.Fatalf("github.status = %+v, want %+v", res.Items, want)
+	}
+}

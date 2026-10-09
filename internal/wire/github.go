@@ -10,6 +10,7 @@ import "encoding/json"
 const (
 	MethodGitHubRepos    = "github.repos"
 	MethodGitHubActivity = "github.activity"
+	MethodGitHubStatus   = "github.status"
 
 	// CapGitHub (Windows only): the github.* methods.
 	CapGitHub = "github"
@@ -17,7 +18,7 @@ const (
 
 // GitHubMethods are served by the bridge on hosts announcing CapGitHub.
 var GitHubMethods = map[string]bool{
-	MethodGitHubRepos: true, MethodGitHubActivity: true,
+	MethodGitHubRepos: true, MethodGitHubActivity: true, MethodGitHubStatus: true,
 }
 
 // GitHubReposResult is github.repos: the git working trees the user worked
@@ -78,4 +79,39 @@ type GitHubActivityResult struct {
 	Issues         json.RawMessage `json:"issues,omitempty"`
 	IssuesError    string          `json:"issues_error,omitempty"`
 	Current        json.RawMessage `json:"current,omitempty"`
+}
+
+// Kinds of github.status items.
+const (
+	GitHubKindIssue = "issue"
+	GitHubKindPR    = "pr"
+)
+
+type GitHubStatusParams struct {
+	Items []GitHubStatusQuery `json:"items"`
+}
+
+// GitHubStatusQuery names an issue or pull request; Repo is gh's -R value.
+// Branch (issues only) asks for the state of that branch's pull request too.
+type GitHubStatusQuery struct {
+	Repo   string `json:"repo"`
+	Kind   string `json:"kind"`
+	Number int    `json:"number"`
+	Branch string `json:"branch,omitempty"`
+}
+
+type GitHubStatusResult struct {
+	Items []GitHubStatusItem `json:"items"`
+}
+
+// GitHubStatusItem: State and PRState as gh reports them (OPEN, CLOSED,
+// MERGED). Branch is the query's branch of an issue item, PRState that
+// branch's pull request.
+type GitHubStatusItem struct {
+	Repo    string `json:"repo"`
+	Kind    string `json:"kind"`
+	Number  int    `json:"number"`
+	Branch  string `json:"branch,omitempty"`
+	State   string `json:"state"`
+	PRState string `json:"pr_state,omitempty"`
 }

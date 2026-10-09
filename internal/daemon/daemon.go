@@ -28,6 +28,7 @@ import (
 	"github.com/obutora/stagent/internal/notify"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/rpc"
+	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/transcript"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
@@ -56,6 +57,10 @@ type Options struct {
 	// UnwrappedTTL: how long an agent started without a stagent session
 	// stays listed after its last hook (default 12h; see unwrapped.go).
 	UnwrappedTTL time.Duration
+	// PrepareGrace: how long a preparing task waits for its prepared
+	// session to register before it counts as interrupted (default 30 s;
+	// see tasks.go).
+	PrepareGrace time.Duration
 	Logf         func(format string, args ...any)
 	// Bootstrap is what `stagent daemon` found swapping its bootstrap port
 	// (macOS), reported by daemon.status.
@@ -107,6 +112,15 @@ type Daemon struct {
 	// chatSent: sessions with a chat message from before the restart
 	// whose holder answered; it is theirs again once they register.
 	chatSent map[string]bool
+	// tasks in the order they were created (tasks.json); prepAt: when a
+	// preparing task was prepared (or the daemon started); removingFrom:
+	// the state a removing task returns to when a step fails. review
+	// fires reviewTasksLocked at reviewAt.
+	tasks        []*wire.Task
+	prepAt       map[string]time.Time
+	removingFrom map[string]string
+	review       *time.Timer
+	reviewAt     time.Time
 
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
@@ -135,6 +149,9 @@ func New(opts Options) (*Daemon, error) {
 	}
 	if opts.UnwrappedTTL <= 0 {
 		opts.UnwrappedTTL = defaultUnwrappedTTL
+	}
+	if opts.PrepareGrace <= 0 {
+		opts.PrepareGrace = defaultPrepareGrace
 	}
 	if opts.Logf == nil {
 		opts.Logf = log.Printf
@@ -169,6 +186,10 @@ func New(opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("daemon: event log: %w", err)
 	}
+	tasks, err := loadTasks(l.Tasks)
+	if err != nil {
+		opts.Logf("daemon: tasks: %v (starting without tasks)", err)
+	}
 	roots := transcript.DefaultRoots(l.Home, os.Getenv)
 	if opts.Roots != nil {
 		roots = *opts.Roots
@@ -192,6 +213,10 @@ func New(opts Options) (*Daemon, error) {
 		tails:     map[*tailSub]struct{}{},
 		shutdown:  make(chan struct{}),
 		chatSent:  map[string]bool{},
+
+		tasks:        tasks,
+		prepAt:       map[string]time.Time{},
+		removingFrom: map[string]string{},
 	}
 	d.digest = notify.NewDigester(func(ns []wire.NotificationData) {
 		d.mu.Lock()
@@ -200,6 +225,22 @@ func New(opts Options) (*Daemon, error) {
 		d.sender.SendDigest(cfg, ns)
 	})
 	d.restoreChat()
+	// A preparing task's holder registers again shortly after a restart;
+	// the review fails those whose session does not come back. A removal
+	// the restart cut short is over: the task is ready again, its stage
+	// naming where the removal stopped.
+	d.mu.Lock()
+	for _, t := range d.tasks {
+		switch t.State {
+		case wire.TaskPreparing:
+			d.prepAt[t.ID] = d.started
+		case wire.TaskRemoving:
+			t.State, t.Error = wire.TaskReady, wire.TaskErrInterrupted
+			d.taskChangedLocked(t)
+		}
+	}
+	d.reviewTasksLocked(d.started)
+	d.mu.Unlock()
 	return d, nil
 }
 
@@ -271,6 +312,9 @@ func (d *Daemon) Shutdown() {
 		}
 		if d.sweep != nil {
 			d.sweep.Stop()
+		}
+		if d.review != nil {
+			d.review.Stop()
 		}
 		conns := make([]*connState, 0, len(d.conns))
 		var holders []*rpc.Conn
@@ -352,7 +396,8 @@ func (d *Daemon) serveConn(nc net.Conn) {
 
 // agentRefusal is the error for the methods a connection from a coding
 // agent's process tree may not call (ADR 0004): those that change settings
-// or stop the daemon. Hooks, holders and readers are served.
+// or stop the daemon, and those that change tasks. Hooks, holders and
+// readers (task.list included) are served.
 func (d *Daemon) agentRefusal(cs *connState) *wire.Error {
 	if cs.refusal != nil && !cs.logged {
 		cs.logged = true
@@ -363,7 +408,8 @@ func (d *Daemon) agentRefusal(cs *connState) *wire.Error {
 
 func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, error) {
 	switch m.Method {
-	case wire.MethodConfigSet, wire.MethodPresenceSet, wire.MethodNotifyTest, wire.MethodDaemonShutdown:
+	case wire.MethodConfigSet, wire.MethodPresenceSet, wire.MethodNotifyTest, wire.MethodDaemonShutdown,
+		wire.MethodTaskProgress, wire.MethodTaskRegister, wire.MethodTaskForget:
 		if werr := d.agentRefusal(cs); werr != nil {
 			return nil, werr
 		}
@@ -474,6 +520,28 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		cs.foreground = p.Foreground
 		d.mu.Unlock()
 		return struct{}{}, nil
+	case wire.MethodTaskList:
+		return d.taskList(), nil
+
+	// bridge, `stagent task` → daemon (tasks)
+	case wire.MethodTaskRegister:
+		var p wire.TaskRegisterParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return d.taskRegister(p)
+	case wire.MethodTaskProgress:
+		var p wire.TaskProgressParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return struct{}{}, d.taskProgress(p)
+	case wire.MethodTaskForget:
+		var p wire.TaskRemoved
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return struct{}{}, d.taskForget(p)
 
 	// install / doctor → daemon
 	case wire.MethodDaemonStatus:
@@ -624,6 +692,7 @@ func (d *Daemon) emitLocked(sessionID, kind string, data any) wire.Event {
 func (d *Daemon) watch(cs *connState, id *int64, p wire.WatchParams) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.reviewTasksLocked(time.Now())
 	missed, truncated := d.log.Since(p.Since)
 	if missed == nil {
 		missed = []wire.Event{}
@@ -632,6 +701,7 @@ func (d *Daemon) watch(cs *connState, id *int64, p wire.WatchParams) {
 		Sessions:  d.sessionListLocked(),
 		Approvals: d.approvalListLocked(),
 		Unwrapped: d.unwrappedListLocked(),
+		Tasks:     d.taskListLocked(),
 		Seq:       d.log.Seq(),
 		Missed:    missed,
 		Truncated: truncated,
@@ -725,6 +795,9 @@ func (d *Daemon) configSet(patch json.RawMessage) (wire.ConfigResult, error) {
 	if cp := c.Notify.ClickPage; cp != "" && !notify.ValidClickPage(cp) {
 		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "notify.click_page must be an absolute https URL with no query or fragment")
 	}
+	if err := validRepos(p, c.Repos); err != nil {
+		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "repos: %v", err)
+	}
 	if err := writeFileAtomic(d.layout.Config, b); err != nil {
 		return wire.ConfigResult{}, err
 	}
@@ -742,6 +815,31 @@ func (d *Daemon) configSet(patch json.RawMessage) (wire.ConfigResult, error) {
 // configResultLocked is the reply of config.get and config.set.
 func (d *Daemon) configResultLocked() wire.ConfigResult {
 	return wire.ConfigResult{Config: d.eff, Notify: wire.NotifyStatus{LastError: d.sender.LastErrors()}}
+}
+
+// validRepos checks the repos entries the patch sets (null deletes one):
+// a key is a source checkout's absolute, clean path; a worktree_include
+// pattern is a git pathspec glob from its root, not empty, no negation,
+// not absolute, without .. or .git (task.ValidRepoKey, task.ValidPattern).
+// Whether the path exists does not matter. Entries the patch leaves alone
+// are not checked again.
+func validRepos(patch any, repos map[string]wire.RepoConfig) error {
+	p, _ := patch.(map[string]any)
+	set, _ := p["repos"].(map[string]any)
+	for key, v := range set {
+		if v == nil {
+			continue
+		}
+		if err := task.ValidRepoKey(key); err != nil {
+			return fmt.Errorf("%q: %v", key, err)
+		}
+		for _, pat := range repos[key].WorktreeInclude {
+			if err := task.ValidPattern(pat); err != nil {
+				return fmt.Errorf("%q: worktree_include %q: %v", key, pat, err)
+			}
+		}
+	}
+	return nil
 }
 
 // mergePatch applies an RFC 7396 merge patch to target and returns the

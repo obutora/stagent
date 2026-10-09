@@ -120,6 +120,12 @@ func (osSource) Owner(pid int) (string, error) {
 	return strconv.FormatUint(uint64(e.Ucred.Uid), 10), nil
 }
 
+// CurrentOwner returns the user this process runs as, in the form of
+// Snapshot.Owner: its effective uid.
+func CurrentOwner() (string, error) {
+	return strconv.Itoa(os.Geteuid()), nil
+}
+
 // ReadsTerminal reports whether pid has a controlling terminal, what `ps
 // -o tty=` shows: another process's stdin is only reachable through
 // libproc, which needs cgo. known is false when pid cannot be looked up.

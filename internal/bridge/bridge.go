@@ -65,6 +65,9 @@ const (
 	targetDaemon = "daemon"
 	targetSpawn  = "spawn"
 	targetGitHub = "github"
+	targetRemove = "remove" // task.remove
+	// targetPreview serves task.preview (git over the source checkout).
+	targetPreview = "preview"
 )
 
 // Bridge serves one app connection.
@@ -115,8 +118,9 @@ type Bridge struct {
 	// What the app has been told through its watch, used to resubscribe
 	// transparently when the daemon connection drops.
 	lastSeq   int64
-	known     map[string]bool
-	watchLost bool // the app's watch died with a daemon connection
+	known     map[string]bool // sessions the app knows
+	tasks     map[string]bool // tasks the app knows
+	watchLost bool            // the app's watch died with a daemon connection
 	// foreground is the app's last presence.set, restored with the watch
 	// (the daemon forgets it with the connection).
 	foreground bool
@@ -140,6 +144,7 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		queues:         map[string]*queue{},
 		holders:        map[string]*rpc.Client{},
 		known:          map[string]bool{},
+		tasks:          map[string]bool{},
 		github:         runtime.GOOS == "windows",
 		liveDirs:       liveDirs,
 	}
@@ -270,6 +275,12 @@ func (b *Bridge) dispatch(m *wire.Msg) {
 		b.replyResult(m.ID, struct{}{}, nil)
 	case m.Method == wire.MethodSessionSpawn:
 		b.enqueue(targetSpawn, m, b.spawn)
+	case m.Method == wire.MethodTaskCreate:
+		b.enqueue(targetSpawn, m, b.taskCreate)
+	case m.Method == wire.MethodTaskRemove:
+		b.enqueue(targetRemove, m, b.taskRemove)
+	case m.Method == wire.MethodTaskPreview:
+		b.enqueue(targetPreview, m, b.taskPreview)
 	case wire.DaemonMethods[m.Method]:
 		b.enqueue(targetDaemon, m, b.forwardDaemon)
 	case b.github && wire.GitHubMethods[m.Method]:
@@ -622,6 +633,17 @@ func (b *Bridge) onDaemonNotify(m *wire.Msg) {
 			}
 			b.mu.Unlock()
 		}
+	case wire.NotifyTaskUpdated, wire.NotifyTaskRemoved:
+		var ref wire.TaskRef
+		if json.Unmarshal(m.Params, &ref) == nil && ref.ID != "" {
+			b.mu.Lock()
+			if m.Method == wire.NotifyTaskUpdated {
+				b.tasks[ref.ID] = true
+			} else {
+				delete(b.tasks, ref.ID)
+			}
+			b.mu.Unlock()
+		}
 	}
 	b.relay(m)
 }
@@ -642,19 +664,28 @@ func (b *Bridge) noteWatch(dc *daemonConn, result json.RawMessage, publish bool)
 	for _, ev := range res.Missed {
 		b.lastSeq = max(b.lastSeq, ev.Seq)
 	}
-	var gone []string
 	current := make(map[string]bool, len(res.Sessions))
 	for _, s := range res.Sessions {
 		current[s.ID] = true
 	}
+	currentTasks := make(map[string]bool, len(res.Tasks))
+	for _, t := range res.Tasks {
+		currentTasks[t.ID] = true
+	}
+	var gone, goneTasks []string
 	if publish {
 		for id := range b.known {
 			if !current[id] {
 				gone = append(gone, id)
 			}
 		}
+		for id := range b.tasks {
+			if !currentTasks[id] {
+				goneTasks = append(goneTasks, id)
+			}
+		}
 	}
-	b.known = current
+	b.known, b.tasks = current, currentTasks
 	b.mu.Unlock()
 	if !publish {
 		return
@@ -667,6 +698,12 @@ func (b *Bridge) noteWatch(dc *daemonConn, result json.RawMessage, publish bool)
 	}
 	for _, id := range gone {
 		b.out.Notify(wire.NotifySessionRemoved, wire.SessionRef{ID: id})
+	}
+	for _, t := range res.Tasks {
+		b.out.Notify(wire.NotifyTaskUpdated, t)
+	}
+	for _, id := range goneTasks {
+		b.out.Notify(wire.NotifyTaskRemoved, wire.TaskRemoved{ID: id})
 	}
 	// The list may have changed meanwhile (a restarted daemon forgets it).
 	unwrapped := res.Unwrapped

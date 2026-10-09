@@ -28,6 +28,15 @@ func shellCommand(env []string) []string {
 	return []string{sh}
 }
 
+// terminalCommand is what a task opened as a terminal runs (task.create
+// without a command): cmd.exe (%ComSpec%), whatever sshd's DefaultShell.
+func terminalCommand(env []string) []string {
+	if sh := envGet(env, "ComSpec"); sh != "" {
+		return []string{sh}
+	}
+	return []string{"cmd.exe"}
+}
+
 func toolDirs(home string, getenv func(string) string) []string {
 	return paths.ToolDirs(runtime.GOOS, home, getenv)
 }

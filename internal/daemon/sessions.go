@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/notify"
+	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -57,6 +58,11 @@ type session struct {
 	pushGen       int
 	pushed        bool
 	pushFromHook  bool
+
+	// Tasks (tasks.go): taskWant is the task_id the holder was started
+	// with, cwd the session's cwd made canonical (task.CanonicalPath).
+	taskWant string
+	cwd      string
 }
 
 func (s *session) stopTimers() {
@@ -81,6 +87,10 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 	}
 	if ws.Mode == "" {
 		ws.Mode = wire.ModePassthrough
+	}
+	cwd := ""
+	if ws.Cwd != "" {
+		cwd = task.CanonicalPath(ws.Cwd)
 	}
 	now := nowMs()
 	d.mu.Lock()
@@ -114,6 +124,8 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 		state, source := s.s.State, s.s.StateSource
 		s.s = ws
 		s.s.State, s.s.StateSource = state, source
+		s.taskWant, s.cwd = ws.TaskID, cwd
+		s.s.TaskID = d.taskOfLocked(s)
 		s.track = s.track.holderReport(ws.State, ws.StateSource, now)
 		d.recomputeLocked(s, true)
 		d.broadcastLocked(wire.NotifySessionUpdated, s.s)
@@ -127,7 +139,8 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 	if old := d.sessions[ws.ID]; old != nil {
 		old.stopTimers()
 	}
-	s := &session{s: ws, holder: cs, base: ws.Harness}
+	s := &session{s: ws, holder: cs, base: ws.Harness, taskWant: ws.TaskID, cwd: cwd}
+	s.s.TaskID = d.taskOfLocked(s)
 	// Its chat message from before a daemon restart is on the phone:
 	// resolved when the session settles.
 	if d.chatSent[ws.ID] {
@@ -315,6 +328,8 @@ func (d *Daemon) endLocked(s *session, exitCode int, lost, hungUp bool) {
 	}
 	d.notifyLocked(s, n, nil)
 	d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+	// A task this session prepared is interrupted.
+	d.reviewTasksLocked(time.Now())
 	s.remove = time.AfterFunc(d.opts.EndedLinger, func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()

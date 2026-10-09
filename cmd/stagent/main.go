@@ -16,6 +16,7 @@ import (
 	"github.com/obutora/stagent/internal/holder"
 	"github.com/obutora/stagent/internal/hook"
 	"github.com/obutora/stagent/internal/install"
+	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/version"
 )
 
@@ -43,6 +44,12 @@ const usage = `usage: stagent <command> [args]
   uninstall           stop / unhook / purge
   doctor              report installation state as JSON
   wsl-shutdown        restart WSL: run wsl.exe --shutdown (stops every distribution)
+  task run [--switch-branch] [--setup] <id> -- <cmd> [args...]
+                      internal (task.create): prepare task <id> in its first
+                      session, then run <cmd> there
+  task remove [--force] <id>
+                      internal (task.remove): archive and remove task <id>
+                      in a session of its source checkout
   version             print the version
 `
 
@@ -77,6 +84,8 @@ func dispatch(args []string) int {
 		return bridge.EnvDump()
 	case "spawn-task":
 		return spawnTask(rest)
+	case "task":
+		return task.Main(rest)
 	case "version", "--version", "-v":
 		fmt.Printf("stagent %s (protocol %d, %s/%s)\n", version.Version, version.Protocol, runtime.GOOS, runtime.GOARCH)
 		return 0
