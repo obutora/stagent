@@ -22,7 +22,13 @@ Envelope (JSON-RPC 2.0 shape without the `jsonrpc` member):
 Error codes: `bad_request`, `unknown_method`, `not_found`, `unsupported`,
 `internal`, `unavailable`, `version_mismatch`, `session_ended`,
 `not_size_owner`, `not_configured`, `menu_open`, `foreign_owner`,
-`agent_refused`.
+`agent_refused`, `not_clean`, `busy`, `in_use`.
+
+`not_clean`: `task.remove` found uncommitted changes and no `force`.
+`busy`: `task.remove` found live sessions of the task and no
+`stop_sessions`, could not stop them, or found the task still
+`preparing` or already `removing`. `in_use`: another number's
+`in_place` task uses that source checkout (see "Tasks").
 
 `foreign_owner`: a request that needs the daemon or a session's holder
 (any daemon or session method, `session.spawn`) found the stagent location
@@ -37,8 +43,9 @@ their commands in), or from one it could not check: it exited first, or
 its parents were more than 256 deep or kept changing (ADR 0004). A
 holder answers whatever such a connection asks first with it and closes
 the connection; the daemon refuses `config.set`, `presence.set`,
-`notify.test` and `daemon.shutdown`,
-and serves the rest (`hook.event`, `holder.*`, reads). The daemon decides
+`notify.test`, `daemon.shutdown` and the methods that change tasks
+(`task.register`, `task.progress`, `task.forget`), and serves the rest
+(`hook.event`, `holder.*`, reads, `task.list`). The daemon decides
 when the connection is made. The message says why. Only Linux and macOS
 check, and only without `STAGENT_HOME`. `stagent bridge`, started by
 sshd, has no agent among its parents, so the app does not see this error
@@ -89,7 +96,11 @@ process that created its stdin pipe ends — Win32-OpenSSH's session process
 - Capabilities are reserved for what depends on the host OS. Linux and
   macOS keep relying on `persist`; Windows needs `persist_shell` as well.
   `github` is announced only on Windows, where the bridge serves the
-  GitHub screen. Whether a key is present is checked only for `host_id`.
+  GitHub screen. `push_chat` is the one exception that does not depend on
+  the OS: an older stagent stores `notify.chat` like any unknown config key
+  and silently never sends to it, so the app configures chat destinations
+  only on hosts that announce it. Whether a key is present is checked only
+  for `host_id`.
 
 ## Methods
 
@@ -99,7 +110,10 @@ process that created its stdin pipe ends — Win32-OpenSSH's session process
 |---|---|---|
 | `hello` | `{protocol, client}` | `{protocol, version, os, arch, home, capabilities[], host_id?, blocked?}` |
 | `ping` | – | `{}` |
-| `session.spawn` | `{command[]?, shell?, cwd?, cols, rows, env?{}}` | `{session}` — a detached session; app owns its size |
+| `session.spawn` | `{command[]?, shell?, cwd?, cols, rows, env?{}, task_id?}` | `{session}` — a detached session; app owns its size |
+| `task.create` | `{repo, kind, number, title, url, base?, branch?, command[]?, cols, rows, env?{}, in_place?, switch_branch?, setup?}` | `{task, session?, existed}` — see "Creating a task"; empty or absent `command` = a terminal (the login shell; `cmd.exe` on Windows) |
+| `task.preview` | `{repo, worktree_include?[]}` | `{repo, copies[{path, source, bytes}], links[{path}], skipped[{entry, source, reason}], total_bytes, truncated, setup?, orca_error?}` — see "Files to copy" |
+| `task.remove` | `{id, force?, stop_sessions?, skip_archive?, dry_run?}` | `{changes[]?, changes_truncated?, unpushed?, sessions[]?, kept_branch?}` — see "Removing a task" |
 
 `host_id` (32 lowercase hex chars) is 128 random bits stagent creates the
 first time it runs (`stagent install`, the bridge's `hello` or the daemon)
@@ -132,6 +146,18 @@ narrower one of the SSH exec channel, so agents on a PATH set in
 name still missing from that PATH is looked up in the usual per-user tool
 directories (`~/.bun/bin`, `~/.local/bin`, npm/pnpm/volta/nvm/fnm/mise,
 Homebrew). `env` entries override both.
+
+A program that ends at once can take its holder with it before the bridge
+reaches the holder; the answer is then the session as the daemon lists it
+(ended, or about to be), as for `task.create` and `task.remove`'s session,
+rather than an `internal` error.
+
+`task_id` ties the new session to that task (`Session.task_id`, see
+"Tasks"): the way to add a session to an `in_place` task (the task
+detail's agent and terminal). A worktree task's sessions are those in its
+worktree anyway, so there it changes nothing; an unknown id ties nothing.
+The holder is started with `stagent run --task <id>` and registers with it;
+the daemon decides.
 
 With `shell: true` (capability `persist`) the session runs the user's
 shell instead of a command. On Linux and macOS that is their login shell:
@@ -180,6 +206,284 @@ announced `persist` but refused `shell` with `unsupported`; on Windows
 Windows bridge without it as needing an update. `github` (Windows only)
 announces the `github.*` methods below.
 
+#### Creating a task (`task.create`, `stagent task run`)
+
+`task.create` makes a task (see "Tasks") and starts its first session,
+the prepared one, on the spawn queue; refused with `agent_refused` to a
+coding agent's process tree before anything starts (ADR 0004). The task's
+preparation runs in that session, not in the bridge (ADR 0006):
+
+1. `repo` is made canonical (`git rev-parse --show-toplevel`, symlinks
+   resolved; `bad_request` when it is no git checkout). `kind` is `issue`
+   or `pr`, `number` positive (`bad_request` otherwise).
+2. Branch and base: an issue's `branch` is the given one (checked with
+   `git check-ref-format --branch`, `bad_request` when invalid) or
+   `<number>-<slug>`, the slug being the title lower-cased with every run
+   of characters other than `a-z0-9` one `-`, trimmed of `-`, cut to 40
+   characters (`issue-<number>` alone when nothing is left); `base` is the
+   given one or the default branch the checkout knows (`origin/HEAD`, else
+   origin's `main` or `master`; `bad_request` without one). A PR's are its
+   head and base branch from `gh pr view <number> --json
+   headRefName,baseRefName` (`unavailable` with gh's message when that
+   fails); `branch` and `base` are ignored. An `in_place` task without
+   `switch_branch` records the checkout's current branch. A task that
+   exists keeps its own unless the app gives an issue's `branch` / `base`.
+3. The daemon registers it (`task.register`, atomic by `repo` + `number`):
+   - `ready` (or `missing`, `removing`): nothing starts; `{task, existed:
+     true}`.
+   - `preparing`: nothing starts; `{task, session, existed: true}` with
+     its live prepared session (no `session` while that one has not
+     registered yet).
+   - `failed` (or interrupted): prepared again as below (`existed: false`).
+   - `in_place` on a checkout another number's `in_place` task uses:
+     `in_use`.
+4. A worktree task works in `<parent of repo>/<repo's name>-<number>`
+   (`task.worktree`): the bridge makes that directory, empty, and starts
+   the prepared session there; an `in_place` task's session starts in
+   `repo`. So the session's `cwd` is the task's place from the start (its
+   `task_id` follows). The session runs `<stagent> task run
+   [--switch-branch] [--setup] <task id> -- <command…>` (`command`, or
+   the login shell `[$SHELL, "-l"]` — on Windows `[%ComSpec%]`, `cmd.exe`
+   — when it is empty); its `harness` is that of `<command…>`. `env`,
+   `cols` and `rows` are as for `session.spawn` (the login shell's
+   environment; git and gh are looked up like a bare command). The reply
+   is `{task, session}` (`existed: false`) once the holder answers.
+
+`stagent task run` reads the task (`task.list`) and runs its stages,
+announcing each with `task.progress {id, stage}` and a `[stagent] <stage>`
+line in the terminal, where the commands it runs (`$ git …`, `$ gh …`)
+and their output show:
+
+- `fetch`: `git fetch origin <base>`. Failing (offline, no `origin`) is
+  only a line in the terminal.
+- `branch`:
+  - Issue: `gh issue develop <number> --base <base> --name <branch>` in
+    `repo` (gh links the branch to the issue on GitHub, or uses the linked
+    branch of that name, and fetches it); a local branch tracking
+    `origin/<branch>` follows. When gh fails (permissions, network,
+    unauthenticated) the branch is made locally from `origin/<base>` (else
+    the local `<base>`) only, with one line saying so.
+  - PR: `git worktree add --detach <worktree>`, then `gh pr checkout
+    <number> --branch <head>` inside it (gh fetches fork PRs and sets
+    their push remote). A branch of that name checked out in another
+    worktree fails, naming it.
+  - `in_place`: with `--switch-branch` (`switch_branch`) the issue's branch
+    is made as above and `git switch`ed to in `repo`, a PR's checked out
+    with `gh pr checkout` in `repo`; without it the checkout stays as it
+    is.
+- `worktree` (worktree tasks): `git -C <repo> worktree add <worktree>
+  <branch>` into the empty directory. A worktree of `repo` already there
+  on `<branch>` is taken as it is; one on another branch fails, as does a
+  non-empty directory that is no worktree of `repo` and a branch checked
+  out in another worktree (the error names its path). A worktree git
+  still lists without its directory is pruned first. On Windows every git
+  call gets `-c core.longpaths=true`.
+- `copy` (worktree tasks): the shared directories are linked and the
+  files to copy copied from `repo` into the worktree (see "Files to
+  copy"). It never fails: what cannot be linked or copied is a line in
+  the terminal, and setup and the agent follow.
+- `setup`: `scripts.setup` of the `orca.yaml` in the task's place (see
+  below); always for a worktree task, for an `in_place` one only with
+  `--setup` (`setup`). No file or no script: nothing to run.
+- `agent`: reported once `<command…>` is found, then run: `exec`ed on
+  Linux and macOS (the session's program becomes the agent), a child on
+  the same console on Windows (batch files through `cmd.exe` as for
+  `session.spawn`). The task is `ready`. When the agent cannot be started
+  after all (`exec` failing, e.g. a script's missing interpreter), that is
+  reported as `task.progress {id, stage: agent, error, session_id}` from
+  the prepared session: the task is `failed` with stage `agent`.
+
+An `in_place` task has no `worktree` and `copy` stages. A failing stage
+prints the error, reports it (`task.progress {id, stage, error}`: the
+task is `failed` with that `stage`), starts no agent and exits non-zero
+(1; 127 when `<command…>` is not found): the session ends as an abnormal
+exit, its output kept in the scrollback. A worktree directory left empty
+is removed (`stagent task run` leaves it first). `task.create` on the
+failed task runs every stage again, each safe to repeat: the branch and
+the worktree on it are taken as they are, only what is missing is
+copied or linked (nothing is overwritten), setup runs again.
+
+`orca.yaml` (Orca's per-repository file at a checkout's root; stagent
+only reads it): `scripts.setup`, `scripts.archive` (strings) and
+`worktree.sharedDirectories` (strings) are used; other keys are ignored.
+A file over 256 KiB, invalid YAML, a repeated key or a document that is
+not a mapping makes the file unusable: setup fails with that error (the
+source checkout's broken file only loses its `sharedDirectories`: a
+warning line, and copying goes on). A value of another type, or a string
+over 64 KiB, is dropped alone. A script runs with `ORCA_ROOT_PATH` (the
+source checkout), `ORCA_WORKTREE_PATH` (the task's place, also its
+working directory) and `ORCA_WORKSPACE_NAME` (that directory's name)
+added to the session's environment, its input and output on the
+terminal:
+
+- Linux, macOS: the login shell — `$SHELL` when it is `sh`, `bash`,
+  `zsh`, `dash`, `ksh`, `mksh`, `ash` or `yash`, else `/bin/sh` — as
+  `<shell> -l -c 'set -e␤<script>'`: the first failing command fails it.
+- Windows: a `.cmd` runner in `%ComSpec%` (`cmd.exe /d /s /c`), as Orca's:
+  `@echo off`, `setlocal EnableExtensions DisableDelayedExpansion`, then
+  for each line (blank lines and `::` / `rem` comments left out) `call
+  <line>` and `if errorlevel 1 exit /b %errorlevel%`. Being `call`ed, a
+  line that is an `if` or `for` statement does not run (cmd: `'if' is not
+  recognized…`, errorlevel 1), in Orca too. A script starting
+  with `#!` runs in Git for Windows' `bash.exe` (`bin\bash.exe` or
+  `usr\bin\bash.exe` of the installation git runs from; never
+  System32's) with `set -e` first and the `ORCA_*` paths written
+  `/c/…`; without that bash it fails before running anything.
+
+#### Files to copy (`task.preview`, the `copy` stage)
+
+A new worktree gets from its source checkout (`repo`) copies of the files
+to copy (コピーするファイル) and links to the shared directories
+(共有ディレクトリ). The `copy` stage and `task.preview` resolve them with
+the same code, against `repo` as it is now:
+
+- Sources (`source`): `include` — `repo`'s `.worktreeinclude`, read as
+  Orca does: one literal path per line from the root (`\` read as `/`, a
+  leading `./` and a trailing `/` dropped, a repeated path taken once);
+  blank lines and lines starting with `#` are ignored; a line with `*`,
+  `?` or `[`, starting with `!`, absolute, or with a `..` or `.git` component is
+  skipped (`invalid`); a file over 256 KiB is skipped whole (one skip,
+  entry `.worktreeinclude`, `invalid`); past 1,000 valid lines the rest
+  are skipped (`limit`). `app` — `config.json`'s
+  `repos.<repo>.worktree_include` (see `config.set`): git pathspec globs
+  from the root (`*`, `?`, `[…]`, `**`; case-sensitive; a directory
+  selects everything in it; no negation), each listed with `git ls-files
+  -o -i --exclude-standard -z -- ':(glob)<pattern>'`. The two have no
+  precedence; a path both select is copied once (as `include`'s, which
+  is resolved first).
+- Only what exists and is gitignored is copied. A tracked path (for a
+  directory: one holding a tracked file) is skipped silently in the
+  terminal (`tracked`); an untracked path that is not gitignored is
+  skipped with a warning (`not_ignored`); a `.worktreeinclude` path that
+  does not exist (`missing`) and a pattern that selects nothing
+  (`no_match`) get one line each. An app pattern's matches are listed file
+  by file, a `.worktreeinclude` line as it is (a directory whole).
+- Shared directories: every one of `worktree.sharedDirectories` of
+  `repo`'s `orca.yaml` (paths as in `.worktreeinclude`); one inside
+  another listed one is dropped (the outer one links). Only those that
+  exist, are directories and are gitignored (untracked) are linked
+  (`links`), the rest passed over silently. Anything either source lists
+  inside a linked directory is skipped (`under_link`).
+- Limits: 2 GiB and 50,000 filesystem entries for one worktree. A copy
+  that would pass either is skipped with a warning (`limit`); later ones
+  that fit are still copied.
+
+The `copy` stage first links each shared directory at the same path in
+the worktree — a symbolic link on Linux and macOS; on Windows a junction,
+else a directory symbolic link (Developer Mode or elevation) — then
+copies, in order: a file, or a directory with what is in it (a top-level
+symbolic link as what it points to, links inside a directory as links),
+each file through a temporary file renamed into place. A destination
+that exists is left as it is (the terminal says `already there`, the
+only use of that reason): retried, the stage links and copies only what
+is missing. When a shared directory cannot be linked (on Windows neither
+way works) the terminal gets one warning line and what the sources list
+inside it is copied as ordinary files instead; neither this nor any
+copy error reaches `Task.error` or the app. `stagent task run` reads the
+app's patterns from `config.json` itself (only the daemon writes it).
+
+`task.preview` answers, for `repo` made canonical (`bad_request` when it
+is no git checkout), what a new worktree would get if every shared
+directory linked: `copies` in order (`bytes`: a directory's files
+summed), `links`, `skipped` with `reason` `tracked`, `not_ignored`,
+`missing`, `no_match`, `under_link`, `invalid` or `limit`, `total_bytes`
+of every copy. `copies` and `skipped` hold 500 rows at most, `truncated:
+true` when either was cut. `worktree_include`, when present (an empty
+list too), is used instead of the saved patterns — an unsaved trial; an
+invalid pattern there is skipped (`invalid`). `setup` is `repo`'s
+`orca.yaml` `scripts.setup` (absent with no file or no script);
+`orca_error`, one line, says that file is unusable (its
+`sharedDirectories` are then ignored). git runs with the login shell's
+environment, as for `session.spawn`, on the bridge's own `preview` queue
+(never delaying the daemon and spawn queues); agent descendants may call
+it (ADR 0004).
+
+#### Removing a task (`task.remove`, `stagent task remove`)
+
+`task.remove` is 片付け (ADR 0006) on a queue of its own (neither the
+daemon's nor the spawn queue), git and gh run in the login shell's
+environment as for `task.create`; refused with `agent_refused` to a coding
+agent's process tree, a dry run included (ADR 0004). An unknown `id` is
+`not_found`; a `removing` task is `busy`, and so is a `preparing` one
+unless `stop_sessions` (see below).
+
+`dry_run: true` changes nothing and reports what is in the way:
+
+- `changes[]`: the worktree's `git status --porcelain` lines (`XY path`,
+  a rename `XY from -> to`): tracked files changed, staged or not, and
+  untracked files git does not ignore. Ignored files (a copied `.env`) and
+  the shared directories' links are not changes. At most 200 lines, then
+  `changes_truncated: true`. None when git does not list the worktree.
+- `unpushed`: `git rev-list <branch> --not --remotes --count` in `repo`
+  (omitted: 0 or no such branch). It refuses nothing: the branch is kept.
+- `sessions[]`: ids of the task's live sessions (`Session.task_id`;
+  agents and kept shells).
+
+An `in_place` or `missing` task's dry run is `{}`: its removal only
+forgets the record.
+
+The removal:
+
+- A `preparing` task (any kind) without `stop_sessions` is `busy`. With
+  it, its live sessions are stopped first as in stage 1 (sessions bound to
+  the task meanwhile too); the task is then `failed` (interrupted) and the
+  removal goes on as for that; still `preparing` is `busy`.
+- `in_place`: the record is forgotten (`task.forget`), nothing else.
+- `missing`: the record is forgotten and `git worktree prune` runs in
+  `repo`; no archive.
+- Otherwise `changes` without `force` is `not_clean`, live sessions
+  without `stop_sessions` `busy`, both before anything changes. Then:
+  1. `stop` (the task becomes `removing`; another removal already there
+     makes it `busy`): each live session gets `session.signal hangup`,
+     those still live after 5 s `kill`; sessions bound to the task
+     meanwhile are stopped the same way (up to 3 rounds). One still live
+     after that makes it `busy` and the task goes back as it was (with
+     that error). Ended sessions stay listed.
+  2. `archive`: `scripts.archive` of the source checkout's `orca.yaml`, run
+     like setup (see above) with the worktree as its working directory;
+     not with `skip_archive`, nor when git does not list the worktree. An
+     unusable `orca.yaml` fails this stage.
+  3. `worktree`: the shared directories (`worktree.sharedDirectories` of
+     the source checkout's `orca.yaml`) that are links in the worktree
+     (symbolic links; on Windows also junctions) are unlinked — only the
+     link, nothing under it — then `git -C <repo> worktree remove
+     [--force] <worktree>` (`--force` with `force`). A worktree git no
+     longer lists is pruned (`git worktree prune`) and its directory
+     removed only when empty.
+  4. `branch`: `git branch -d <branch>` in `repo`. When git refuses (a
+     squash merge leaves the branch unmerged for git), `gh pr view
+     <branch> --json state,headRefOid` in `repo` (a PR task: `gh pr view
+     <number>`, which also finds a fork's pull request): `MERGED` with
+     `headRefOid` the local branch's commit deletes it with `git branch
+     -D`; anything else, gh failing included, keeps it, named in
+     `kept_branch`. Remote branches are never deleted.
+  5. The record is forgotten: `task.forget {id, kept_branch?}`, so
+     watchers get `task.removed {id, kept_branch?}`.
+
+  Each stage is `task.progress {id, stage}` (`Task.stage`, state
+  `removing`). A failing stage — the archive script, `git worktree
+  remove` (a process stagent does not know holding a file, …) — takes the
+  task back to the state it had (`ready`, or `failed`) with its one-line
+  `error` and the failed `stage`, keeps the record and is answered `internal` with that line
+  (git's own error for `worktree remove`). `task.remove` again retries;
+  `skip_archive` leaves a failing archive out.
+
+With `scripts.archive` to run (stage 2 applies), stages 2–5 run in a new
+detached session (like `session.spawn`'s, in the app's session list) whose `cwd`
+is the source checkout (Windows cannot remove a worktree that is a
+process's working directory), running `<stagent> task remove [--force]
+<task id>`: its terminal shows each stage (`[stagent] <stage>`), the
+commands and their output; it exits non-zero on a failure. The session is
+not tied to the task. Without archive the bridge runs stages 3–5 itself
+and no session starts. Either way the reply comes when the removal has
+finished: `{kept_branch?}` once the daemon reported `task.removed`, or
+the error above once the task left `removing`; a session ending before
+either fails the stage it was at. When the bridge goes away first the
+removal carries on in that session.
+
+Every removal unties the task's sessions, ended ones still listed
+included (`session.updated` without `task_id`).
+
 #### GitHub screen (Windows only)
 
 On Linux and macOS the app finds the working trees and asks gh with POSIX
@@ -197,6 +501,7 @@ same tool directories; git is always called with `-c core.longpaths=true`.
 |---|---|---|
 | `github.repos` | – | `{repos[], git_missing}` |
 | `github.activity` | `{path, host, repo, branch?}` | `{gh: "ready"\|"missing"\|"unauthenticated", auth_message?, package_manager?, description?, is_private, pulls?\|pulls_error?, issues?\|issues_error?, current?}` |
+| `github.status` | `{items[{repo, kind: "issue"\|"pr", number, branch?}]}` | `{items[{repo, kind, number, branch?, state, pr_state?}]}` |
 
 `github.repos` lists the git working trees the user worked in last,
 newest first. Candidate directories: the working directory (read from the
@@ -256,6 +561,19 @@ Otherwise these gh calls run in parallel, as the app's sh script does:
 `pulls_error` / `issues_error` holds gh's error output on one line instead;
 exactly one of each pair is present. gh runs with
 `GH_NO_UPDATE_NOTIFIER=1` and `GH_PROMPT_DISABLED=1`.
+
+`github.status` reports whether issues and pull requests (a host's tasks)
+are still open — `github.activity` lists open ones only. Each item names
+one by `repo` (gh's `-R` value, as above), `kind` (`issue` or `pr`) and
+`number`; an issue item may add `branch`, echoed in its answer. A pull
+request item gets the pull request's `state`, an issue item the issue's
+`state` and, with `branch`, `pr_state`: the state of that branch's pull
+request (`gh pr view <branch>`), absent when there is none. States are gh's (`OPEN`, `CLOSED`,
+`MERGED`). The gh calls (`gh issue view` / `gh pr view <number> -R <repo>
+--json state`) run in parallel; an item gh cannot answer (no gh, not
+signed in, not found) is left out of `items`, the rest keep their order.
+An unknown `kind`, a `number` below 1, or a `repo` or `branch` that is
+malformed or starts with `-` is `bad_request`.
 
 ### Session (forwarded to the session's holder)
 
@@ -372,8 +690,14 @@ lands on a menu: while one of claude's or Codex's menus is on the holder's
 screen — numbered options, one under the cursor (claude's `❯`, Codex's
 `›`), a key hint below them; an approval, claude's AskUserQuestion, Codex's
 update notice (`1. Update now`) or folder trust prompt (`1. Trust and
-continue`) — nothing of it is written and the request fails with
-`menu_open` (the app's copy of the screen lags behind the host's). The
+continue`); or claude's workspace trust prompt, whose options have no
+numbers (the dialog titled `Accessing workspace:` with `❯ No, exit` /
+`Yes, I trust this folder` and `Enter to confirm · Esc to cancel`; its
+Enter would pick No and end claude) — nothing of it is written and the
+request fails with `menu_open` (the app's copy of the screen lags behind
+the host's). The trust prompts are answered in the terminal; stagent
+writes no trust. claude and Codex hold the initial prompt given on their
+command line until the folder is trusted and send it themselves. The
 holder looks again when the message's
 turn in the input queue comes, right before writing its text: a menu shown
 meanwhile drops the whole message, and the request fails with `menu_open`
@@ -404,7 +728,7 @@ max 1 MiB.
 
 | method | params | result |
 |---|---|---|
-| `watch` | `{since}` | `{sessions[], approvals[], unwrapped[], seq, missed[], truncated}` then `event` / `session.updated` / `session.removed` / `unwrapped.updated` notifications |
+| `watch` | `{since}` | `{sessions[], approvals[], unwrapped[], tasks[], seq, missed[], truncated}` then `event` / `session.updated` / `session.removed` / `unwrapped.updated` / `task.updated` / `task.removed` notifications |
 | `sessions.list` | – | `{sessions[]}` |
 | `conversations.list` | `{harness?[], limit?}` | `{conversations[]}` |
 | `transcript.get` | `{session_id? \| harness+conversation_id? \| path?, limit?, before?}` | `{path, harness, messages[], cursor}` |
@@ -415,6 +739,7 @@ max 1 MiB.
 | `config.set` | `{config}` — a JSON Merge Patch (RFC 7396) of `Config` | `{config, notify: {last_error}}` (the effective config, with defaults applied) |
 | `notify.test` | `{channels?: ["ntfy" \| "webhook" \| "chat"]}` | `{}`; pushes a test right away to the enabled channels among `channels` (absent or empty: every enabled channel) and emits a `notification` event (reason `test`); `bad_request` for a channel name not in the list; `not_configured` (nothing sent, no event) when none of them is enabled; `unavailable` with the failure when a channel failed |
 | `presence.set` | `{foreground}` | `{}`; the app is (not) in the foreground (see "Push notifications") |
+| `task.list` | – | `{tasks[]}` — every task, in the order they were created (see "Tasks") |
 
 Nothing in the protocol answers an approval: the program's own screen does
 (the PC, Claude's Remote Control, or a client typing the option's key with
@@ -450,17 +775,109 @@ defaults filled in. Example: `{"config": {"disable_handoff": true}}`
 turns handoff off for `stagent run --handoff=auto` without touching any
 other setting.
 
+`repos` holds settings per source checkout, keyed by its canonical path
+(the `repo` of `Task` and `task.preview`): `{"repos": {"<repo>":
+{"worktree_include": [<pattern>…]}}}` sets one checkout's app patterns
+of files to copy (see "Files to copy") and `{"repos": {"<repo>": null}}`
+removes them; other checkouts' entries stay. `config.set` refuses
+(`bad_request`, nothing written) an entry it sets whose key is not an
+absolute path or not clean (`filepath.Clean` would change it; a trailing
+separator) and a pattern that is empty, starts with `!`, is absolute or
+has a `..` or `.git` component. Whether the path exists does not matter.
+
 Every push (ntfy, webhook, chat, including `notify.test`) is titled with the
 host it comes from: `notify.host_label`, or the host name when it is empty
 (no prefix when that is unknown too). A single notification reads
 `<label> · <title>` (e.g. `開発機 · claude · api`), a digest
-`<label>: <title>`. The in-app `notification` event keeps the plain title.
+`<label>: <title>`. A notification about a session tied to a task
+(`Session.task_id`) puts the task's number first: `<label> · #N <title>`
+(e.g. `開発機 · #493 claude · agent-orchestra-493`); a digest of several
+notifications does not. The in-app `notification` event keeps the plain
+title.
 
 A notification about one session carries its `session_id`. On ntfy its
 sequence ID (`X-Sequence-ID`) is the session id — or, for an id outside
 ntfy's rule (1–64 of `[A-Za-z0-9_-]`; stagent's never are), the first 32
 hex digits of its SHA-256: a newer notification of the session replaces
 the older one. A digest and `notify.test` have no sequence ID.
+
+#### Tasks
+
+A task (タスク; `Task` below) is an Issue or PR being worked on, in a
+worktree of a source checkout (元のチェックアウト) or, `in_place`, in the
+checkout itself. The daemon keeps them in `state/tasks.json` (mode 0600,
+apart from `config.json`); only the daemon writes it, and only `uninstall
+--level purge` removes it. A task's key is its checkout's canonical path
+(`repo`) and its `number`: one task per number. `repo` is made by
+stagent — `git rev-parse --show-toplevel` with symlinks resolved, on
+Windows with an upper-case drive letter; a linked worktree chosen as the
+checkout stays itself — and the app uses it as it is.
+
+`task.list` answers every task in the order they were created; `watch`'s
+`tasks[]` is the same list, and `task.updated` (the whole `Task`, added or
+changed) and `task.removed {id, kept_branch?}` follow the changes. On every `task.list`
+the daemon checks each `ready` task: when its worktree directory is gone,
+or `git worktree list` of `repo` no longer lists it (git answering with an
+error counts too; no git at all checks nothing), the task becomes
+`missing`. A `preparing` task whose prepared session (`session_id`) ended,
+or did not register within 30 s of the task being prepared (or of the
+daemon starting, for its holder to come back), becomes `failed` with
+`error: "interrupted"`; `task.list` and `watch` see it so, and the daemon
+checks again when it starts. A task still `removing` when the daemon
+starts is `ready` again with `error: "interrupted"`, keeping its `stage`.
+
+`Session.task_id` is the task a session belongs to, decided by the
+daemon: a worktree task's sessions are those whose `cwd` is its
+`worktree` or inside it (the innermost worktree wins), checked when the
+session registers and, for the live sessions, when the task is
+registered (`session.updated` follows). An `in_place` task takes only its
+prepared session and the sessions `session.spawn {task_id}` started for
+it, never one by its `cwd`. A task that is forgotten (`task.forget`) unties
+its sessions, ended ones still listed included (`session.updated`).
+
+Local IPC only (the bridge and `stagent task`, never forwarded from the
+app; refused with `agent_refused` to a coding agent's process tree):
+
+| method | params | result |
+|---|---|---|
+| `task.register` | `{repo, kind, number, title, url, branch, base, worktree, in_place?, session_id}` | `{task, existed, session?}` |
+| `task.progress` | `{id, stage, error?, session_id?}` | `{}` |
+| `task.forget` | `{id, kept_branch?}` | `{}` |
+
+`task.register` adds a task, atomically by its key; `repo` and `worktree`
+are canonical paths (`worktree` is `repo` when `in_place`), `session_id`
+the session the caller starts to prepare the task. Without `existed` the
+task is new — or was `failed` (or interrupted) and is `preparing` again
+with this `session_id`, `title`, `url` and, when given, `branch` and
+`base` — and the caller starts that session. With `existed` nothing is to
+be started: the task is `ready` (or `missing`, `removing`), or still
+`preparing`, then with its live prepared session in `session` (absent
+while that session has not registered yet). An `in_place` task on a
+checkout another number's `in_place` task uses is `in_use`.
+`bad_request`: `repo` not absolute, `kind` not `issue`/`pr`, `number` not
+positive, no `session_id`, or a worktree task's `worktree` not absolute or
+equal to `repo`.
+
+`task.progress` reports a stage. While `preparing`, the stages `fetch`,
+`branch`, `worktree`, `copy`, `setup` set `stage`; `agent` without
+`error` makes the task `ready` (no `stage`); any stage with `error` makes
+it `failed`, keeping that `stage` and the error (one line, at most 300
+bytes). `agent` with `error` and the task's `session_id` fails a `ready`
+task the same way (its agent could not start). `stop` or `archive` starts
+removing a task that is not `preparing`: `removing` with that `stage`;
+`stop` without `error` on a `removing` task is `busy` (another removal is
+under way); then `stop`, `archive`, `worktree`, `branch` set `stage`, and
+an `error` takes the task back to the state it had (`ready` after a
+daemon restart), keeping the error and that `stage`. Any other
+combination is `bad_request`; an unknown `id` `not_found`. Each change is
+a `task.updated`.
+
+`task.register`, `task.progress` and `task.forget` change nothing and
+answer `internal` when `tasks.json` cannot be written.
+
+`task.forget` deletes the record (`task.removed {id, kept_branch?}`,
+passing on `kept_branch`), the last step of `task.remove`; an unknown
+`id` is `not_found`.
 
 #### Click link
 
@@ -639,8 +1056,9 @@ keeps it.
 If the daemon restarts while the bridge is connected, daemon requests in
 flight fail with `unavailable` and the bridge restores the watch itself:
 events the app missed arrive as `event`, every current session as
-`session.updated`, sessions that disappeared as `session.removed`, and the
-current `unwrapped` list (empty after a restart) as `unwrapped.updated`. The
+`session.updated`, sessions that disappeared as `session.removed`, every
+current task as `task.updated`, tasks that disappeared as `task.removed`,
+and the current `unwrapped` list (empty after a restart) as `unwrapped.updated`. The
 app needs no daemon-restart handling. Session requests go to the holders
 directly and are unaffected.
 
@@ -706,6 +1124,8 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 | `closed` | `{id, exit_code}` |
 | `transcript` | `{session_id?, path, messages[]}` |
 | `unwrapped.updated` | `{unwrapped[]}` (the whole current list of `UnwrappedLaunch`; replaces the previous one) |
+| `task.updated` | `Task` (full object, added or changed; replaces the previous one) |
+| `task.removed` | `{id, kept_branch?}` — `kept_branch`: the branch `task.remove` kept (see "Removing a task") |
 
 ## Objects
 
@@ -714,7 +1134,7 @@ holder_pid, mode (passthrough|detached), attached, state (working|idle|
 waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
 process), title?, conversation_id?, transcript_path?, last_message?, cols,
 rows, started_at, last_activity_at, last_local_input_at?, focused?,
-presence_file?, exit_code?`.
+presence_file?, exit_code?, task_id?`.
 `mode` is fixed for the life of a session except for one transition
 (`persist`): a `passthrough` session started with `--handoff` becomes
 `detached` when its local terminal hangs up.
@@ -749,6 +1169,9 @@ agent meanwhile; presence (see "Push notifications") uses the same value.
 out since; a `stagent attach` that goes away and a local terminal that
 hangs up lose it. `presence_file` is the holder's
 `$CLAUDE_CLIENT_PRESENCE_FILE`, when set.
+
+`task_id` is the task the session belongs to, decided by the daemon (see
+"Tasks"); omitted when none.
 
 `harness` starts as the program the session runs (`other` for a shell).
 Hooks of an agent running inside the session (by `STAGENT_SESSION_ID`)
@@ -817,6 +1240,18 @@ when the agent leaves the session. When a session's last approval closes,
 its hook-derived `needs_approval` goes and the terminal/activity state
 shows again.
 
+`Task`: `id, repo, kind (issue|pr), number, title, url, branch, base,
+worktree, in_place, created_at, state (preparing|ready|failed|missing|
+removing), stage?, error?, session_id?`. `repo` is the source checkout's
+canonical path; `worktree` is where the task is worked on (`repo` itself
+when `in_place`). `created_at` is RFC 3339 (UTC, whole seconds). `stage`
+is, while preparing, `fetch|branch|worktree|copy|setup|agent` (the stage
+it failed at, once `failed`) and, while removing,
+`stop|archive|worktree|branch` (the stage that failed, once a removal
+failed and the task is back to `ready` or `failed`). `error` is one line; details stay in the
+terminal's output. `session_id` is the session that prepares the task;
+sessions are tied to tasks by `Session.task_id`, not by it.
+
 `UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp), cwd, reason
 (old_terminal|bypassed|ide|ssh|no_terminal), first_seen_at,
 last_activity_at` (unix ms, host clock: the first and the latest hook of
@@ -845,7 +1280,10 @@ host_label, click_base, click_page, reasons {needs_approval, waiting_input,
 turn_complete, exited, terminal}, lang, skip_when_claude_app_notifies},
 retention {events_days, events_max, scrollback_days,
 scrollback_total_mib, scrollback_session_mib}, idle_after_ms,
-disable_handoff`. `disable_handoff` (default false) makes
+disable_handoff, repos? {<source checkout>: {worktree_include?[]}}`.
+`repos` (absent when empty) holds the app's patterns of files to copy
+per source checkout (see `config.set` and "Files to copy").
+`disable_handoff` (default false) makes
 `stagent run --handoff=auto` — what the shell wrappers run — end the
 program with its terminal unless `STAGENT_HANDOFF` decides otherwise;
 holders read it at every start, so it applies from the next start on, also
@@ -1050,7 +1488,11 @@ wins:
 `stagent follow` only uses processes of the user it runs as: the same
 effective uid, with the real uid equal to it (a set-user-ID program has its
 owner's privileges but the arguments and environment of whoever started it,
-so it counts as another user's), or on Windows the same token user SID. A
+so it counts as another user's), or on Windows the same token user SID. On
+Linux both stagent's uids and every other process's are read from
+`/proc/<pid>/status`, so under proot's fake root (`proot -0`), which fakes
+`geteuid` but not `/proc`, every process of the guest has the user's kernel
+uid, root's included (proot separates no privileges). A
 process whose owner cannot be read counts as another user's; the owner is
 checked on every scan. Another user's process
 

@@ -23,7 +23,7 @@ const memoryLimit = 64 << 20
 // "1" (handoff); other values are ignored.
 const EnvHandoff = "STAGENT_HANDOFF"
 
-const runUsage = `usage: stagent run [--detached | --handoff[=auto]] [--id ID] [--cols N --rows N] [--cwd DIR] -- <cmd> [args...]
+const runUsage = `usage: stagent run [--detached | --handoff[=auto]] [--id ID] [--cols N --rows N] [--cwd DIR] [--task ID] -- <cmd> [args...]
 
 Runs <cmd> on a PTY as an agent session the SSH Term app can view and
 control. Without --detached the session is mirrored on this terminal and
@@ -68,6 +68,7 @@ type runFlags struct {
 	handoff    handoffFlag
 	id, cwd    string
 	cols, rows int
+	task       string
 }
 
 func (r *runFlags) flagSet() *flag.FlagSet {
@@ -82,6 +83,7 @@ func (r *runFlags) flagSet() *flag.FlagSet {
 	fs.IntVar(&r.cols, "cols", 0, "columns of a detached session (default 80)")
 	fs.IntVar(&r.rows, "rows", 0, "rows of a detached session (default 24)")
 	fs.StringVar(&r.cwd, "cwd", "", "working directory of the program (default: current)")
+	fs.StringVar(&r.task, "task", "", "task the session belongs to (session.spawn task_id); the daemon decides")
 	return fs
 }
 
@@ -159,6 +161,7 @@ func Main(args []string) int {
 		Cols:     rf.cols,
 		Rows:     rf.rows,
 		Dir:      rf.cwd,
+		TaskID:   rf.task,
 		Layout:   layout,
 	})
 	if err != nil {

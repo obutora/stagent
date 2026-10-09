@@ -23,25 +23,29 @@ const (
 )
 
 // codexCommand returns argv with --no-daemon after the program when argv
-// runs a Codex CLI that has the flag. Invocations Codex refuses it with
-// (`codex agents`, `--remote`), ones already giving it and a codex whose
-// version cannot be read are left as they are. The version is asked the way
-// pty.Start runs the program: same lookup, dir and env.
+// runs a Codex CLI that has the flag — directly or in the end, after
+// `stagent task run … --` (wire.AgentArgv). Invocations Codex refuses it
+// with (`codex agents`, `--remote`), ones already giving it and a codex
+// whose version cannot be read are left as they are. The version is asked
+// the way pty.Start runs the program: same lookup, dir and env.
 func codexCommand(argv []string, dir string, env []string) []string {
-	if wire.DetectHarness(argv) != wire.HarnessCodex {
+	agent := wire.AgentArgv(argv)
+	if wire.DetectHarness(agent) != wire.HarnessCodex {
 		return argv
 	}
-	for _, a := range argv[1:] {
+	for _, a := range agent[1:] {
 		if a == codexNoDaemon || a == "agents" || a == "--remote" || strings.HasPrefix(a, "--remote=") {
 			return argv
 		}
 	}
-	if !codexHasNoDaemon(argv[0], dir, env) {
+	if !codexHasNoDaemon(agent[0], dir, env) {
 		return argv
 	}
+	pre := len(argv) - len(agent)
 	out := make([]string, 0, len(argv)+1)
-	out = append(out, argv[0], codexNoDaemon)
-	return append(out, argv[1:]...)
+	out = append(out, argv[:pre+1]...)
+	out = append(out, codexNoDaemon)
+	return append(out, agent[1:]...)
 }
 
 func codexHasNoDaemon(bin, dir string, env []string) bool {

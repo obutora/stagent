@@ -65,6 +65,14 @@ const (
 	// ErrForeignOwner: the stagent location (socket, run directory, named
 	// pipe) belongs to another user; nothing was sent to it.
 	ErrForeignOwner = "foreign_owner"
+	// ErrNotClean: task.remove found uncommitted changes and force was
+	// not given.
+	ErrNotClean = "not_clean"
+	// ErrBusy: task.remove found live sessions of the task it was not
+	// asked to stop, or could not stop them.
+	ErrBusy = "busy"
+	// ErrInUse: another number's in_place task uses that source checkout.
+	ErrInUse = "in_use"
 )
 
 // Errorf builds an *Error.

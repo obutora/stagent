@@ -54,4 +54,11 @@ func TestCodexCommandAddsNoDaemon(t *testing.T) {
 			}
 		})
 	}
+	// A task's prepared session: the flag goes after the codex that
+	// `stagent task run` ends in.
+	task := []string{"/opt/stagent", "task", "run", "--setup", "0123456789abcdef", "--", v160, "Issue #3"}
+	want := []string{"/opt/stagent", "task", "run", "--setup", "0123456789abcdef", "--", v160, "--no-daemon", "Issue #3"}
+	if got := codexCommand(task, t.TempDir(), os.Environ()); !slices.Equal(got, want) {
+		t.Fatalf("codexCommand(%q) = %q, want %q", task, got, want)
+	}
 }

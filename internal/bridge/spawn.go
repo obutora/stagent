@@ -50,15 +50,9 @@ func (b *Bridge) doSpawn(p wire.SpawnParams) (*wire.SpawnResult, error) {
 	if werr := b.agentRefusal(); werr != nil {
 		return nil, werr
 	}
-	cols, rows := p.Cols, p.Rows
-	if cols <= 0 {
-		cols = defaultCols
-	}
-	if rows <= 0 {
-		rows = defaultRows
-	}
-	if cols > maxTermDim || rows > maxTermDim {
-		return nil, wire.Errorf(wire.ErrBadRequest, "session.spawn: size %dx%d too large", cols, rows)
+	cols, rows, err := termSize(wire.MethodSessionSpawn, p.Cols, p.Rows)
+	if err != nil {
+		return nil, err
 	}
 	cwd := b.expandHome(p.Cwd)
 	if st, err := os.Stat(cwd); err != nil || !st.IsDir() {
@@ -71,17 +65,50 @@ func (b *Bridge) doSpawn(p wire.SpawnParams) (*wire.SpawnResult, error) {
 	} else {
 		env = ensureOnPath(env, command[0], b.l.Home)
 	}
-	keys := make([]string, 0, len(p.Env))
-	for k := range p.Env {
+	if env, err = addEnv(wire.MethodSessionSpawn, env, p.Env); err != nil {
+		return nil, err
+	}
+	s, err := b.startSession(wire.NewSessionID(), command, cwd, cols, rows, env, p.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	return &wire.SpawnResult{Session: *s}, nil
+}
+
+// termSize applies the default size and refuses an oversized one.
+func termSize(method string, cols, rows int) (int, int, error) {
+	if cols <= 0 {
+		cols = defaultCols
+	}
+	if rows <= 0 {
+		rows = defaultRows
+	}
+	if cols > maxTermDim || rows > maxTermDim {
+		return 0, 0, wire.Errorf(wire.ErrBadRequest, "%s: size %dx%d too large", method, cols, rows)
+	}
+	return cols, rows, nil
+}
+
+// addEnv appends the app's env entries (in name order) to env; they win
+// over earlier ones in os/exec.
+func addEnv(method string, env []string, add map[string]string) ([]string, error) {
+	keys := make([]string, 0, len(add))
+	for k := range add {
 		if k == "" || strings.ContainsAny(k, "=\x00") {
-			return nil, wire.Errorf(wire.ErrBadRequest, "session.spawn: invalid env name %q", k)
+			return nil, wire.Errorf(wire.ErrBadRequest, "%s: invalid env name %q", method, k)
 		}
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
-		env = append(env, k+"="+p.Env[k]) // later entries win in os/exec
+		env = append(env, k+"="+add[k])
 	}
+	return env, nil
+}
+
+// startSession starts session id, a detached holder running command in
+// cwd (tied to taskID when set), and returns it once the holder answers.
+func (b *Bridge) startSession(id string, command []string, cwd string, cols, rows int, env []string, taskID string) (*wire.Session, error) {
 	exe, err := daemonclient.Exe()
 	if err != nil {
 		return nil, err
@@ -89,18 +116,17 @@ func (b *Bridge) doSpawn(p wire.SpawnParams) (*wire.SpawnResult, error) {
 	if err := b.l.EnsureDirs(); err != nil {
 		return nil, err
 	}
-	id := wire.NewSessionID()
-	args := append([]string{
+	args := []string{
 		"run", "--detached", "--id", id,
 		"--cols", strconv.Itoa(cols), "--rows", strconv.Itoa(rows),
-		"--cwd", cwd, "--",
-	}, command...)
-	logPath := filepath.Join(b.l.LogDir, id+".log")
-	s, err := b.startHolder(id, exe, args, env, logPath)
-	if err != nil {
-		return nil, err
+		"--cwd", cwd,
 	}
-	return &wire.SpawnResult{Session: *s}, nil
+	if taskID != "" {
+		args = append(args, "--task="+taskID)
+	}
+	args = append(append(args, "--"), command...)
+	logPath := filepath.Join(b.l.LogDir, id+".log")
+	return b.startHolder(id, exe, args, env, logPath)
 }
 
 // startHolder starts `exe args` as a detached holder and waits until it
@@ -151,6 +177,12 @@ func (b *Bridge) awaitHolder(id string, pid int, logPath string) (*wire.Session,
 			return nil, err
 		}
 		if pid > 0 && !proc.Alive(pid) {
+			// A program that ends at once takes its holder with it before
+			// the first dial; the holder registered first, so the daemon
+			// lists the session (ended, or ending).
+			if s := b.registeredSession(ctx, id); s != nil {
+				return s, nil
+			}
 			return nil, wire.Errorf(wire.ErrInternal, "holder exited during start%s", logTail(logPath))
 		}
 		select {
@@ -162,6 +194,24 @@ func (b *Bridge) awaitHolder(id string, pid int, logPath string) (*wire.Session,
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
+}
+
+// registeredSession is session id as the daemon lists it, or nil.
+func (b *Bridge) registeredSession(ctx context.Context, id string) *wire.Session {
+	dc, err := b.daemonConn(b.dialDaemon)
+	if err != nil {
+		return nil
+	}
+	var list wire.SessionsListResult
+	if err := dc.c.Call(ctx, wire.MethodSessionsList, struct{}{}, &list); err != nil {
+		return nil
+	}
+	for i := range list.Sessions {
+		if list.Sessions[i].ID == id {
+			return &list.Sessions[i]
+		}
+	}
+	return nil
 }
 
 // expandHome resolves "", "~" and "~/..." against the home directory.

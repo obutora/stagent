@@ -27,10 +27,12 @@ multiplexer which pane its client shows (`tmux list-clients`, …, run as the
 client's own binary). It only considers processes of the user it runs as:
 another user's processes are never taken for the tab, an agent or a
 multiplexer, so it never runs their binaries or passes on their
-environment. It opens no network port, starts no background process and
-changes no configuration. Input typed in the chat view goes to the terminal
-itself, not through stagent. The wire format and these rules are documented
-in [PROTOCOL.md](PROTOCOL.md) ("stagent follow").
+environment. On Linux the owner is the uid the kernel reports in `/proc`,
+for stagent itself too, so under proot's fake root (`proot -0`) every
+process of the guest counts as the user's. It opens no network port, starts
+no background process and changes no configuration. Input typed in the chat
+view goes to the terminal itself, not through stagent. The wire format and
+these rules are documented in [PROTOCOL.md](PROTOCOL.md) ("stagent follow").
 
 The same binary also contains commands for an upcoming Agent Mode (`run`,
 `daemon`, `bridge`, `hook`, `integrate`); the chat view does not use them.

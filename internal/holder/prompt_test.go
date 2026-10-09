@@ -16,7 +16,9 @@ import (
 // fixtures of the app's screen reader
 // (test/services/terminal_chat/_fixtures): `.ansi` is what a terminal of
 // the size in the name is fed, `.txt` the app's plain rendering (`|` +
-// row, then the cursor line).
+// row, then the cursor line). claude_trust_*: Claude Code 2.1.293's
+// workspace trust prompt (#491), captured from its PTY, `.txt` rendered
+// with pyte.
 
 var fixtureSize = regexp.MustCompile(`_(\d+)x(\d+)$`)
 
@@ -67,6 +69,8 @@ func TestPermissionMenu(t *testing.T) {
 		{"claude_draft3_60x30", false},
 		{"claude_done_60x30", false},
 		{"claude_idle_60x30", false},
+		{"claude_trust_60x30", false}, // workspace trust: no permission
+		{"claude_trust_nav_60x30", false},
 		{"codex_approval_60x30", true},     // "Would you like to run the following command?"
 		{"codex_approval_45x30", true},     // the same, wrapped
 		{"codex_approval_nav_60x30", true}, // cursor moved to "2. Yes, and don't ask again"
@@ -126,8 +130,9 @@ func TestPermissionMenu(t *testing.T) {
 }
 
 // A chat message is refused on any menu, not only on approvals (#440):
-// Codex's update notice and folder trust prompt take an Enter as their
-// first option. Numbered drafts in the input box and numbered lists in the
+// Codex's update notice and folder trust prompt and claude's workspace
+// trust prompt (#491, unnumbered options) take an Enter as their highlighted
+// option. Numbered drafts in the input box and numbered lists in the
 // transcript are no menus.
 func TestLiveMenu(t *testing.T) {
 	for _, tc := range []struct {
@@ -141,6 +146,8 @@ func TestLiveMenu(t *testing.T) {
 		{"claude_draft3_60x30", false},
 		{"claude_done_60x30", false},
 		{"claude_idle_60x30", false},
+		{"claude_trust_60x30", true},     // "❯ No, exit" under "Accessing workspace:"
+		{"claude_trust_nav_60x30", true}, // cursor moved to "Yes, I trust this folder"
 		{"codex_approval_60x30", true},
 		{"codex_hooks_review_60x30", true}, // "1. Review hooks"
 		{"codex_trust_60x30", true},        // "1. Trust and continue"
@@ -185,6 +192,39 @@ func TestLiveMenu(t *testing.T) {
 			"  2. then test",
 			"",
 			"◦ Working (0s • esc to interrupt)",
+		},
+		// The words of claude's trust prompt outside of its dialog.
+		"trust prompt's options the user sent to claude": {
+			"❯ No, exit",
+			"  Yes, I trust this folder",
+			"",
+			"● OK",
+		},
+		"trust prompt's options drafted in claude's prompt box": {
+			"────────────────────────────",
+			"❯ No, exit",
+			"  Yes, I trust this folder",
+			"────────────────────────────",
+			"  ? for shortcuts · esc to interrupt",
+		},
+		"trust prompt printed without its dialog edge": {
+			"$ cat notes.md",
+			" Accessing workspace:",
+			" /tmp/repo",
+			"",
+			" ❯ No, exit",
+			"   Yes, I trust this folder",
+			"",
+			" Enter to confirm · Esc to cancel",
+		},
+		"unnumbered highlighted list in another claude dialog": {
+			"────────────────────────────",
+			" Select model",
+			"",
+			" ❯ Default",
+			"   Opus",
+			"",
+			" Enter to confirm · Esc to cancel",
 		},
 	} {
 		if _, ok := liveMenu(lines); ok {

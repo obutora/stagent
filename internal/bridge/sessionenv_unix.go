@@ -78,6 +78,10 @@ func shellCommand(env []string) []string {
 	return []string{sh, "-l"}
 }
 
+// terminalCommand is what a task opened as a terminal runs (task.create
+// without a command): the login shell, as for `shell: true`.
+func terminalCommand(env []string) []string { return shellCommand(env) }
+
 func toolDirs(home string, getenv func(string) string) []string {
 	return paths.ToolDirs(runtime.GOOS, home, getenv)
 }

@@ -36,6 +36,14 @@ func (b *Bridge) serveGitHub(m *wire.Msg) {
 		if err = rpc.Decode(m, &p); err == nil {
 			res, err = github.Activity(ctx, b.githubRunner(), p)
 		}
+	case wire.MethodGitHubStatus:
+		var p wire.GitHubStatusParams
+		if err = rpc.Decode(m, &p); err == nil {
+			var items []wire.GitHubStatusItem
+			if items, err = github.Status(ctx, b.githubRunner(), p.Items); err == nil {
+				res = wire.GitHubStatusResult{Items: items}
+			}
+		}
 	}
 	b.replyResult(m.ID, res, err)
 }

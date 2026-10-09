@@ -9,6 +9,7 @@ require (
 	github.com/charmbracelet/x/vt v0.0.0-20260927004216-9c77d672503d
 	github.com/creack/pty v1.1.24
 	github.com/ebitengine/purego v0.11.1
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 )

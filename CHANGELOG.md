@@ -3,6 +3,153 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.10.0
+
+### Added
+
+- `github.status {items[{repo, kind, number, branch?}]}` (Windows,
+  capability `github`) reports the state gh gives each issue or pull
+  request (`OPEN`, `CLOSED`, `MERGED`), and for an issue with `branch`
+  the state of that branch's pull request as `pr_state` (the answer
+  echoing `branch`), so the app can
+  mark tasks whose issue was closed or whose pull request was merged;
+  `github.activity` only lists open ones. Items gh cannot answer are left
+  out (#502).
+- Tasks (タスク): an Issue or PR worked on in a worktree of a source
+  checkout, or in the checkout itself (`in_place`). The daemon keeps them
+  in `state/tasks.json` (mode 0600; only the daemon writes it, only
+  `uninstall --level purge` removes it), keyed by the checkout's
+  canonical path and the number. `task.list` answers every task in the
+  order they were created, `watch` gains `tasks[]`, and `task.updated`
+  (the whole `Task`) and `task.removed {id}` follow the changes. A `ready`
+  task whose worktree directory is gone or that `git worktree list` no
+  longer lists becomes `missing` on `task.list`; a `preparing` task whose
+  prepared session ended or never registered becomes `failed` with
+  `error: "interrupted"`, also after a daemon restart, and a task still
+  `removing` when the daemon starts is `ready` with that error, keeping
+  its `stage`. A change `tasks.json` cannot take is not made: the call
+  answers `internal`. After a daemon restart the bridge's restored watch
+  sends every task as `task.updated` and gone ones as `task.removed`
+  (#502).
+- `Session.task_id`: the daemon ties a session to the worktree task whose
+  worktree holds its `cwd` (also live sessions, when the task is
+  registered), and to an `in_place` task only its prepared session and
+  sessions started with the new `session.spawn {task_id}` (#502).
+- Local IPC for the bridge and `stagent task`: `task.register` (atomic by
+  the key; a `failed` task is prepared again, another number's `in_place`
+  task on the checkout is the new error `in_use`), `task.progress {id,
+  stage, error?, session_id?}` and `task.forget {id}`, refused with
+  `agent_refused` to a coding agent's process tree like `config.set`.
+  `stop` on a task already `removing` is `busy`, so only one removal runs;
+  stage `agent` with an error from the prepared session fails a `ready`
+  task. Error codes `not_clean` and `busy` are reserved for `task.remove`
+  (#502).
+- Pushes of a session tied to a task are titled `<host> · #N <title>` on
+  ntfy, the generic webhook and chat destinations; a digest of several is
+  not (#502).
+- `task.create` (bridge, spawn queue) creates a task and starts its first
+  session: the daemon registers it (`{task, session?, existed}`: a `ready`
+  task starts nothing, a `preparing` one answers its live prepared
+  session, a `failed` one is prepared again), the bridge makes the empty
+  directory `<parent of the checkout>/<checkout name>-<N>` and starts the
+  session there (in the checkout itself for `in_place`), so its `cwd` is
+  the task's place from the start. In it the internal `stagent task run
+  <id> -- <command…>` fetches, makes the branch (an issue's `<N>-<slug>`
+  or the given `branch`, linked with `gh issue develop`, made locally
+  from `base` when gh fails; a PR's head branch with `gh pr checkout` in
+  a detached worktree), adds or adopts the worktree, runs `orca.yaml`'s
+  `scripts.setup` (login shell; on Windows a `.cmd` runner, or Git for
+  Windows' bash for a `#!` script) and then becomes the agent, reporting
+  each stage with `task.progress` and showing everything in the
+  terminal. A failing stage leaves the task `failed` without an agent —
+  also when the agent itself cannot be started after stage `agent`;
+  `task.create` again carries on. An empty `command` opens a terminal.
+  Refused with `agent_refused` to a coding agent's process tree (#502).
+- A task's prepared session reports the harness of the command `stagent
+  task run` runs (`Session.harness`), and a Codex there gets
+  `--no-daemon` like any other (#502).
+- A worktree task gets its files to copy and shared directories in the
+  new `copy` stage of `stagent task run`, between `worktree` and `setup`:
+  `orca.yaml`'s `worktree.sharedDirectories` of the source checkout that
+  are gitignored are linked (a symbolic link; on Windows a junction, else
+  a directory symbolic link; one inside another listed one goes with it),
+  then the gitignored files the checkout's
+  `.worktreeinclude` (Orca's rules: literal paths — a line with `*`, `?`
+  or `[` is invalid —, at most 1,000, a file
+  up to 256 KiB) and the app's patterns (`config.json`
+  `repos.<checkout>.worktree_include`, git pathspec globs) select are
+  copied, up to 2 GiB and 50,000 entries. Tracked, not ignored, missing,
+  unmatched, invalid and over-the-limit entries and what lies in a linked
+  directory are skipped with a line in the terminal (tracked ones
+  silently); a destination that exists is left alone, so a retry copies
+  only what is missing. A directory that cannot be linked is one warning
+  line and what is listed under it is copied instead; nothing here fails
+  the task (#502).
+- `task.preview {repo, worktree_include?}` (bridge, its own queue,
+  allowed for agent descendants) answers what a new worktree of the
+  checkout would get, resolved by the same code: `copies` (at most 500,
+  `truncated`), `links`, `skipped` with the reason (`tracked`,
+  `not_ignored`, `missing`, `no_match`, `under_link`, `invalid`,
+  `limit`), `total_bytes`, the checkout's `orca.yaml` `setup` and
+  `orca_error`. `worktree_include` tries patterns that are not saved
+  (#502).
+- `config.json` `repos.<checkout>.worktree_include`, set one checkout at
+  a time with `config.set` (`null` removes one); `config.set` refuses
+  with `bad_request` a key that is not an absolute clean path and a
+  pattern that is empty, a negation, absolute or has a `..` or `.git`
+  component (#502).
+- `task.remove {id, force?, stop_sessions?, skip_archive?, dry_run?}`
+  (bridge, its own queue) removes a task (片付け). `dry_run` reports the
+  worktree's uncommitted changes as `git status --porcelain` lines
+  (`changes[]`, ignored files and shared-directory links left out),
+  the branch's commits on no remote (`unpushed`) and the task's live
+  sessions (`sessions[]`). Changes need `force` (`not_clean`), live
+  sessions `stop_sessions` (`busy`): they get hangup, then kill after 5 s,
+  and sessions bound to the task meanwhile are stopped too. A `preparing`
+  task is `busy` without `stop_sessions`; with it its sessions are stopped
+  first (it fails, interrupted) and the removal goes on, `in_place` too.
+  Then `orca.yaml`'s `scripts.archive` of the source checkout runs in the
+  worktree — in a session of the source checkout running the internal
+  `stagent task remove <id>`, so its output shows in a terminal — unless
+  `skip_archive`; only the shared directories' links are unlinked, `git
+  worktree remove` runs, and the branch is deleted when git sees it
+  merged or gh says its pull request was merged at the branch's commit
+  (a squash merge; a PR task's pull request is looked up by its number,
+  so a fork's is found too), otherwise kept and named in `kept_branch`; remote
+  branches are never deleted. Each stage is `Task.stage` while
+  `removing`; a failing one (archive, `git worktree remove`) takes the
+  task back with its `error`, keeping that `stage` (the app offers to skip
+  the archive when it is `archive`), and answers `internal`; a second
+  removal of a task being removed is `busy`. The reply comes when
+  the removal has finished. A `missing` task is forgotten and its
+  worktree pruned, an `in_place` one only forgotten. Refused with
+  `agent_refused` to a coding agent's process tree (#502).
+- `task.forget` takes `kept_branch?` and `task.removed` carries it, so
+  every watcher learns the branch a removal kept (#502).
+
+### Fixed
+
+- A chat message no longer lands on claude's workspace trust prompt
+  (`Accessing workspace:`, shown at startup in a folder not trusted yet).
+  Its options have no numbers, so the holder did not see a menu, and the
+  message's Enter picked the highlighted `No, exit`, ending claude. Now
+  `session.input` refuses the message with `menu_open` while the prompt is
+  up, as on Codex's folder trust prompt; the user answers it in the
+  terminal, and claude then sends the initial prompt it held. stagent
+  writes no trust (#502).
+- `session.spawn` of a program that ends at once no longer fails with
+  `holder exited during start` when the holder ended with it before the
+  bridge reached it: the answer is the session the daemon lists. The same
+  race made `task.create` report a task run that failed at once as a
+  start failure, and `task.remove` an archive that failed at once (#502).
+- Under proot's fake root (`proot -0`, an Ubuntu guest on Android), the
+  chat view and the agent probe find the agents: stagent took its
+  own uid from `geteuid`, which proot fakes, and every process's from
+  `/proc/<pid>/status`, which proot leaves at the kernel's uid, so every
+  process counted as another user's. On Linux stagent now reads its own
+  uids from `/proc/self/status` too; elsewhere the uids agree and nothing
+  changes (#529).
+
 ## 0.9.0
 
 ### Added

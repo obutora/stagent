@@ -54,7 +54,7 @@ var DaemonMethods = map[string]bool{
 	MethodTranscriptGet: true, MethodTranscriptSubscribe: true, MethodTranscriptUnsubscribe: true,
 	MethodApprovalsList: true,
 	MethodConfigGet:     true, MethodConfigSet: true, MethodNotifyTest: true,
-	MethodPresenceSet: true,
+	MethodPresenceSet: true, MethodTaskList: true,
 }
 
 // HolderMethods are forwarded by the bridge to the session's holder.
@@ -127,8 +127,11 @@ type WatchResult struct {
 	// Unwrapped: agents started without a stagent session, newest
 	// last_activity_at first; unwrapped.updated replaces the list.
 	Unwrapped []UnwrappedLaunch `json:"unwrapped"`
-	Seq       int64             `json:"seq"` // latest seq at subscription time
-	Missed    []Event           `json:"missed"`
+	// Tasks: every task, in the order they were created; task.updated and
+	// task.removed follow the changes.
+	Tasks  []Task  `json:"tasks"`
+	Seq    int64   `json:"seq"` // latest seq at subscription time
+	Missed []Event `json:"missed"`
 	// Truncated: events between Since and Missed[0] were dropped by retention.
 	Truncated bool `json:"truncated"`
 }
@@ -248,6 +251,10 @@ type SpawnParams struct {
 	Cols  int               `json:"cols"`
 	Rows  int               `json:"rows"`
 	Env   map[string]string `json:"env,omitempty"`
+	// TaskID ties the session to that task: the way to add a session to
+	// an in_place task (a worktree task's sessions are those in its
+	// worktree anyway). Unknown ids tie nothing.
+	TaskID string `json:"task_id,omitempty"`
 }
 
 type SpawnResult struct {

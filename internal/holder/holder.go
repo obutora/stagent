@@ -55,6 +55,10 @@ type Options struct {
 	Cols, Rows int
 	// Dir is the program's working directory; empty = current directory.
 	Dir string
+	// TaskID is the task the session was started for (session.spawn
+	// task_id), sent with holder.register; the daemon decides
+	// Session.TaskID.
+	TaskID string
 	// Env is the program's environment before STAGENT_SESSION_ID (and, when
 	// detached, TERM/COLORTERM defaults) are added; nil = os.Environ().
 	Env    []string
@@ -234,7 +238,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 		PID: p.Pid(), HolderPID: os.Getpid(), Mode: mode,
 		State: wire.StateWorking, StateSource: wire.SourceActivity,
 		Cols: cols, Rows: rows, StartedAt: now, LastActivityAt: now,
-		PresenceFile: presenceFile,
+		PresenceFile: presenceFile, TaskID: o.TaskID,
 	}
 
 	if infraErr == nil {
