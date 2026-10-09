@@ -13,9 +13,12 @@ import (
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/rpc"
+	"github.com/obutora/stagent/internal/stubcmd"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
 )
+
+func TestMain(m *testing.M) { stubcmd.Main(m) }
 
 const (
 	idA = "aaaaaaaaaaaaaaaa"

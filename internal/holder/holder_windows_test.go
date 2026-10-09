@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/obutora/stagent/internal/ptable"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -139,6 +142,53 @@ func TestWindowsAttachResumesSince(t *testing.T) {
 		t.Fatalf("attach since %d = %+v, first output reset=%v end=%d data=%q", last, res, first.Reset, first.End, first.Data)
 	}
 
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "exit 0", Submit: true}, nil)
+	if r := waitExit(t, done); r.code != 0 {
+		t.Fatalf("Run = %d, %v", r.code, r.err)
+	}
+}
+
+// A bare PowerShell's Set-Location moves the process's working directory
+// too (the GitHub screen reads it from the PEB); the session keeps the
+// command as given.
+func TestWindowsPowerShellSetLocationMovesWorkingDirectory(t *testing.T) {
+	l := isolate(t)
+	id, done := startDetached(t, l, 100, 30, "powershell.exe")
+	c := dialHolder(t, l, id)
+	var info wire.Session
+	if err := c.call(t, wire.MethodSessionInfo, wire.SessionRef{ID: id}, &info); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(info.Command, []string{"powershell.exe"}) {
+		t.Fatalf("session command %q, want the bare shell", info.Command)
+	}
+	from := 0
+	c.call(t, wire.MethodSessionAttach, wire.AttachParams{ID: id}, nil)
+	// Whatever prompt the profile draws: the shell has evaluated a line.
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "'READY' + 42", Submit: true}, nil)
+	c.outputUntil(t, &from, "READY42")
+
+	// The long form: TEMP may be an 8.3 name (C:\Users\RUNNER~1\…), which
+	// PowerShell's location keeps and Windows' working directory does not.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "Set-Location '" + dir + "'", Submit: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var cwd string
+	for deadline := time.Now().Add(testTimeout); ; time.Sleep(100 * time.Millisecond) {
+		if s, err := ptable.Take(); err == nil {
+			cwd = s.Cwd(info.PID)
+		}
+		if strings.EqualFold(filepath.Clean(cwd), filepath.Clean(dir)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("working directory %q after Set-Location, want %q", cwd, dir)
+		}
+	}
 	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "exit 0", Submit: true}, nil)
 	if r := waitExit(t, done); r.code != 0 {
 		t.Fatalf("Run = %d, %v", r.code, r.err)

@@ -214,8 +214,8 @@ func Run(ctx context.Context, o Options) (int, error) {
 	}
 	penv := buildEnv(env, id, o.Detached)
 	// The session keeps the command as given; only the program sees
-	// codex's --no-daemon.
-	p, err := pty.Start(codexCommand(o.Command, dir, penv), dir, penv, cols, rows)
+	// codex's --no-daemon and PowerShell's working-directory hook.
+	p, err := pty.Start(powershellCommand(runtime.GOOS, codexCommand(o.Command, dir, penv)), dir, penv, cols, rows)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 			return ExitNotFound, err
