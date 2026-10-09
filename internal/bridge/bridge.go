@@ -64,6 +64,7 @@ const (
 const (
 	targetDaemon = "daemon"
 	targetSpawn  = "spawn"
+	targetGitHub = "github"
 )
 
 // Bridge serves one app connection.
@@ -81,6 +82,10 @@ type Bridge struct {
 	// agentRefusal tells whether this bridge runs in a coding agent's
 	// process tree, where the holders it starts refuse it (ADR 0004).
 	agentRefusal func() *wire.Error
+	// github serves the github.* methods: on native Windows only, where
+	// the app cannot run its sh scripts (ADR 0007); tests turn it on.
+	github   bool
+	liveDirs func(holders []int) []string // see github.LiveDirs
 
 	envOnce  sync.Once
 	baseEnv  []string                 // see sessionEnv
@@ -135,6 +140,8 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		queues:         map[string]*queue{},
 		holders:        map[string]*rpc.Client{},
 		known:          map[string]bool{},
+		github:         runtime.GOOS == "windows",
+		liveDirs:       liveDirs,
 	}
 	b.out = wire.NewCodec(nil, appWriter{w, b})
 	b.dialDaemon = func() (net.Conn, error) { return daemonclient.DialOrStart(l, daemonStartWait) }
@@ -265,6 +272,8 @@ func (b *Bridge) dispatch(m *wire.Msg) {
 		b.enqueue(targetSpawn, m, b.spawn)
 	case wire.DaemonMethods[m.Method]:
 		b.enqueue(targetDaemon, m, b.forwardDaemon)
+	case b.github && wire.GitHubMethods[m.Method]:
+		b.enqueue(targetGitHub, m, b.serveGitHub)
 	case wire.HolderMethods[m.Method]:
 		var ref wire.SessionRef
 		if err := rpc.Decode(m, &ref); err != nil {
@@ -297,6 +306,9 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	}
 	if runtime.GOOS == "windows" {
 		caps = append(caps, wire.CapPersistShell)
+	}
+	if b.github {
+		caps = append(caps, wire.CapGitHub)
 	}
 	res := wire.HelloResult{
 		Protocol:     version.Protocol,

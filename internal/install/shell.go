@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/obutora/stagent/internal/pscwd"
 )
 
 // Opt-in shell wrappers: functions named claude / codex / omp that start the
@@ -178,6 +180,9 @@ function __StagentWrap {
   }
 }
 `)
+	sb.WriteString("# Keep the process's working directory at the shell's location, which\n" +
+		"# Set-Location alone does not move, so SSH Term's GitHub screen sees it.\n" +
+		pscwd.Hook + "\n")
 	for _, c := range wrappedCommands {
 		sb.WriteString("function " + c + " { __StagentWrap '" + c + "' $args }\n")
 	}

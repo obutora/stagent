@@ -3,6 +3,30 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.9.0
+
+### Added
+
+- The GitHub screen works on native Windows hosts, which have no `sh` for
+  the app's scripts: on Windows the bridge announces `github` and serves
+  `github.repos` (the git working trees the user worked in last, newest
+  first, with the fields of the app's sh script; candidates are the
+  working directories of the user's processes under their SSH connections
+  and holders, read from the PEB, the sessions' `cwd` and the latest 50
+  conversations' `cwd`; at most 20 are inspected) and `github.activity`
+  (gh's open pull requests and issues, the branch's pull request, the
+  repository's description; `gh: missing` with `package_manager: winget`
+  or `unauthenticated`). Both run git and gh on their own queue, so the
+  daemon and spawns never wait for them, and answer agent descendants
+  too. Linux and macOS bridges neither announce nor serve them. A bare
+  PowerShell a holder starts (a `shell: true` session of a host whose
+  sshd runs PowerShell) gets a prompt wrapper that keeps the process's
+  working directory at the shell's location, so `Set-Location` / `sl` /
+  `cd..` move the repository the GitHub screen sees; the session keeps
+  its command as given. The shell wrapper's PowerShell profile block has
+  the same prompt wrapper, for the terminals sshd starts in PowerShell
+  (an update rewrites the block on hosts that have it) (#502).
+
 ## 0.8.0
 
 ### Added

@@ -44,7 +44,8 @@ check, and only without `STAGENT_HOME`. `stagent bridge`, started by
 sshd, has no agent among its parents, so the app does not see this error
 unless the bridge itself runs under an agent; such a bridge answers
 `session.spawn` with it before starting a holder (which would refuse the
-bridge and keep running out of its reach).
+bridge and keep running out of its reach). It serves the read-only
+`github.*` methods all the same.
 
 Requests on one connection are processed in order (input keystrokes keep
 their order). Notifications may arrive at any time between responses.
@@ -87,7 +88,8 @@ process that created its stdin pipe ends — Win32-OpenSSH's session process
   `config.set` replacing the whole config qualify.
 - Capabilities are reserved for what depends on the host OS. Linux and
   macOS keep relying on `persist`; Windows needs `persist_shell` as well.
-  Whether a key is present is checked only for `host_id`.
+  `github` is announced only on Windows, where the bridge serves the
+  GitHub screen. Whether a key is present is checked only for `host_id`.
 
 ## Methods
 
@@ -143,6 +145,17 @@ command and exit). `command` must then be empty or absent (`bad_request`
 otherwise). This is how a terminal tab runs its shell in a persistent
 session: it outlives the SSH connection and is re-attached later.
 
+A holder whose command is a bare `powershell.exe` or `pwsh.exe` (no
+arguments; Windows only) starts it with `-NoExit -EncodedCommand <hook>`:
+after the profiles, the prompt function is wrapped so that each prompt
+sets the process's working directory to the last file system location
+(`Set-Location` alone does not change it, and the GitHub screen reads
+it). The wrapped prompt runs first and still sees the command's `$?`
+and `$LASTEXITCODE`. `Session.command` stays the bare shell. The
+PowerShell profile block of the shell wrapper has the same hook, for the
+terminals sshd starts (see "Command-line tools"); wrapping twice changes
+nothing.
+
 On Linux a holder that must leave the login session it was started from
 (here the bridge's SSH session) to outlive it moves itself into a new scope
 of the user's service manager as the first thing `stagent run` does — see
@@ -152,7 +165,7 @@ the bridge starts them in the GUI login session so that the agent can use
 the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
-`push_chat`, `persist`, and on Windows `persist_shell`. `push_chat`
+`push_chat`, `persist`, and on Windows `persist_shell` and `github`. `push_chat`
 announces the chat destination (`notify.chat`) and `notify.test`'s
 `channels`: an older stagent stores `notify.chat` like any unknown key
 without sending to it, so an app configures chat destinations only on
@@ -164,7 +177,85 @@ to `detached` (handoff). An app that relies on them treats a bridge
 without `persist` as needing an update. Windows bridges before 0.5.0
 announced `persist` but refused `shell` with `unsupported`; on Windows
 `persist_shell` announces that `shell` works, and an app treats a
-Windows bridge without it as needing an update.
+Windows bridge without it as needing an update. `github` (Windows only)
+announces the `github.*` methods below.
+
+#### GitHub screen (Windows only)
+
+On Linux and macOS the app finds the working trees and asks gh with POSIX
+sh scripts over plain exec; native Windows (sshd DefaultShell cmd or
+PowerShell) has no `sh`, so there the bridge answers the same questions
+(ADR 0007). Only a Windows bridge serves them and announces `github`;
+elsewhere they are `unknown_method`. They are read-only, so a bridge
+running under a coding agent serves them too (ADR 0004). They have their
+own queue: a slow gh never delays daemon, `session.spawn` or session
+requests. git and gh run with the environment `session.spawn` starts
+sessions with (the bridge's own on Windows), PATH supplemented with the
+same tool directories; git is always called with `-c core.longpaths=true`.
+
+| method | params | result |
+|---|---|---|
+| `github.repos` | – | `{repos[], git_missing}` |
+| `github.activity` | `{path, host, repo, branch?}` | `{gh: "ready"\|"missing"\|"unauthenticated", auth_message?, package_manager?, description?, is_private, pulls?\|pulls_error?, issues?\|issues_error?, current?}` |
+
+`github.repos` lists the git working trees the user worked in last,
+newest first. Candidate directories: the working directory (read from the
+process's PEB) of the user's processes running under one of their SSH
+connections (`sshd` / `sshd-session`) or under a holder — shells, agents
+and what runs in them — counting as now (a PowerShell's moves with
+`Set-Location` included when it has the working-directory hook, see
+`session.spawn`'s `shell` and the shell wrapper); each
+session's `cwd` at its
+`last_activity_at`; the `cwd` of the 50 most recently updated
+conversations at their `updated_at`. A directory counts once, with its
+newest time; task records are not candidates. Of the 200 newest
+directories, those inside a working tree are resolved to its top level
+(`git rev-parse --show-toplevel`) and the 20 newest working trees are
+inspected; one without a remote is dropped. Each item has the fields of
+the app's sh script (`@@REPO`):
+
+| key | value |
+|---|---|
+| `path` | top-level directory |
+| `remote_url` | `origin`'s URL, else the first remote's |
+| `ssh_host?` | an ssh remote's real host name (`ssh -G <host>`'s `hostname`; the remote may name an `~/.ssh/config` alias) |
+| `branch` | current branch, or the abbreviated commit when `detached` |
+| `detached` | HEAD is detached |
+| `default_branch?` | from `refs/remotes/origin/HEAD` |
+| `changes` | lines of `git status --porcelain` (changed and untracked files) |
+| `ahead?`, `behind?` | commits against the upstream branch; absent without one |
+| `last_active_at?` | RFC 3339 (UTC) |
+
+Remotes that are not on GitHub are listed too (the app drops them).
+`git_missing: true` (and no repos) when git is not on PATH.
+
+`github.activity` asks gh about one repository: `repo` is gh's `-R` value
+(`OWNER/REPO`, `HOST/OWNER/REPO` on GitHub Enterprise), `host` the host
+gh must be signed in to, `path` the working tree (gh's working directory),
+`branch` a feature branch whose pull request is wanted. A `repo`, `host`
+or `branch` that is malformed or starts with `-` is `bad_request`.
+Without gh, `gh: "missing"` with `package_manager: "winget"` when winget
+is on PATH. When `gh auth status --hostname <host>` fails,
+`gh: "unauthenticated"` with its output on one line in `auth_message`.
+Otherwise these gh calls run in parallel, as the app's sh script does:
+
+- `gh repo view <repo> --json description,isPrivate` → `description`
+  (trimmed; absent when empty) and `is_private`;
+- `gh pr list -R <repo> --state open --limit 30 --json
+  number,title,author,headRefName,isDraft,updatedAt,url,reviewDecision,labels`
+  → `pulls`;
+- `gh issue list -R <repo> --state open --limit 30 --json
+  number,title,author,updatedAt,url,labels,blockedBy,blocking`, again
+  without `blockedBy,blocking` when that fails (older gh and GitHub
+  Enterprise) → `issues`;
+- with `branch`: `gh pr view <branch> -R <repo> --json
+  number,title,url,state,isDraft,reviewDecision,statusCheckRollup,author,updatedAt,headRefName`
+  → `current`, absent when it fails (no pull request for the branch).
+
+`pulls`, `issues` and `current` are gh's JSON as is. When a list fails,
+`pulls_error` / `issues_error` holds gh's error output on one line instead;
+exactly one of each pair is present. gh runs with
+`GH_NO_UPDATE_NOTIFIER=1` and `GH_PROMPT_DISABLED=1`.
 
 ### Session (forwarded to the session's holder)
 
@@ -1502,7 +1593,12 @@ codex whose first argument is `exec` / `e`, omp with `-p` / `--print` or a
 `--mode` (`--mode X` or `--mode=X`) other than `text`. The block also
 exports `STAGENT_SHELL_WRAPPER=1`, marking shells that have the wrapper.
 The wrapper itself does not look at `STAGENT_HANDOFF`; `stagent run
---handoff=auto` does.
+--handoff=auto` does. The PowerShell block also wraps the prompt defined
+before it with the working-directory hook described under
+`session.spawn` (each prompt sets the process's working directory to the
+shell's file system location), so a terminal sshd starts in PowerShell
+moves the repository the GitHub screen sees with `Set-Location`; a prompt
+a later part of the profile defines replaces it.
 
 `stagent ls [--json]` lists the daemon's sessions (`sessions.list`), most
 recent `last_activity_at` first: a table of ID, MODE, STATE, LAST ACTIVITY
