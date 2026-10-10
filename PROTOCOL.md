@@ -370,7 +370,8 @@ the same code, against `repo` as it is now:
 
 The `copy` stage first links each shared directory at the same path in
 the worktree — a symbolic link on Linux and macOS; on Windows a junction,
-else a directory symbolic link (Developer Mode or elevation) — then
+else a directory symbolic link (Developer Mode or elevation; on a network
+share, where a junction would not resolve, only this, with elevation) — then
 copies, in order: a file, or a directory with what is in it (a top-level
 symbolic link as what it points to, links inside a directory as links),
 each file through a temporary file renamed into place. A destination
@@ -1470,12 +1471,18 @@ wins:
 
 1. the rollout / session file the agent has open (Linux; both keep it open
    once they have written to it);
-2. the session its command line names: `codex [exec] resume <uuid>` →
+2. omp: the session `~/.omp/agent/terminal-sessions/<terminal>` names for
+   the agent's terminal (`pts-3` for `/dev/pts/3`), which omp rewrites
+   whenever it starts, continues, resumes or switches sessions and which
+   `omp -c` reads. It counts when written since the agent started, or for
+   `-c/--continue` when its cwd is the agent's; one marked `fresh` whose
+   file does not exist yet means no transcript, not a guess below;
+3. the session its command line names: `codex [exec] resume <uuid>` →
    `sessions/**/rollout-*-<uuid>.jsonl`; `omp -r/--resume <id prefix|path>`
    → the newest `<ts>_<id>.jsonl` whose id starts with the prefix, or the
    file; `omp -c/--continue` → the newest session of the agent's directory
    created before the agent started (`--session-dir` honoured);
-3. the harness's newest conversation in the agent's working directory
+4. the harness's newest conversation in the agent's working directory
    written since the agent started that no other running Codex / omp
    process has open or names on its command line, and no other listed
    agent already follows. An agent that starts a new conversation (no

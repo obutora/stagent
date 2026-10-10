@@ -4,7 +4,7 @@ package version
 // Version is the stagent release version. The release script reads it to
 // name the GitHub release (v<Version>) and the app pins the matching sha256
 // sums.
-const Version = "0.10.0"
+const Version = "0.10.1"
 
 // Protocol is the app ↔ bridge protocol version exchanged in `hello`.
 // Bump it on any incompatible change to PROTOCOL.md.

@@ -3,6 +3,27 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.10.1
+
+### Fixed
+
+- Windows: a task's shared directories (`worktree.sharedDirectories`) of a
+  source checkout on a network share (a UNC path or a mapped drive) are
+  no longer junctions. An administrator could make one there, but the
+  share's server resolves it as its own path, so the copy stage said
+  `linked` and the worktree's directory did not open. Such a directory is
+  now a directory symbolic link, or copied with the one warning line when
+  that cannot be made either (#531).
+- `follow`: an omp chat showed the conversation of another agent in the
+  same directory, the one the PC was just working in, while the terminal
+  showed its own: an omp that has not written since it started (`omp -r`
+  after picking a session, `omp -c`, a session resumed or switched to in
+  omp, a new session before its first answer), and on macOS, where
+  stagent cannot see open files, any omp once the other agent wrote last.
+  The session omp records for the agent's terminal
+  (`~/.omp/agent/terminal-sessions/`) now decides, and a new session not
+  written yet shows no conversation instead of a guess.
+
 ## 0.10.0
 
 ### Added

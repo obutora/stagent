@@ -39,8 +39,11 @@ type agentFacts struct {
 	pids    []int // see candidate.pids
 	start   time.Time
 	cwd     string
-	roots   transcript.Roots // as the agent's environment configures them
-	argv    func(pid int) []string
+	// tty names the agent's terminal below /dev ("pts/3", "ttys003"), ""
+	// without one.
+	tty   string
+	roots transcript.Roots // as the agent's environment configures them
+	argv  func(pid int) []string
 	// openFiles lists what a process has open (nil where the OS cannot
 	// tell).
 	openFiles func(pid int) []string
@@ -91,8 +94,9 @@ func (t *transcripts) endScan() {
 // and, for Claude, the working directory its session file records.
 //
 // Codex and omp: the transcript the agent has open (they keep it open once
-// they wrote to it), else the session its command line resumes, else the
-// newest conversation in its directory that no other agent writes.
+// they wrote to it), else (omp) the session its terminal's breadcrumb
+// names, else the session its command line resumes, else the newest
+// conversation in its directory that no other agent writes.
 func (t *transcripts) resolve(a agentFacts) (path, cwd string) {
 	if a.harness == wire.HarnessClaude {
 		return t.claude(a)
@@ -103,6 +107,11 @@ func (t *transcripts) resolve(a agentFacts) (path, cwd string) {
 	}
 	if p := fromOpenFiles(a, match); p != "" {
 		return p, ""
+	}
+	if a.harness == wire.HarnessOmp {
+		if p, ok := ompFromBreadcrumb(a, match); ok {
+			return p, ""
+		}
 	}
 	p, fresh := t.fromArgv(a)
 	if p != "" {
@@ -325,6 +334,48 @@ func ompArgsOf(a agentFacts) (ompArgs, int) {
 		}
 	}
 	return ompArgs{}, 0
+}
+
+// ompFromBreadcrumb reads the record omp keeps of the session of the
+// agent's terminal, <agent dir>/terminal-sessions/<terminal below /dev, /
+// as ->: the cwd, the session file, then "fresh" while that session is not
+// written yet. omp writes it whenever it starts, continues, resumes or
+// switches sessions, unless it already says so: `omp -c` reads it and may
+// leave it as it was. So it counts when written since the agent started,
+// or for --continue when it names the agent's directory; an earlier omp in
+// the same (reused) terminal left any other. ok with path "" means the
+// agent's session is not written yet.
+func ompFromBreadcrumb(a agentFacts, match func(string) (string, bool)) (path string, ok bool) {
+	if a.tty == "" {
+		return "", false
+	}
+	file := filepath.Join(filepath.Dir(a.roots.Omp), "terminal-sessions", strings.ReplaceAll(a.tty, "/", "-"))
+	st, err := os.Stat(file)
+	if err != nil {
+		return "", false
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return "", false
+	}
+	lines := strings.Split(string(b), "\n")
+	if len(lines) < 2 {
+		return "", false
+	}
+	cwd, session := lines[0], lines[1]
+	if st.ModTime().Before(a.start.Add(-startSlack)) {
+		if o, _ := ompArgsOf(a); !o.cont || !samePath(cwd, a.cwd) {
+			return "", false
+		}
+	}
+	p, ok := match(session)
+	if !ok {
+		return "", false
+	}
+	if isFile(p) {
+		return p, true
+	}
+	return "", slices.Contains(lines[2:], "fresh")
 }
 
 // fromArgv returns the session the agent's command line resumes or

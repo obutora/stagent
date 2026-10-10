@@ -369,6 +369,7 @@ func (f *follower) agent(s *ptable.Snapshot, c candidate, cwds map[instance]stri
 		pids:      c.pids,
 		start:     p.Start,
 		cwd:       cwd,
+		tty:       f.loc.ttyName(p.TTY),
 		roots:     roots,
 		argv:      s.Argv,
 		openFiles: s.OpenFiles,
