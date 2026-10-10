@@ -1,8 +1,10 @@
 package task
 
 import (
+	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"github.com/Microsoft/go-winio"
@@ -27,8 +29,15 @@ func LinkDir(target, link string) error {
 }
 
 // junction makes link, a new directory, a mount point (junction) to the
-// absolute directory target.
+// absolute directory target. Both must be on local volumes: a mount point
+// to a network path does not resolve, and one made on a share (an
+// administrator may make it there) is resolved by the share's server as a
+// path of its own, so it would be made and not work, or reach another
+// directory, and the directory symbolic link would never be tried.
 func junction(target, link string) error {
+	if onRemoteVolume(target) || onRemoteVolume(link) {
+		return &os.LinkError{Op: "junction", Old: target, New: link, Err: errors.New("not on a local volume")}
+	}
 	if err := os.Mkdir(link, 0o755); err != nil {
 		return err
 	}
@@ -37,6 +46,13 @@ func junction(target, link string) error {
 		return &os.LinkError{Op: "junction", Old: target, New: link, Err: err}
 	}
 	return nil
+}
+
+// onRemoteVolume reports whether the absolute path is on a network share,
+// by UNC path or by a mapped drive letter.
+func onRemoteVolume(path string) bool {
+	root, err := windows.UTF16PtrFromString(filepath.VolumeName(path) + `\`)
+	return err == nil && windows.GetDriveType(root) == windows.DRIVE_REMOTE
 }
 
 func setMountPoint(target, link string) error {

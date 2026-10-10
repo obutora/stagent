@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -324,6 +325,65 @@ func TestOmpTranscriptFromArgs(t *testing.T) {
 			openFiles: fds, claimed: noClaims}
 		if path, _ := newTranscripts().resolve(a); path != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, path, c.want)
+		}
+	}
+}
+
+// ompBreadcrumb writes omp's record of the session of the terminal tty
+// (<agent dir>/terminal-sessions/<tty with / as ->), last written at mtime.
+func ompBreadcrumb(t *testing.T, root, tty, cwd, session string, fresh bool, mtime time.Time) {
+	t.Helper()
+	content := cwd + "\n" + session + "\n"
+	if fresh {
+		content += "fresh\n"
+	}
+	name := strings.ReplaceAll(tty, "/", "-")
+	write(t, filepath.Join(filepath.Dir(root), "terminal-sessions", name), content, mtime)
+}
+
+// An omp that has not written since it started holds no transcript open:
+// its terminal's breadcrumb says which conversation it is on, not the
+// newest one of its directory, which another agent may be writing.
+func TestOmpTranscriptFromTerminalBreadcrumb(t *testing.T) {
+	day := 24 * time.Hour
+	start := time.Now().Add(-time.Minute)
+	for _, c := range []struct {
+		name  string
+		argv  []string
+		crumb func(t *testing.T, root, own string)
+		want  string // "own", "other" or ""
+	}{
+		// `omp -c` reads the breadcrumb and leaves it alone when it is
+		// already right, so it may be older than the agent.
+		{"continue", []string{"omp", "-c"}, func(t *testing.T, root, own string) {
+			ompBreadcrumb(t, root, "pts/7", "/work", own, false, start.Add(-day))
+		}, "own"},
+		{"resumed in the TUI", []string{"omp"}, func(t *testing.T, root, own string) {
+			ompBreadcrumb(t, root, "pts/7", "/work", own, false, start.Add(time.Second))
+		}, "own"},
+		// A new session is not written before the first answer.
+		{"new session not written yet", []string{"omp"}, func(t *testing.T, root, _ string) {
+			ompBreadcrumb(t, root, "pts/7", "/work", filepath.Join(root, "-work", "2026-01-01T00-00-00-000Z_x.jsonl"), true, start.Add(time.Second))
+		}, ""},
+		// Left by an earlier omp in a reused terminal.
+		{"stale", []string{"omp"}, func(t *testing.T, root, own string) {
+			ompBreadcrumb(t, root, "pts/7", "/work", own, false, start.Add(-day))
+		}, "other"},
+		{"another terminal's", []string{"omp", "-c"}, func(t *testing.T, root, own string) {
+			ompBreadcrumb(t, root, "pts/8", "/work", own, false, start.Add(time.Second))
+		}, "other"},
+	} {
+		root := filepath.Join(t.TempDir(), "sessions")
+		roots := transcript.Roots{Omp: root}
+		own := ompSession(t, root, "-work", "/work", start.Add(-2*day), start.Add(-day), 1)
+		// Another agent's, created later and written since this one started.
+		other := ompSession(t, root, "-work", "/work", start.Add(-time.Hour), start.Add(30*time.Second), 2)
+		c.crumb(t, root, own)
+		a := agentFacts{harness: "omp", pids: []int{9}, start: start, cwd: "/work", tty: "pts/7", roots: roots,
+			argv: argvOf(c.argv...), openFiles: noOpenFiles, claimed: noClaims}
+		want := map[string]string{"own": own, "other": other, "": ""}[c.want]
+		if path, _ := newTranscripts().resolve(a); path != want {
+			t.Errorf("%s: got %q, want %q", c.name, path, want)
 		}
 	}
 }
