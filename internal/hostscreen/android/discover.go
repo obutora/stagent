@@ -10,17 +10,19 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/obutora/stagent/internal/hostscreen"
 	"github.com/obutora/stagent/internal/wire"
 )
 
 // host is what discovery reads of the host: the OS, the environment the
-// user's sessions get and the home directory. Replaceable in tests, so
-// every OS's locations are checked on any.
+// user's sessions get, the home directory and whether it is WSL.
+// Replaceable in tests, so every OS's locations are checked on any.
 type host struct {
 	goos string
 	env  []string
 	home string
-	uid  int // for /run/user/<uid> on Linux
+	uid  int  // for /run/user/<uid> on Linux
+	wsl  bool // the Windows side's emulators are not seen (hostscreen.WSLNote)
 }
 
 func (h host) getenv(key string) string {
@@ -170,14 +172,19 @@ func readRunning(dir string) map[string]emulator {
 
 // emulatorSerials returns the emulators of `adb devices -l` output, in
 // its order. Physical devices (USB serials, ip:port, mDNS names) are not
-// emulators; the state (device, offline while booting, …) does not
-// matter for the gRPC screen.
-func emulatorSerials(out []byte) []string {
+// emulators. adb also takes any process listening on an odd port of
+// 5555-5585 for emulator-<port-1>, offline: one offline without a
+// discovery file in running is not an emulator. Offline with a file
+// (booting) and device without one (-port only) are.
+func emulatorSerials(out []byte, running map[string]emulator) []string {
 	var serials []string
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
 		if len(f) < 2 || !isEmulatorSerial(f[0]) {
+			continue
+		}
+		if _, ok := running[f[0]]; !ok && f[1] == "offline" {
 			continue
 		}
 		serials = append(serials, f[0])
@@ -235,5 +242,5 @@ func avdName(out []byte) string {
 // thisHost is the host stagent runs on, with env as its environment.
 func thisHost(env []string) host {
 	home, _ := os.UserHomeDir()
-	return host{goos: runtime.GOOS, env: env, home: home, uid: os.Getuid()}
+	return host{goos: runtime.GOOS, env: env, home: home, uid: os.Getuid(), wsl: hostscreen.IsWSL()}
 }

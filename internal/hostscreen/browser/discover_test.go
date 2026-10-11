@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/obutora/stagent/internal/ptable"
@@ -146,6 +147,21 @@ func TestListWithoutBrowsersIsEmpty(t *testing.T) {
 	}
 }
 
+// On WSL the section says the Windows side is not searched, even empty.
+func TestListNotesWSL(t *testing.T) {
+	k := &Kind{procs: func() (*ptable.Snapshot, string, error) {
+		return ptable.New([]ptable.Proc{{PID: 1, Name: "init"}}, procSource{}), "1000", nil
+	}, wsl: true}
+	sec, err := k.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := sec.(wire.HostScreenSection[wire.HostScreenBrowserItem]).Note
+	if got == nil || got.Code != wire.NoteWSL {
+		t.Fatalf("note = %+v, want %s", got, wire.NoteWSL)
+	}
+}
+
 func TestToolIsToldByTheProfilePath(t *testing.T) {
 	for dir, want := range map[string]string{
 		"/Users/me/.agent-browser/agent-browser-chrome-abc":                    wire.ToolAgentBrowser,
@@ -203,6 +219,70 @@ func TestListShowsPipeOnlyBrowsersAsNotConnectable(t *testing.T) {
 		`{"pid":40,"tool":null,"headless":false,"port":%d,"connectable":true,"pages":[{"target_id":"P1","title":"Example","url":"https://example.com/"}]},`+
 		`{"pid":50,"tool":null,"headless":true,"connectable":false,"reason":"pipe_only","pages":[]}`+
 		`]}`, fixed)
+	if string(got) != want {
+		t.Fatalf("list:\n got %s\nwant %s", got, want)
+	}
+}
+
+// On Linux, Chromium writes its command line over its argv as one string
+// (setproctitle): the executable, then the arguments joined by spaces, so
+// /proc/<pid>/cmdline has one NUL, at the end, and the argv read is one
+// element.
+func TestListReadsCommandLinesChromiumRewroteOnLinux(t *testing.T) {
+	const me = "1000"
+	fixed := cdpServer(t, nil)
+	active := cdpServer(t, nil)
+
+	// A --user-data-dir with spaces, followed by a page to open.
+	base := t.TempDir()
+	mcpProfile := filepath.Join(base, "My Profile", "ms-playwright-mcp", "mcp-chrome 1")
+	if err := os.MkdirAll(mcpProfile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mcpProfile, "DevToolsActivePort"), fmt.Appendf(nil, "%d\n/devtools/browser/b\n", active), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	devtools := filepath.Join(base, "chrome-devtools-mcp", "chrome-profile-stable")
+	agentProfile := filepath.Join(base, "agent-browser-chrome-x")
+	chrome := "/opt/google/chrome/chrome"
+	// The executable alone tells this one is headless.
+	shell := filepath.Join(base, "My Tools", "chrome-headless-shell")
+	join := func(argv ...string) []string { return []string{strings.Join(argv, " ")} }
+
+	procs := []ptable.Proc{
+		{PID: 10, PPID: 1, Name: "chrome"},
+		{PID: 11, PPID: 10, Name: "chrome"},
+		{PID: 12, PPID: 10, Name: "chrome"},
+		{PID: 20, PPID: 1, Name: "chrome-headless"}, // comm: 15 bytes
+		{PID: 30, PPID: 1, Name: "chrome"},
+		{PID: 40, PPID: 1, Name: "chromium"},
+		{PID: 50, PPID: 1, Name: "sshd"},
+	}
+	src := procSource{
+		argv: map[int][]string{
+			10: join(chrome, "--headless=new", "--remote-debugging-port=0", "--user-data-dir="+mcpProfile, "about:blank"),
+			// children
+			11: join(chrome, "--type=zygote", "--no-zygote-sandbox", "--headless=new", "--user-data-dir="+mcpProfile),
+			12: join(chrome, "--type=renderer", "--remote-debugging-port=0", "--user-data-dir="+mcpProfile),
+			20: join(shell, "--remote-debugging-pipe", "--user-data-dir="+devtools, "about:blank"),
+			30: join(chrome, "--user-data-dir="+agentProfile, "--remote-debugging-port="+strconv.Itoa(fixed), "data:,"),
+			40: join("/usr/lib/chromium/chromium", "--user-data-dir="+agentProfile), // no debugging argument
+			50: {"sshd: me@pts/0 --remote-debugging-pipe"},                          // not Chromium
+		},
+		owner: map[int]string{10: me, 11: me, 12: me, 20: me, 30: me, 40: me, 50: me},
+	}
+	k := &Kind{procs: func() (*ptable.Snapshot, string, error) { return ptable.New(procs, src), me, nil }}
+	sec, err := k.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(sec)
+	page := `"pages":[{"target_id":"P1","title":"Example","url":"https://example.com/"}]`
+	want := fmt.Sprintf(`{"items":[`+
+		`{"pid":10,"tool":"playwright-mcp","headless":true,"port":%d,"connectable":true,%s},`+
+		`{"pid":20,"tool":"chrome-devtools-mcp","headless":true,"connectable":false,"reason":"pipe_only","pages":[]},`+
+		`{"pid":30,"tool":"agent-browser","headless":false,"port":%d,"connectable":true,%s}`+
+		`]}`, active, page, fixed, page)
 	if string(got) != want {
 		t.Fatalf("list:\n got %s\nwant %s", got, want)
 	}

@@ -144,7 +144,9 @@ func (s *Snapshot) Children(pid int) []int { return s.children[pid] }
 // started after pid (the pid was recycled), 0 when pid kept its parent.
 func (s *Snapshot) Detached(pid int) int { return s.detached[pid] }
 
-// Argv returns the command line of pid (nil when unreadable).
+// Argv returns the command line of pid (nil when unreadable). It is what
+// the process holds now: on Linux one that wrote its title over its
+// arguments (setproctitle) reads as that one string.
 func (s *Snapshot) Argv(pid int) []string {
 	if v, ok := s.argv[pid]; ok {
 		return v

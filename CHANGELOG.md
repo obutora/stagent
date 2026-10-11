@@ -3,6 +3,70 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.12.0
+
+### Added
+
+- `host_screen.list`: on a host where stagent runs in Windows' WSL, the
+  `browser` and `android` sections have `note: {code: "wsl", message}`
+  (`Section<T>` gains `note?`), since the browsers and emulators on the
+  Windows side are not visible from WSL (#675).
+- Host screen: an Android emulator or iOS simulator that stops no longer
+  ends the stream. After `state: "gone"` stagent looks for it every 3
+  seconds and, once it runs again, connects anew and sends `state:
+  "live"` and frames in the same tab: an emulator by its AVD on any
+  serial (`Target` has `avd`; `grpc.port` and `grpc.token` read again),
+  a simulator by its `udid` (its companion started again). `start` of
+  one that is not running answers `{}` and sends `gone`, then waits the
+  same way; so does an iOS `start` while simctl fails to list (a
+  timeout, say), which was `not_found`. Only no Xcode is still
+  `not_found` (#662).
+- Host screen: `host_screen.pause` and `host_screen.resume` (no params,
+  `{}`) stop and restart capturing while the app does not show the tab
+  (another tab, the app in the background, the screen off; #634).
+  `pause` drops the frame kept and stops the target's capture: a
+  browser's `Page.stopScreencast` (its WebSocket stays open), an Android
+  emulator's `streamScreenshot` cut, an iOS simulator's MJPEG video
+  stream closed (the companion kept, asked `describe` every 5/3 s so it
+  does not shut down idle). `resume` sends one full frame at once, then
+  streams again. Like `ack`, both are answered at once, never behind a
+  slow `input`; without a stream → `bad_request`; `pause` while paused
+  and `resume` while not paused → `{}`. Acks are answered while paused
+  (#651).
+
+### Changed
+
+- `host_screen.input` on an Android emulator pastes every `text`, ASCII
+  too (gRPC `setClipboard`, then `KEYCODE_PASTE`), instead of `adb shell
+  input text`, which a Japanese Gboard typed as romaji to kana ("wifi
+  test" became "ウィフぃてｓｔ"). `enter` alone sends only `KEYCODE_ENTER`
+  and leaves the clipboard alone (#672).
+- Host screen: an Android emulator's image with the same pixels as the
+  last one is dropped before JPEG encoding, so a still display sends no
+  frame (the emulator sends about 20 a second); an iOS simulator's MJPEG
+  is quality 0.5 (was 0.7) at scale 0.5 and `fps` 0 (#662).
+- Host screen: at most 10 frames a second are sent. A frame captured
+  within 100 ms of the last one sent waits in the place that keeps the
+  newest frame (the one used while two frames wait for their ack), and
+  is sent once 100 ms passed (#651).
+
+### Fixed
+
+- Host screen, Android: an `emulator-<port>` that `adb devices` shows
+  `offline` without a discovery file (any process listening on an odd
+  port of 5555–5585) is no longer listed as a `no_grpc` emulator, nor
+  asked `emu avd name` (which held `host_screen.list` up ~2 s);
+  `host_screen.start` finds no emulator there. Booting emulators (offline
+  with a file) and ones without a file in the `device` state are still
+  listed (#673).
+- `host_screen.list` lists browsers on Linux (WSL too): Chromium writes
+  its command line over its arguments as one space-joined string, so no
+  browser's `--remote-debugging-port` / `--remote-debugging-pipe` was
+  found and none was listed. Such a command line is now read for its
+  executable and switches (split at ` --`; a `--user-data-dir` with
+  spaces is found, child processes with `--type=` are still left out);
+  NUL-separated command lines read as before (#671).
+
 ## 0.11.0
 
 ### Added

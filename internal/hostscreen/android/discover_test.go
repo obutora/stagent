@@ -116,10 +116,28 @@ func TestReadRunningSkipsOtherFiles(t *testing.T) {
 }
 
 func TestEmulatorSerialsSkipsPhysicalDevices(t *testing.T) {
-	got := emulatorSerials([]byte(adbOutput))
+	running := map[string]emulator{"emulator-5556": {serialPort: 5556}}
+	got := emulatorSerials([]byte(adbOutput), running)
 	if want := []string{"emulator-5556", "emulator-5554"}; !slices.Equal(got, want) {
 		t.Fatalf("emulatorSerials = %q, want %q", got, want)
 	}
+}
+
+// adb probes the odd ports 5555-5585 and takes any process listening there
+// for emulator-<port-1>; offline and without a discovery file, it is not an
+// emulator. One in the device state without a file (-port only) still is.
+func TestEmulatorSerialsSkipsOfflineWithoutDiscovery(t *testing.T) {
+	out := "List of devices attached\n" +
+		"emulator-5562          offline transport_id:2\n" +
+		"emulator-5556          offline transport_id:7\n" +
+		"emulator-5560          device product:p model:m device:d transport_id:3\n"
+	got := emulatorSerials([]byte(out), map[string]emulator{"emulator-5556": {serialPort: 5556}})
+	if want := []string{"emulator-5556", "emulator-5560"}; !slices.Equal(got, want) {
+		t.Fatalf("emulatorSerials = %q, want %q", got, want)
+	}
+}
+
+func TestIsEmulatorSerial(t *testing.T) {
 	for _, s := range []string{"emulator-", "emulator-x", "emulator-05554", "emulator-5554:5555"} {
 		if isEmulatorSerial(s) {
 			t.Errorf("%q is not an emulator serial", s)
@@ -242,7 +260,7 @@ func TestListSection(t *testing.T) {
 	writeDiscovery(t, h.runningDir(), "4242", discovery5554)
 	k := &Kind{
 		host: func() host { return h },
-		adb:  fakeADB(adbOutput, map[string]string{"emulator-5556": "Small"}),
+		adb:  fakeADB(adbOutput, nil),
 	}
 	got, err := k.List(context.Background())
 	if err != nil {
@@ -250,10 +268,72 @@ func TestListSection(t *testing.T) {
 	}
 	want := wire.HostScreenSection[wire.HostScreenEmulatorItem]{Items: []wire.HostScreenEmulatorItem{
 		{Serial: "emulator-5554", AVD: "Pixel_9_API_36", Connectable: true},
-		{Serial: "emulator-5556", AVD: "Small", Reason: wire.HostScreenNoGRPC},
+		// emulator-5556 is offline without a discovery file: not listed.
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("List = %+v\nwant %+v", got, want)
+	}
+}
+
+// On WSL the section says the Windows side is not searched, without adb
+// or with it.
+func TestListNotesWSL(t *testing.T) {
+	home := t.TempDir()
+	h := host{goos: "linux", home: home, wsl: true}
+	k := &Kind{host: func() host { return h }, adb: fakeADB(adbOutput, nil)}
+	for _, withADB := range []bool{false, true} {
+		if withADB {
+			executable(t, filepath.Join(home, "Android", "Sdk", "platform-tools"), "adb")
+		}
+		got, err := k.List(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := got.(wire.HostScreenSection[wire.HostScreenEmulatorItem]).Note
+		if n == nil || n.Code != wire.NoteWSL {
+			t.Errorf("adb %v: note = %+v, want %s", withADB, n, wire.NoteWSL)
+		}
+	}
+}
+
+// An offline emulator-<port> without a discovery file is not listed, and
+// its console is not asked for a name (that would hold list up).
+func TestListSkipsOfflineWithoutDiscovery(t *testing.T) {
+	home := t.TempDir()
+	h := host{goos: "darwin", home: home}
+	executable(t, filepath.Join(home, "Library", "Android", "sdk", "platform-tools"), "adb")
+	writeDiscovery(t, h.runningDir(), "4242", discovery5554)
+	writeDiscovery(t, h.runningDir(), "4243", "port.serial=5558\navd.name=Booting\n")
+	devices := "List of devices attached\n" +
+		"emulator-5562          offline transport_id:2\n" +
+		"emulator-5558          offline transport_id:6\n" +
+		"emulator-5560          device product:p model:m device:d transport_id:3\n" +
+		"emulator-5554          device product:p model:m device:d transport_id:4\n"
+	fake := fakeADB(devices, map[string]string{"emulator-5560": "PortOnly"})
+	var asked []string
+	k := &Kind{
+		host: func() host { return h },
+		adb: func(ctx context.Context, adb string, env []string, args ...string) ([]byte, error) {
+			if len(args) > 2 && args[0] == "-s" {
+				asked = append(asked, args[1])
+			}
+			return fake(ctx, adb, env, args...)
+		},
+	}
+	got, err := k.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := wire.HostScreenSection[wire.HostScreenEmulatorItem]{Items: []wire.HostScreenEmulatorItem{
+		{Serial: "emulator-5554", AVD: "Pixel_9_API_36", Connectable: true},
+		{Serial: "emulator-5558", AVD: "Booting", Reason: wire.HostScreenNoGRPC},
+		{Serial: "emulator-5560", AVD: "PortOnly", Reason: wire.HostScreenNoGRPC},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("List = %+v\nwant %+v", got, want)
+	}
+	if slices.Contains(asked, "emulator-5562") {
+		t.Fatalf("asked the console of emulator-5562: %q", asked)
 	}
 }
 
@@ -280,7 +360,8 @@ func TestOpenErrors(t *testing.T) {
 	k := &Kind{host: func() host { return h }, adb: fakeADB(adbOutput, nil)}
 	for serial, code := range map[string]string{
 		"":                    wire.ErrBadRequest,
-		"emulator-5556":       wire.ErrUnavailable, // adb lists it, no discovery file
+		"emulator-5556":       wire.ErrNotFound,    // offline, no discovery file: not an emulator
+		"emulator-5554":       wire.ErrUnavailable, // adb lists it (device), no discovery file
 		"emulator-5558":       wire.ErrUnavailable, // a discovery file without gRPC
 		"emulator-5562":       wire.ErrNotFound,
 		"192.168.100.19:4228": wire.ErrNotFound,

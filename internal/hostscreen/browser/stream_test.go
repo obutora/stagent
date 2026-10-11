@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -213,6 +214,62 @@ func TestOpenFindsOnlyPageTargets(t *testing.T) {
 	} {
 		if _, err := k.Open(t.Context(), tc.target); !errors.As(err, &we) || we.Code != tc.code {
 			t.Errorf("open %+v: %v, want %s", tc.target, err, tc.code)
+		}
+	}
+}
+
+// methodsSince is the methods the page got after its first n.
+func (p *fakePage) methodsSince(n int) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.methods[n:]...)
+}
+
+func (p *fakePage) count() int { p.mu.Lock(); defer p.mu.Unlock(); return len(p.methods) }
+
+// waitMethods waits until the capture methods the page got after its
+// first n are want, in order.
+func (p *fakePage) waitMethods(t *testing.T, n int, want ...string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var got []string
+		for _, m := range p.methodsSince(n) {
+			if m == "Page.stopScreencast" || m == "Page.captureScreenshot" || m == "Page.startScreencast" {
+				got = append(got, m)
+			}
+		}
+		if slices.Equal(got, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("page got %q, want %q", got, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestPauseStopsTheScreencastAndResumeTakesAShotThenStartsIt(t *testing.T) {
+	k, port, page := startPage(t)
+	st, err := k.Open(t.Context(), wire.HostScreenTarget{Kind: wire.HostScreenBrowser, Port: port, TargetID: "P1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ev := events{make(chan string, 16)}
+	st.Start(ev)
+	for range 3 { // live, the shot, the screencast's frame
+		next(t, ev.ch)
+	}
+	n := page.count()
+	st.Pause()
+	page.waitMethods(t, n, "Page.stopScreencast")
+	n = page.count()
+	st.Resume()
+	page.waitMethods(t, n, "Page.captureScreenshot", "Page.startScreencast")
+	for _, want := range []string{"frame:c2hvdA==:800x600", "frame:Y2FzdA==:800x600"} {
+		if got := next(t, ev.ch); got != want {
+			t.Fatalf("after resume %q, want %q", got, want)
 		}
 	}
 }

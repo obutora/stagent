@@ -3,7 +3,6 @@ package android
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -34,28 +33,6 @@ func TestToPxFollowsRotation(t *testing.T) {
 	}
 	if x, y := toPx(1, 1, 1080, 2424, emupb.Rotation_PORTRAIT); x != 1079 || y != 2423 {
 		t.Errorf("the far edge: (%d, %d), want the last px (1079, 2423)", x, y)
-	}
-}
-
-func TestInputTextArgSurvivesTheDeviceShell(t *testing.T) {
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("no sh")
-	}
-	for _, text := range []string{
-		`it's a & b; $HOME "q" ` + "`x`" + ` (y) *|<>\ ~#!`,
-		`''`,
-		`a  b`,
-	} {
-		// The device's shell runs `input text <arg>`; printf shows what
-		// input text gets.
-		out, err := exec.Command(sh, "-c", "printf %s "+inputTextArg(text)).Output()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if want := strings.ReplaceAll(text, " ", "%s"); string(out) != want {
-			t.Errorf("%q reached input text as %q, want %q", text, out, want)
-		}
 	}
 }
 
@@ -172,14 +149,15 @@ func TestInputKeysAndText(t *testing.T) {
 		{wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyBack}, []string{"input keyevent KEYCODE_BACK"}, ""},
 		{wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyHome}, []string{"input keyevent KEYCODE_HOME"}, ""},
 		{wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyRecents}, []string{"input keyevent KEYCODE_APP_SWITCH"}, ""},
-		{wire.HostScreenInput{Type: wire.InputText, Text: "it's a&b"}, []string{`input text 'it'\''s%sa&b'`}, ""},
-		{wire.HostScreenInput{Type: wire.InputText, Text: "go", Enter: true}, []string{"input text 'go' && input keyevent KEYCODE_ENTER"}, ""},
+		// Every text is pasted from the clipboard, ASCII too: `input text`
+		// goes through the IME, which a Japanese Gboard turns into kana.
+		{wire.HostScreenInput{Type: wire.InputText, Text: "wifi test"}, []string{"input keyevent KEYCODE_PASTE"}, "wifi test"},
+		{wire.HostScreenInput{Type: wire.InputText, Text: `it's "a"&b; 100%s \`}, []string{"input keyevent KEYCODE_PASTE"}, `it's "a"&b; 100%s \`},
+		{wire.HostScreenInput{Type: wire.InputText, Text: "go", Enter: true}, []string{"input keyevent KEYCODE_PASTE && input keyevent KEYCODE_ENTER"}, "go"},
+		// Enter alone leaves the clipboard as it was.
 		{wire.HostScreenInput{Type: wire.InputText, Enter: true}, []string{"input keyevent KEYCODE_ENTER"}, ""},
-		// Not ASCII: pasted from the clipboard.
 		{wire.HostScreenInput{Type: wire.InputText, Text: "日本語 abc"}, []string{"input keyevent KEYCODE_PASTE"}, "日本語 abc"},
 		{wire.HostScreenInput{Type: wire.InputText, Text: "東京", Enter: true}, []string{"input keyevent KEYCODE_PASTE && input keyevent KEYCODE_ENTER"}, "東京"},
-		// ASCII input text would change: "%s" (a space to it), a newline.
-		{wire.HostScreenInput{Type: wire.InputText, Text: "100%s"}, []string{"input keyevent KEYCODE_PASTE"}, "100%s"},
 		{wire.HostScreenInput{Type: wire.InputText, Text: "a\nb"}, []string{"input keyevent KEYCODE_PASTE"}, "a\nb"},
 	}
 	for _, c := range cases {

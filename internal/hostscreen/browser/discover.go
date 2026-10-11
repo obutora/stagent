@@ -50,20 +50,20 @@ type candidate struct {
 // processes) and the port each listens on: N of --remote-debugging-port=N,
 // or for 0 the first line of DevToolsActivePort in its --user-data-dir;
 // port 0 for a browser with the pipe only. Ports are not verified here.
+// Command lines are read with readCommand.
 func candidates(s *ptable.Snapshot, owner string) []candidate {
 	var out []candidate
 	seen := map[int]bool{}
 	for _, pid := range s.PIDs() {
-		argv := s.Argv(pid)
-		if len(argv) == 0 || !isChromium(argv[0], s.Get(pid).Name) {
+		c := readCommand(s.Argv(pid))
+		if c.exe == "" || !isChromium(c.exe, s.Get(pid).Name) {
 			continue
 		}
-		sw := switches(argv[1:])
-		if _, child := sw["type"]; child {
+		if _, child := c.sw["type"]; child {
 			continue
 		}
-		portArg, ok := sw["remote-debugging-port"]
-		_, pipe := sw["remote-debugging-pipe"]
+		portArg, ok := c.word("remote-debugging-port")
+		_, pipe := c.sw["remote-debugging-pipe"]
 		if !ok && !pipe {
 			continue
 		}
@@ -80,14 +80,25 @@ func candidates(s *ptable.Snapshot, owner string) []candidate {
 		if owner == "" || s.Owner(pid) != owner {
 			continue
 		}
-		dir := sw["user-data-dir"]
-		if dir != "" && !filepath.IsAbs(dir) {
+		dirs := c.userDataDirs()
+		if len(dirs) > 0 && !filepath.IsAbs(dirs[0]) {
 			if cwd := s.Cwd(pid); cwd != "" {
-				dir = filepath.Join(cwd, dir)
+				for i, d := range dirs {
+					dirs[i] = filepath.Join(cwd, d)
+				}
 			}
 		}
+		dir := ""
+		if len(dirs) > 0 {
+			dir = dirs[0]
+		}
 		if port == 0 && !pipeOnly {
-			if port = activePort(dir); port == 0 {
+			for _, d := range dirs {
+				if port = activePort(d); port != 0 {
+					break
+				}
+			}
+			if port == 0 {
 				continue
 			}
 		}
@@ -97,15 +108,86 @@ func candidates(s *ptable.Snapshot, owner string) []candidate {
 			}
 			seen[port] = true
 		}
-		_, headless := sw["headless"]
+		_, headless := c.sw["headless"]
 		out = append(out, candidate{
 			pid:      pid,
 			port:     port,
 			tool:     toolOf(dir),
-			headless: headless || strings.Contains(strings.ToLower(filepath.Base(argv[0])), "headless"),
+			headless: headless || strings.Contains(strings.ToLower(filepath.Base(c.exe)), "headless"),
 		})
 	}
 	return out
+}
+
+// command is the executable and switches of a browser's command line.
+type command struct {
+	exe string
+	sw  map[string]string
+	// joined: the command line was one string (see readCommand), so the
+	// value of its last switch may run on with the arguments after it.
+	joined bool
+}
+
+// readCommand reads the executable and switches of argv. On Linux,
+// Chromium writes its command line over its own argv as one string
+// (setproctitle): its executable (/proc/self/exe), then the switches and
+// arguments joined by spaces, so /proc/<pid>/cmdline has a single NUL, at
+// the end; its child processes do the same. Such an argv, one element
+// with a space, is split at " --": a value keeps its spaces (a
+// --user-data-dir of /home/me/My Profile), and the last switch's value
+// may run on with the arguments after the switches (about:blank). Any
+// other argv is read element by element, with switches.
+func readCommand(argv []string) command {
+	if len(argv) == 0 {
+		return command{}
+	}
+	if len(argv) > 1 || !strings.Contains(argv[0], " ") {
+		return command{exe: argv[0], sw: switches(argv[1:])}
+	}
+	words := strings.Split(argv[0], " --")
+	c := command{exe: words[0], sw: map[string]string{}, joined: true}
+	for _, w := range words[1:] {
+		// "--name=value", or "--name" and maybe the arguments after it.
+		name, value := w, ""
+		if i := strings.IndexAny(w, "= "); i >= 0 {
+			name = w[:i]
+			if w[i] == '=' {
+				value = w[i+1:]
+			}
+		}
+		if name == "" {
+			break // a lone "--" ends the switches
+		}
+		c.sw[strings.ToLower(name)] = value
+	}
+	return c
+}
+
+// word returns the value of switch name, of a joined command line up to
+// its first space: a number or keyword, never spaced.
+func (c command) word(name string) (string, bool) {
+	v, ok := c.sw[name]
+	if c.joined {
+		v, _, _ = strings.Cut(v, " ")
+	}
+	return v, ok
+}
+
+// userDataDirs returns what --user-data-dir may be, most likely first: its
+// value, and of a joined command line that value cut before each of its
+// spaces, from the last one (the value may run on with arguments).
+func (c command) userDataDirs() []string {
+	v := c.sw["user-data-dir"]
+	if v == "" {
+		return nil
+	}
+	dirs := []string{v}
+	if c.joined {
+		for i := strings.LastIndexByte(v, ' '); i > 0; i = strings.LastIndexByte(v[:i], ' ') {
+			dirs = append(dirs, v[:i])
+		}
+	}
+	return dirs
 }
 
 // isChromium tells a Chromium-family browser by its executable (argv[0])

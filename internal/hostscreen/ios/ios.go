@@ -34,12 +34,15 @@ type Kind struct {
 	// run runs a program and returns its standard output; replaceable in
 	// tests.
 	run func(ctx context.Context, env []string, path string, args ...string) ([]byte, error)
+	// every is how often a gone simulator is looked for again; shorter
+	// in tests.
+	every time.Duration
 }
 
 // New returns the iOS simulator kind; env gives the environment to find
 // and run xcrun and idb_companion with.
 func New(env func() []string) *Kind {
-	return &Kind{env: env, run: run}
+	return &Kind{env: env, run: run, every: hostscreen.WatchEvery}
 }
 
 func (k *Kind) Name() string { return wire.HostScreenIOS }
@@ -55,37 +58,68 @@ func (k *Kind) List(ctx context.Context) (any, error) {
 }
 
 // Open starts a companion for booted simulator t.UDID and its video
-// stream.
+// stream. When the simulator shuts down the stream is gone until it boots
+// again; one not booted is gone from the start, the same way, and so is
+// any while simctl fails (a timeout: the watcher lists again). Only
+// without Xcode is it not_found.
 func (k *Kind) Open(ctx context.Context, t wire.HostScreenTarget) (hostscreen.Stream, error) {
 	if t.UDID == "" {
 		return nil, wire.Errorf(wire.ErrBadRequest, "host_screen.start: udid is empty")
 	}
 	env := k.env()
 	sims, missing := k.simulators(ctx, env)
-	var sim *simulator
-	for i := range sims {
-		if sims[i].UDID == t.UDID {
-			sim = &sims[i]
-		}
-	}
-	if sim == nil {
-		why := "not booted"
-		if missing != nil {
-			why = missing.Message
-		}
-		return nil, wire.Errorf(wire.ErrNotFound, "host_screen.start: simulator %s: %s", t.UDID, why)
+	if missing != nil && missing.Code == wire.MissingXcodeNotFound {
+		return nil, wire.Errorf(wire.ErrNotFound, "host_screen.start: simulator %s: %s", t.UDID, missing.Message)
 	}
 	path := lookPath(env, "idb_companion")
 	if path == "" {
 		return nil, wire.Errorf(wire.ErrUnavailable, "host_screen.start: idb_companion is not installed (brew install facebook/fb/idb-companion)")
 	}
-	ctx, cancel := context.WithTimeout(ctx, openWait)
-	defer cancel()
-	st, err := open(ctx, path, env, sim)
+	reopen := k.reopen(t.UDID)
+	sim := booted(sims, t.UDID)
+	if sim == nil {
+		return hostscreen.Reviving(nil, k.every, reopen), nil
+	}
+	st, err := connect(ctx, path, env, sim)
 	if err != nil {
 		return nil, wire.Errorf(wire.ErrUnavailable, "host_screen.start: simulator %s: %v", t.UDID, err)
 	}
-	return st, nil
+	return hostscreen.Reviving(st, k.every, reopen), nil
+}
+
+// reopen returns what looks for simulator udid booted and opens it (nil
+// while it is not).
+func (k *Kind) reopen(udid string) func(context.Context) hostscreen.Stream {
+	return func(ctx context.Context) hostscreen.Stream {
+		env := k.env()
+		sims, _ := k.simulators(ctx, env)
+		sim := booted(sims, udid)
+		path := lookPath(env, "idb_companion")
+		if sim == nil || path == "" {
+			return nil
+		}
+		if st, err := connect(ctx, path, env, sim); err == nil {
+			return st
+		}
+		return nil
+	}
+}
+
+// booted is simulator udid of sims; nil when it is not booted.
+func booted(sims []simulator, udid string) *simulator {
+	for i := range sims {
+		if sims[i].UDID == udid {
+			return &sims[i]
+		}
+	}
+	return nil
+}
+
+// connect opens sim, within openWait.
+func connect(ctx context.Context, path string, env []string, sim *simulator) (*stream, error) {
+	ctx, cancel := context.WithTimeout(ctx, openWait)
+	defer cancel()
+	return open(ctx, path, env, sim)
 }
 
 // open starts sim's companion and its video stream; on failure the
