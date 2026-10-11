@@ -22,18 +22,24 @@ type Kind struct {
 	// procs returns the process table and the user stagent runs as (see
 	// ptable.CurrentOwner); replaceable in tests.
 	procs func() (*ptable.Snapshot, string, error)
+	// wsl: the host is WSL, which does not see the Windows side's
+	// browsers (hostscreen.WSLNote).
+	wsl bool
 }
 
 // New returns the browser kind reading the host's process table.
 func New() *Kind {
-	return &Kind{procs: func() (*ptable.Snapshot, string, error) {
-		s, err := ptable.Take()
-		if err != nil {
-			return nil, "", err
-		}
-		owner, err := ptable.CurrentOwner()
-		return s, owner, err
-	}}
+	return &Kind{
+		procs: func() (*ptable.Snapshot, string, error) {
+			s, err := ptable.Take()
+			if err != nil {
+				return nil, "", err
+			}
+			owner, err := ptable.CurrentOwner()
+			return s, owner, err
+		},
+		wsl: hostscreen.IsWSL(),
+	}
 }
 
 func (k *Kind) Name() string { return wire.HostScreenBrowser }
@@ -48,7 +54,10 @@ func (k *Kind) ListPorts(ctx context.Context, ports []int) (any, error) {
 	if err != nil {
 		return nil, wire.Errorf(wire.ErrInternal, "host_screen.list: process table: %v", err)
 	}
-	return wire.HostScreenSection[wire.HostScreenBrowserItem]{Items: discover(ctx, candidates(s, owner), ports)}, nil
+	return wire.HostScreenSection[wire.HostScreenBrowserItem]{
+		Items: discover(ctx, candidates(s, owner), ports),
+		Note:  hostscreen.WSLNote(k.wsl),
+	}, nil
 }
 
 // Open connects to page target t.TargetID of the CDP port t.Port on

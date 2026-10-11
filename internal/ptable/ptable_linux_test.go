@@ -149,6 +149,26 @@ func TestReadsTerminal(t *testing.T) {
 	}
 }
 
+// A command line a process wrote over its own (Chromium's setproctitle:
+// one string, one NUL at the end) reads as one argument; NUL-separated
+// ones read argument by argument.
+func TestSplitNulCmdline(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		want []string
+	}{
+		{"/opt/google/chrome/chrome --type=renderer --user-data-dir=/home/u/My Profile\x00",
+			[]string{"/opt/google/chrome/chrome --type=renderer --user-data-dir=/home/u/My Profile"}},
+		{"chrome\x00--user-data-dir=/home/u/My Profile\x00about:blank\x00",
+			[]string{"chrome", "--user-data-dir=/home/u/My Profile", "about:blank"}},
+		{"", nil},
+	} {
+		if got := splitNul([]byte(c.raw)); !slices.Equal(got, c.want) {
+			t.Errorf("%q: got %q, want %q", c.raw, got, c.want)
+		}
+	}
+}
+
 func TestStatusOwner(t *testing.T) {
 	status := func(uids string) []byte {
 		return []byte("Name:\tbash\nUmask:\t0022\nState:\tS (sleeping)\nPid:\t4242\nPPid:\t1\nTracerPid:\t0\n" +

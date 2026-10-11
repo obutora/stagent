@@ -35,13 +35,14 @@ func (k *screenKind) Open(ctx context.Context, t wire.HostScreenTarget) (hostscr
 	return st, nil
 }
 
-// screenStream records its inputs' texts in order; an input waits for
-// the input gate while one is set.
+// screenStream records its inputs' texts in order, and its pauses and
+// resumes; an input waits for the input gate while one is set.
 type screenStream struct {
 	ev        hostscreen.Events
 	inputGate atomic.Pointer[chan struct{}]
 	mu        sync.Mutex
 	inputs    []string
+	calls     []string
 }
 
 func (s *screenStream) Start(ev hostscreen.Events) {
@@ -49,9 +50,14 @@ func (s *screenStream) Start(ev hostscreen.Events) {
 	ev.State(wire.HostScreenState{State: wire.HostScreenLive, Title: "t"})
 	ev.Frame(hostscreen.Frame{Data: "anBn", Width: 2, Height: 1})
 }
-func (*screenStream) Pause()  {}
-func (*screenStream) Resume() {}
-func (*screenStream) Close()  {}
+func (s *screenStream) Pause()  { s.note("pause") }
+func (s *screenStream) Resume() { s.note("resume") }
+func (s *screenStream) note(c string) {
+	s.mu.Lock()
+	s.calls = append(s.calls, c)
+	s.mu.Unlock()
+}
+func (*screenStream) Close() {}
 func (s *screenStream) Input(_ context.Context, in wire.HostScreenInput) error {
 	if g := s.inputGate.Load(); g != nil {
 		<-*g
@@ -223,5 +229,42 @@ func TestHostScreenInputsKeepTheirOrderAndAcksPassASlowOne(t *testing.T) {
 	st.mu.Unlock()
 	if want := []string{"0", "1", "2", "3", "4"}; !slices.Equal(got, want) {
 		t.Fatalf("inputs arrived %q, want %q", got, want)
+	}
+}
+
+func TestHostScreenPauseAndResumePassASlowInput(t *testing.T) {
+	k := &screenKind{}
+	_, a := startBridge(t, withScreen(k))
+	if e := a.call(t, wire.MethodHostScreenPause, nil, nil); e == nil || e.Code != wire.ErrBadRequest {
+		t.Fatalf("pause without a stream: %v, want bad_request", e)
+	}
+	target := wire.HostScreenStartParams{Target: wire.HostScreenTarget{Kind: wire.HostScreenBrowser, Port: 9222, TargetID: "P"}}
+	if e := a.call(t, wire.MethodHostScreenStart, target, nil); e != nil {
+		t.Fatal(e)
+	}
+	a.nextNotify(t, wire.NotifyHostScreenFrame)
+	st := k.stream.Load()
+	gate := make(chan struct{})
+	st.inputGate.Store(&gate)
+	input := a.goCall(wire.MethodHostScreenInput, "input", wire.HostScreenInput{Type: wire.InputText, Text: "slow"})
+	for _, method := range []string{wire.MethodHostScreenPause, wire.MethodHostScreenResume} {
+		select {
+		case m := <-a.goCall(method, method, nil):
+			if m.Error != nil {
+				t.Fatalf("%s behind an input: %v", method, m.Error)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s waited for the input", method)
+		}
+	}
+	st.mu.Lock()
+	calls := slices.Clone(st.calls)
+	st.mu.Unlock()
+	if want := []string{"pause", "resume"}; !slices.Equal(calls, want) {
+		t.Fatalf("stream calls %q, want %q", calls, want)
+	}
+	close(gate)
+	if m := <-input; m.Error != nil {
+		t.Fatal(m.Error)
 	}
 }

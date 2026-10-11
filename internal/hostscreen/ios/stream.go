@@ -14,26 +14,33 @@ import (
 	"github.com/obutora/stagent/internal/wire"
 )
 
-const (
-	// scale and quality of the companion's MJPEG: half the simulator's
-	// pixels (as for Android) at the provisional quality 70 (#624) until
-	// #634 sets the limits.
-	scale   = 0.5
-	quality = 0.7
-)
+// videoStart asks the companion for MJPEG at half the simulator's pixels
+// (as for Android) and quality 0.5 (ADR 0008 "通信量と電池", #634), fps 0:
+// a frame when the screen is redrawn only.
+func videoStart() *idbpb.VideoStreamRequest {
+	return &idbpb.VideoStreamRequest{Control: &idbpb.VideoStreamRequest_Start_{Start: &idbpb.VideoStreamRequest_Start{
+		Format:             idbpb.VideoStreamRequest_MJPEG,
+		Fps:                0,
+		CompressionQuality: 0.5,
+		ScaleFactor:        0.5,
+	}}}
+}
 
 // stream shows one simulator through its companion's video_stream
 // (MJPEG, #630): every payload is one complete JPEG, sent as is. With fps
-// 0 the companion sends a frame when the screen is redrawn only.
+// 0 the companion sends a frame when the screen is redrawn only. Pause
+// closes the video stream and Resume opens another; the companion keeps
+// running meanwhile.
 type stream struct {
 	comp *companion
-	vs   idbpb.CompanionService_VideoStreamClient
 	name string
 	// The simulator's screen in points, portrait (describe).
 	wPt, hPt int
 	// hidc is the companion's hid stream, opened by the first input; only
 	// Input uses it (see hid).
 	hidc idbpb.CompanionService_HidClient
+	// first is the video stream openStream opened (receive's).
+	first video
 
 	ctx    context.Context // ends with Close or the stream
 	cancel context.CancelFunc
@@ -44,35 +51,64 @@ type stream struct {
 	gone    sync.Once
 
 	wake chan struct{} // wakes send
+	kick chan struct{} // wakes receive after Resume
 
 	// Guarded by mu, which is never held while calling Events: Pause and
 	// Resume are called under the flow's lock, which Events takes.
 	mu     sync.Mutex
-	latest *hostscreen.Frame // the newest frame received
-	fresh  bool              // latest was not sent yet
-	resend bool              // Resume asked for latest again
+	stopVS context.CancelFunc // closes the open video stream
+	latest *hostscreen.Frame  // the newest frame received
+	fresh  bool               // latest was not sent yet
+	resend bool               // Resume asked for latest again
 	paused bool
 }
+
+// video is one video stream; its ctx ends when Pause (or Close) closes
+// it.
+type video struct {
+	vs  idbpb.CompanionService_VideoStreamClient
+	ctx context.Context
+}
+
+// keepAliveEvery is how often a paused stream asks its companion
+// something: well within idleShutdown, after which a companion without a
+// request ends by itself.
+const keepAliveEvery = idleShutdown * time.Second / 3
 
 // openStream starts the companion's MJPEG video stream; frames wait until
 // Start.
 func openStream(comp *companion, name string, wPt, hPt int) (*stream, error) {
-	s := &stream{comp: comp, name: name, wPt: wPt, hPt: hPt, wake: make(chan struct{}, 1)}
+	s := &stream{comp: comp, name: name, wPt: wPt, hPt: hPt, wake: make(chan struct{}, 1), kick: make(chan struct{}, 1)}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
-	vs, err := comp.client.VideoStream(s.ctx)
-	if err == nil {
-		err = vs.Send(&idbpb.VideoStreamRequest{Control: &idbpb.VideoStreamRequest_Start_{Start: &idbpb.VideoStreamRequest_Start{
-			Format:             idbpb.VideoStreamRequest_MJPEG,
-			CompressionQuality: quality,
-			ScaleFactor:        scale,
-		}}})
-	}
+	v, err := s.openVideo()
 	if err != nil {
 		s.cancel()
 		return nil, err
 	}
-	s.vs = vs
+	s.first = v
 	return s, nil
+}
+
+// openVideo opens a video stream, which Pause closes; while paused, it
+// opens none (a zero video).
+func (s *stream) openVideo() (video, error) {
+	s.mu.Lock()
+	if s.paused {
+		s.mu.Unlock()
+		return video{}, nil
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	s.stopVS = cancel
+	s.mu.Unlock()
+	vs, err := s.comp.client.VideoStream(ctx)
+	if err == nil {
+		err = vs.Send(videoStart())
+	}
+	if err != nil {
+		cancel()
+		return video{}, err
+	}
+	return video{vs, ctx}, nil
 }
 
 func (s *stream) Start(ev hostscreen.Events) {
@@ -84,18 +120,22 @@ func (s *stream) Start(ev hostscreen.Events) {
 func (s *stream) Pause() {
 	s.mu.Lock()
 	s.paused = true
+	stop := s.stopVS
 	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
 }
 
-// Resume sends the newest frame again: with fps 0 a still screen sends
-// none by itself. The video stream stays open while paused, which also
-// keeps the companion from shutting down idle.
+// Resume sends the newest frame again at once (with fps 0 a still screen
+// sends none by itself), then opens another video stream.
 func (s *stream) Resume() {
 	s.mu.Lock()
 	s.paused = false
 	s.resend = true
 	s.mu.Unlock()
 	poke(s.wake)
+	poke(s.kick)
 }
 
 // Close ends the stream after the companion performed the inputs sent
@@ -136,12 +176,36 @@ func poke(ch chan struct{}) {
 
 // receive turns the companion's payloads into frames until the stream
 // ends: with Close, or when the simulator shuts down (the companion,
-// started with --terminate-offline, exits).
+// started with --terminate-offline, exits). Between a Pause and a Resume
+// it keeps the companion from shutting down idle.
 func (s *stream) receive() {
+	v := s.first
 	for {
-		r, err := s.vs.Recv()
-		if err != nil {
+		if v.vs != nil {
+			s.receiveVideo(v.vs)
+			if s.ctx.Err() != nil || v.ctx.Err() == nil {
+				s.end()
+				return
+			}
+		}
+		// Pause closed it.
+		if !s.waitResume() {
 			s.end()
+			return
+		}
+		var err error
+		if v, err = s.openVideo(); err != nil && !s.isPaused() {
+			s.end()
+			return
+		}
+	}
+}
+
+// receiveVideo receives the frames of one video stream until it ends.
+func (s *stream) receiveVideo(vs idbpb.CompanionService_VideoStreamClient) {
+	for {
+		r, err := vs.Recv()
+		if err != nil {
 			return
 		}
 		data := r.GetPayload().GetData()
@@ -157,6 +221,35 @@ func (s *stream) receive() {
 		s.mu.Unlock()
 		poke(s.wake)
 	}
+}
+
+// waitResume waits while paused, asking the companion something every
+// keepAliveEvery; false once the stream ends or the companion exits.
+func (s *stream) waitResume() bool {
+	t := time.NewTicker(keepAliveEvery)
+	defer t.Stop()
+	for {
+		if !s.isPaused() {
+			return true
+		}
+		select {
+		case <-s.ctx.Done():
+			return false
+		case <-s.comp.exited:
+			return false
+		case <-s.kick:
+		case <-t.C:
+			ctx, cancel := context.WithTimeout(s.ctx, keepAliveEvery)
+			s.comp.client.Describe(ctx, &idbpb.TargetDescriptionRequest{})
+			cancel()
+		}
+	}
+}
+
+func (s *stream) isPaused() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.paused
 }
 
 // send makes every Events call but the gone state: State live, then the

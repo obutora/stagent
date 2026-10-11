@@ -65,7 +65,7 @@ func testKind(t *testing.T, tools fakeTools, programs []string, companion string
 		}
 	}
 	env = append(env, "PATH="+bin)
-	return &Kind{env: func() []string { return env }, run: tools.run}
+	return &Kind{env: func() []string { return env }, run: tools.run, every: 5 * time.Millisecond}
 }
 
 func listSection(t *testing.T, k *Kind) wire.HostScreenSection[wire.HostScreenSimulatorItem] {
@@ -167,7 +167,7 @@ func TestOpenRefusesWhatItCannotShow(t *testing.T) {
 		code     string
 	}{
 		{"no udid", fakeTools{list: bootedJSON}, []string{"xcrun", "idb_companion"}, "", wire.ErrBadRequest},
-		{"not booted", fakeTools{list: bootedJSON}, []string{"xcrun", "idb_companion"}, "U2", wire.ErrNotFound},
+		{"not booted, no companion", fakeTools{list: bootedJSON}, []string{"xcrun"}, "U2", wire.ErrUnavailable},
 		{"no Xcode", fakeTools{}, []string{"idb_companion"}, "U1", wire.ErrNotFound},
 		{"no companion", fakeTools{list: bootedJSON}, []string{"xcrun"}, "U1", wire.ErrUnavailable},
 	} {

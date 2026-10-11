@@ -98,7 +98,10 @@ type fakeEmulator struct {
 
 	mu   sync.Mutex
 	asks []*emupb.ImageFormat
+	open int // screenshot streams not ended
 }
+
+func (f *fakeEmulator) opened() int { f.mu.Lock(); defer f.mu.Unlock(); return f.open }
 
 func (f *fakeEmulator) authorized(ctx context.Context) error {
 	md, _ := metadata.FromIncomingContext(ctx)
@@ -123,7 +126,9 @@ func (f *fakeEmulator) StreamScreenshot(in *emupb.ImageFormat, s grpc.ServerStre
 	}
 	f.mu.Lock()
 	f.asks = append(f.asks, in)
+	f.open++
 	f.mu.Unlock()
+	defer func() { f.mu.Lock(); f.open--; f.mu.Unlock() }()
 	for {
 		select {
 		case <-s.Context().Done():
@@ -263,6 +268,42 @@ func TestStreamResumeStartsOver(t *testing.T) {
 	ev.frame(t)
 }
 
+func TestStreamDropsAPictureLikeTheLast(t *testing.T) {
+	f := &fakeEmulator{token: "tok", images: make(chan *emupb.Image, 4)}
+	port, _ := serve(t, f)
+	st, err := openStream(context.Background(), emulator{serialPort: 5554, grpcPort: port, token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ev := newEvents()
+	st.Start(ev)
+	ev.state(t)
+	f.images <- image888(20, 10)
+	ev.frame(t)
+	// The emulator sends about 20 a second, changed or not.
+	f.images <- image888(20, 10)
+	f.images <- image888(20, 10)
+	select {
+	case <-ev.frames:
+		t.Fatal("sent a frame of the same picture")
+	case <-time.After(300 * time.Millisecond):
+	}
+	green := image888(20, 10)
+	for i := 1; i < len(green.Image); i += 3 {
+		green.Image[i-1], green.Image[i], green.Image[i+1] = 0, 0xff, 0
+	}
+	f.images <- green
+	data, _ := base64.StdEncoding.DecodeString(ev.frame(t).Data)
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, g, _, _ := img.At(10, 5).RGBA(); g>>8 < 0xc0 || r>>8 > 0x40 {
+		t.Fatalf("the changed picture was not sent: pixel %d,%d", r>>8, g>>8)
+	}
+}
+
 func TestOpenStreamErrors(t *testing.T) {
 	f := &fakeEmulator{token: "tok", images: make(chan *emupb.Image)}
 	port, _ := serve(t, f)
@@ -277,5 +318,43 @@ func TestOpenStreamErrors(t *testing.T) {
 	_, err = openStream(context.Background(), emulator{serialPort: 5554, grpcPort: closed})
 	if !errors.As(err, &we) || we.Code != wire.ErrNotFound {
 		t.Fatalf("no gRPC on the port: %v, want not_found", err)
+	}
+}
+
+// Pause cuts the screenshot stream: the emulator sends nothing while
+// paused; Resume opens another.
+func TestStreamPauseEndsTheScreenshotStream(t *testing.T) {
+	f := &fakeEmulator{token: "tok", images: make(chan *emupb.Image, 4)}
+	port, _ := serve(t, f)
+	st, err := openStream(context.Background(), emulator{serialPort: 5554, grpcPort: port, token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ev := newEvents()
+	st.Start(ev)
+	ev.state(t)
+	f.images <- image888(20, 10)
+	ev.frame(t)
+	st.Pause()
+	waitFor(t, "the screenshot stream ended", func() bool { return f.opened() == 0 })
+	time.Sleep(100 * time.Millisecond)
+	if n := f.opened(); n != 0 {
+		t.Fatalf("%d screenshot streams open while paused", n)
+	}
+	st.Resume()
+	waitFor(t, "Resume opened a screenshot stream", func() bool { return f.opened() == 1 })
+	f.images <- image888(20, 10)
+	ev.frame(t)
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal(what)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

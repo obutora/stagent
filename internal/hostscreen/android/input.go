@@ -57,8 +57,7 @@ func (s *stream) rotation() emupb.Rotation_SkinRotation {
 }
 
 // Input performs in on the emulator: touches through gRPC sendTouch, keys
-// and text through `adb shell input`, text that `input text` cannot type
-// through the clipboard.
+// through `adb shell input keyevent`, text through the clipboard.
 func (s *stream) Input(ctx context.Context, in wire.HostScreenInput) error {
 	switch in.Type {
 	case wire.InputTap:
@@ -143,16 +142,13 @@ func (s *stream) sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// text types t into the focused field, then Enter when enter is set. Text
-// `input text` types as is goes so; any other text (non-ASCII, say a
-// confirmed Japanese word) is put on the clipboard and pasted.
+// text pastes t into the focused field, then Enter when enter is set.
+// Every text, ASCII too, is put on the clipboard and pasted: `input text`
+// goes through the IME, and a Japanese Gboard turns its ASCII into kana
+// (#637). Enter alone leaves the clipboard as it was.
 func (s *stream) text(ctx context.Context, t string, enter bool) error {
 	var cmds []string
-	switch {
-	case t == "":
-	case typable(t):
-		cmds = append(cmds, "input text "+inputTextArg(t))
-	default:
+	if t != "" {
 		if err := s.setClipboard(ctx, t); err != nil {
 			return err
 		}
@@ -165,26 +161,6 @@ func (s *stream) text(ctx context.Context, t string, enter bool) error {
 		return nil
 	}
 	return s.shell(ctx, strings.Join(cmds, " && "))
-}
-
-// typable tells whether `input text` types t as is: printable ASCII only,
-// and no "%s" (which it turns into a space).
-func typable(t string) bool {
-	for i := range len(t) {
-		if t[i] < 0x20 || t[i] > 0x7e {
-			return false
-		}
-	}
-	return !strings.Contains(t, "%s")
-}
-
-// inputTextArg is t as the argument of `input text` in the device's
-// shell: spaces as %s (`input text` joins its arguments without them),
-// the whole single-quoted so the shell leaves every other character
-// alone.
-func inputTextArg(t string) string {
-	t = strings.ReplaceAll(t, " ", "%s")
-	return "'" + strings.ReplaceAll(t, "'", `'\''`) + "'"
 }
 
 func (s *stream) setClipboard(ctx context.Context, t string) error {

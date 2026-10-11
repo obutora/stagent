@@ -7,11 +7,13 @@ package wire
 // capability; the iOS kind only on macOS (CapHostScreenIOS).
 
 const (
-	MethodHostScreenList  = "host_screen.list"
-	MethodHostScreenStart = "host_screen.start"
-	MethodHostScreenAck   = "host_screen.ack"
-	MethodHostScreenStop  = "host_screen.stop"
-	MethodHostScreenInput = "host_screen.input"
+	MethodHostScreenList   = "host_screen.list"
+	MethodHostScreenStart  = "host_screen.start"
+	MethodHostScreenAck    = "host_screen.ack"
+	MethodHostScreenPause  = "host_screen.pause"
+	MethodHostScreenResume = "host_screen.resume"
+	MethodHostScreenStop   = "host_screen.stop"
+	MethodHostScreenInput  = "host_screen.input"
 
 	NotifyHostScreenFrame = "host_screen.frame" // HostScreenFrame
 	NotifyHostScreenState = "host_screen.state" // HostScreenState
@@ -20,7 +22,7 @@ const (
 // HostScreenMethods are served by the bridge itself.
 var HostScreenMethods = map[string]bool{
 	MethodHostScreenList: true, MethodHostScreenStart: true, MethodHostScreenAck: true, MethodHostScreenStop: true,
-	MethodHostScreenInput: true,
+	MethodHostScreenPause: true, MethodHostScreenResume: true, MethodHostScreenInput: true,
 }
 
 // Target kinds of HostScreenTarget and keys of host_screen.list's result.
@@ -65,6 +67,19 @@ type HostScreenSection[T any] struct {
 	Items []T `json:"items"`
 	// Missing: the tool that finds this kind is not installed, or failed.
 	Missing *HostScreenMissing `json:"missing,omitempty"`
+	// Note: why the section may lack targets the person sees running,
+	// told even with items.
+	Note *HostScreenNote `json:"note,omitempty"`
+}
+
+// NoteWSL: the host is a Linux inside Windows' WSL, which sees neither the
+// browsers nor the emulators on the Windows side.
+const NoteWSL = "wsl"
+
+// HostScreenNote is a remark on a section, whatever it lists.
+type HostScreenNote struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // HostScreenMissing tells why a section cannot list anything.
@@ -135,12 +150,15 @@ type HostScreenSimulatorItem struct {
 }
 
 // HostScreenTarget names what host_screen.start shows: for a browser Port
-// and TargetID, for an Android emulator Serial, for an iOS simulator UDID.
+// and TargetID, for an Android emulator Serial (and AVD, which tells the
+// emulator again after a restart changed its serial), for an iOS
+// simulator UDID.
 type HostScreenTarget struct {
 	Kind     string `json:"kind"`
 	Port     int    `json:"port,omitempty"`
 	TargetID string `json:"target_id,omitempty"`
 	Serial   string `json:"serial,omitempty"`
+	AVD      string `json:"avd,omitempty"`
 	UDID     string `json:"udid,omitempty"`
 }
 

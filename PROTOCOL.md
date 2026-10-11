@@ -600,6 +600,8 @@ without a capability, except the `ios` kind (capability
 | `host_screen.list` | `{cdp_ports?: int[]}` | `{browser: Section<Browser>, android: Section<Emulator>, ios?: Section<Simulator>}` |
 | `host_screen.start` | `{target: Target}` | `{}` |
 | `host_screen.ack` | `{seq}` | `{}` |
+| `host_screen.pause` | – | `{}` (since 0.12.0) |
+| `host_screen.resume` | – | `{}` (since 0.12.0) |
 | `host_screen.stop` | – | `{}` |
 | `host_screen.input` | `Input` | `{}` |
 
@@ -612,13 +614,21 @@ without a capability, except the `ios` kind (capability
 serves `browser` and `android`, and `ios` on hosts announcing
 `host_screen_ios`.
 
-- `Section<T>`: `{items: T[], missing?: {code, message}}`. `missing`
+- `Section<T>`: `{items: T[], missing?: {code, message}, note?: {code, message}}`. `missing`
   tells why the kind's tool lists nothing (then `items` is `[]`):
   `adb_not_found` (`android`: adb is not installed), `xcode_not_found`
   (`ios`: xcrun cannot find simctl, no Xcode is selected) or
   `simctl_failed` (`ios`: simctl failed, e.g. Xcode's license is not
   accepted yet; `message` has its error). The app shows `message` for a
   code it does not know.
+- `Section<T>` also has `note?: {code, message}`: a remark on why the
+  section may lack targets the person sees running, told even with
+  `items` (and alongside `missing`). `wsl` (`browser` and `android`, since
+  0.12.0): stagent runs in Windows' WSL (`/proc/sys/kernel/osrelease`
+  names `microsoft`, or `/proc/sys/fs/binfmt_misc/WSLInterop` exists),
+  where only WSL is searched, so the browsers and emulators on the Windows
+  side are not listed. The app shows `message` for a code it does not
+  know.
 - `Browser`: `{pid?, tool, headless?, port?, manual?, connectable, reason?,
   pages: [{target_id, title, url}]}`. `tool` is `agent-browser`,
   `playwright-mcp`, `chrome-devtools-mcp`, `playwright`, or `null` when
@@ -633,7 +643,10 @@ serves `browser` and `android`, and `ios` on hosts announcing
   is readable (`iOS 26.2`). `connectable` is `false` with `reason:
   "companion_not_found"` when idb_companion is not installed.
 - `Target`: `{kind: "browser", port, target_id}` / `{kind: "android",
-  serial}` / `{kind: "ios", udid}`.
+  serial, avd?}` / `{kind: "ios", udid}`. An emulator is shown by its
+  `serial`; its `avd` (the item's, since 0.12.0) tells it again when it
+  restarts on another serial (see "Coming back"). Without `avd` (an app
+  before 0.12.0), the AVD on `serial` when `start` runs is followed.
 
 **Browsers listed.** Processes of the user stagent runs as (another
 user's browser is never listed: a CDP port has no authentication) whose
@@ -652,7 +665,13 @@ is a headless shell. `tool` is told by the `--user-data-dir` path:
 `agent-browser-chrome` → `agent-browser`, `ms-playwright-mcp` →
 `playwright-mcp`, `chrome-devtools-mcp` → `chrome-devtools-mcp`,
 `playwright_chromiumdev_profile` → `playwright`. Items are ordered by pid;
-no browser gives `items: []`.
+no browser gives `items: []`. On Linux, Chromium writes its command line
+over its arguments as one string (the executable and arguments joined by
+spaces, one NUL at the end of `/proc/<pid>/cmdline`); such a command line
+is split into switches at ` --`, so a `--user-data-dir` keeps its spaces,
+and when the last switch runs on with arguments after it (`about:blank`)
+the `--user-data-dir` cut before each space is tried for
+`DevToolsActivePort`, the longest first.
 
 **Pipe only.** A browser started with `--remote-debugging-pipe` and
 without `--remote-debugging-port` (Chrome DevTools MCP and Playwright do
@@ -684,8 +703,14 @@ frame follows. stagent sends only page-level requests and never changes
 the agent's viewport.
 
 **Emulators listed.** The `emulator-<port>` entries of `adb devices -l`
-in any state (physical devices — USB serials, `ip:port`, mDNS names —
-are never listed), ordered by port. adb is the first found of: the PATH
+(physical devices — USB serials, `ip:port`, mDNS names — are never
+listed), ordered by port. adb takes any process listening on an odd port
+of 5555–5585 for `emulator-<port-1>`: an entry that is `offline` and has
+no discovery file (below) is not an emulator, is not listed and gets no
+`emu avd name`; `start` on it finds no emulator there (see the errors).
+One `offline` with a file
+(booting) or in another state without one (`-port` only, say) is
+listed. adb is the first found of: the PATH
 of the user's login environment (as `session.spawn` gets it),
 `$ANDROID_HOME/platform-tools`, `$ANDROID_SDK_ROOT/platform-tools`, and
 the default SDK (`~/Library/Android/sdk` on macOS, `~/Android/Sdk` on
@@ -704,15 +729,18 @@ and connects to its gRPC port on the loopback (`[::1]`, then
 `127.0.0.1`), with `authorization: Bearer <grpc.token>` when the file
 has a token, reads the display's size (`getStatus`, `hw.lcd.width` and
 `hw.lcd.height`) and answers `{}`; then come `host_screen.state {state:
-"live", title: <avd>}` and the frames of `streamScreenshot` (the
-emulator sends an image when the display changes): RGB888 at half the
-display's resolution (width and height both half the longer side, so
-either orientation fits), encoded by stagent to JPEG, quality 70.
-`width` and `height` are the display's px as the image shows it: they
-swap when the emulator turns. An image of the display turned off sends
-no frame. When the emulator stops (its screenshot stream ends and
-`getStatus` no longer answers) `state: "gone"` is sent and the stream
-ends. There is no `adb screencap` fallback.
+"live", title: <avd>}` and the frames of `streamScreenshot`: RGB888 at
+half the display's resolution (width and height both half the longer
+side, so either orientation fits), encoded by stagent to JPEG, quality
+70. The emulator sends an image about 20 times a second whether the
+display changed or not: an image with the same size, rotation and pixels
+as the last one encoded is dropped before encoding, so a still display
+sends no frame (#634). `width` and `height` are the display's px as the
+image shows it: they swap when the emulator turns. An image of the
+display turned off sends no frame. When the emulator stops (its
+screenshot stream ends and `getStatus` no longer answers) `state:
+"gone"` is sent (see "Coming back"). There is no `adb screencap`
+fallback.
 
 One stream per bridge connection: `start` while streaming stops the
 current stream first (the tab's "pick another"); `stop` ends it (without
@@ -727,32 +755,76 @@ then runtime. `start` runs, for the stream, `idb_companion --udid <udid>
 up on the login shell's `PATH`, then the usual tool directories such as
 `/opt/homebrew/bin`), with its socket in a new directory under the temp
 directory that only the user can enter (no TCP port), waits until it
-describes the simulator and opens its `video_stream` (MJPEG, half the
-simulator's pixels, quality 0.7, frames sent when the screen is
-redrawn); it answers `{}`, then come `host_screen.state {state: "live",
-title}` (`title`: the simulator's name) and the frames. Every payload is
-one JPEG, sent as is; `width` × `height` is the simulator's screen in
-points (its `describe`), turned like the picture. stagent stops the
-companion (SIGTERM, a kill after 2 seconds) with the stream: on `stop`,
-the next `start` and when the bridge exits; `--idle-shutdown-time` ends
-it 5 seconds after its stream closed should stagent die first. When the
-simulator shuts down, its companion exits (`--terminate-offline`):
-`state: "gone"` is sent and the stream ends.
+describes the simulator and opens its `video_stream` (MJPEG at scale
+0.5 — half the simulator's pixels —, quality 0.5 and `fps` 0: frames
+sent when the screen is redrawn; ADR 0008 "通信量と電池"); it answers
+`{}`, then come `host_screen.state {state: "live", title}` (`title`: the
+simulator's name) and the frames. Every payload is one JPEG, sent as
+is; `width` × `height` is the simulator's screen in points (its
+`describe`), turned like the picture. stagent stops the companion
+(SIGTERM, a kill after 2 seconds) with the stream: on `stop`, the next
+`start` and when the bridge exits; `--idle-shutdown-time` ends it 5
+seconds after its last request closed should stagent die first (while
+the video stream is closed for a pause, stagent asks it `describe`
+every 5/3 seconds so it stays). When the simulator shuts down, its
+companion exits (`--terminate-offline`) and `state: "gone"` is sent
+(see "Coming back"), paused or not.
+
+**Coming back** (since 0.12.0, #633). An Android emulator or iOS
+simulator that stops does not end the stream: after `state: "gone"`
+stagent looks for it again every 3 seconds — for an emulator, the
+emulators `adb devices -l` lists (all, when adb fails) whose discovery
+file names the target's AVD and a gRPC port, on any serial (a restart
+may change it), lowest first; for a simulator, the booted simulator
+`udid` in `xcrun simctl list devices --json`. Once found, stagent
+connects again (an emulator's `grpc.port` and `grpc.token` read anew; a
+simulator's companion started again) and sends `state: "live"` with the
+title, then frames as after `start` (a full frame first, `seq`
+continuing). Another AVD on the same serial, or another simulator, is
+not the target. `start` of an emulator or simulator that is not running
+answers `{}` all the same and sends `state: "gone"` (or `live` at once
+for an AVD already running on another serial), then looks for it the
+same way: an app reconnecting after the host restarted it takes the same
+path. Looking stops (and a companion started meanwhile is stopped) with
+`stop`, the next `start` and when the bridge exits. A browser page that
+closes stays gone.
 
 **Flow control.** `seq` grows by one per frame over the bridge
 connection (a new stream continues it). The app answers every frame it
-received with `host_screen.ack {seq}`. While two frames wait for their
-ack, no frame is sent: of the frames taken meanwhile only the newest is
-kept, and sent at once when an ack frees a place. When two frames stay
-unacknowledged for 2 seconds the capture is paused; the next ack sends
-the kept frame and resumes it, beginning with a full frame: a fresh
-`Page.captureScreenshot` (the screencast only sends redrawn pages), a
-new `streamScreenshot` (whose first image is the whole display), or for
-a simulator the newest frame again (its video stream stays open while
-paused, and sends redrawn screens only). An
+received with `host_screen.ack {seq}`. At most 10 frames a second are
+sent (since 0.12.0): two frames are at least 100 ms apart. While two
+frames wait for their ack, or less than 100 ms passed since the last
+frame, no frame is sent: of the frames taken meanwhile only the newest
+is kept, and sent as soon as an ack frees a place and 100 ms passed.
+When two frames stay unacknowledged for 2 seconds the capture is
+paused; the next ack sends the kept frame and resumes it, beginning
+with a full frame: a fresh `Page.captureScreenshot` (the screencast
+only sends redrawn pages), a new `streamScreenshot` (whose first image
+is the whole display), or for a simulator the newest frame again, then
+a new video stream (it sends redrawn screens only). An
 ack for a seq not waiting (repeated, or of a replaced stream) is
 answered `{}` and changes nothing; acks keep being answered after
-`gone` until `stop` or the next `start`.
+`gone` until `stop` or the next `start`. A `live` after `gone` (see
+"Coming back") waits for no frame sent before it.
+
+**Pause** (since 0.12.0, #634; ADR 0008 "通信量と電池"). The app sends
+`host_screen.pause` when the tab is not seen (another tab opened, the
+app in the background, the phone's screen off) and `host_screen.resume`
+when it is seen again. `pause` stops capturing and drops the kept frame:
+a browser gets `Page.stopScreencast` (its WebSocket stays open), an
+Android emulator's `streamScreenshot` is cut, an iOS simulator's video
+stream is closed (its companion keeps running). `resume` captures again
+as after a stall: one full frame sent at once (`Page.captureScreenshot`;
+the emulator's first image; the simulator's newest frame), then the
+stream (`Page.startScreencast`, a new `streamScreenshot`, a new video
+stream). Acks are answered while paused. A pause and a stall both hold
+the capture: it resumes once neither does (a `resume` while stalled
+leaves it to the next ack). A target that comes back while paused (see
+"Coming back") sends `state: "live"` and stays paused. `pause` of a
+paused stream and `resume` of a stream not paused do nothing and answer
+`{}`; the next `start` begins unpaused, so a tab not seen sends `pause`
+after `start`'s answer. A stagent before 0.12.0 answers
+`unknown_method` (and sends at most as many frames as the acks allow).
 
 **Input.** `host_screen.input` operates the target being shown. Points are
 fractions of the frame (`0` at its left and top edge, `1` at its right
@@ -809,12 +881,14 @@ the latest `streamScreenshot` image. `tap`: down and up at the point.
 last. `scroll`: one swipe from `x`, `y` to `x + dx`, `y + dy` (kept on
 the frame) in 150 ms (the content moves with the finger). `key`:
 `input keyevent KEYCODE_BACK`, `KEYCODE_HOME`, `KEYCODE_APP_SWITCH`
-(`recents`). `text`: printable ASCII without `%s` is `input text`, its
-spaces as `%s` and the whole single-quoted for the device's shell; any
-other text (Japanese, say) is put on the clipboard with gRPC
-`setClipboard` and pasted with `input keyevent KEYCODE_PASTE`; `enter`
-adds `input keyevent KEYCODE_ENTER`. An input answers once adb or the
-emulator took it (adb's keys take a few hundred ms).
+(`recents`). `text`, ASCII or not, is put on the clipboard with gRPC
+`setClipboard` and pasted with `input keyevent KEYCODE_PASTE`; never
+`input text`, which goes through the IME (a Japanese Gboard turns ASCII
+into kana). The emulator's clipboard is overwritten each time. `enter`
+adds `input keyevent KEYCODE_ENTER` after the paste; `enter` with no
+`text` sends only `KEYCODE_ENTER` and leaves the clipboard alone. An
+input answers once adb or the emulator took it (adb's keys take a few
+hundred ms).
 
 An iOS simulator gets HID events on its companion's `hid` stream, opened
 by the first input and kept open for the stream (reopened once when the
@@ -833,9 +907,10 @@ companion to perform them before stopping it.
 
 **Order.** `start`, `stop` and `input` run in order on one queue: inputs
 keep the app's order, and none reaches a stream being replaced. `list`
-runs on another (probing ports never delays them). `ack` takes no queue:
-it is answered at once, never behind a slow `start` or `input`, so frames
-keep coming. After an `input` ends `unavailable`, the inputs that follow
+runs on another (probing ports never delays them). `ack`, `pause` and
+`resume` take no queue: they are answered at once in the order received,
+never behind a slow `start` or `input`, so frames keep coming and a
+`resume` shows the target at once. After an `input` ends `unavailable`, the inputs that follow
 fail `unavailable` at once without reaching the target, until it sends a
 frame or another `start`: a page held by a dialog does not hold the queue.
 
@@ -846,14 +921,20 @@ host not announcing `host_screen_ios` → `unsupported`; a `port` outside
 `/json/list` on the port, or no page target `target_id` there →
 `not_found`; the page's WebSocket cannot be opened → `unavailable`.
 `android`: an empty `serial` → `bad_request`; an emulator that is
-`no_grpc` → `unavailable`; no such emulator (no discovery file and not in
-`adb devices`) or no gRPC answering on its port → `not_found`; the port
-refusing the token → `unavailable`. `ios`: an empty `udid` →
-`bad_request`; no booted iOS simulator `udid` → `not_found`;
-idb_companion not installed, or it exits or does not describe the
-simulator within 10 seconds → `unavailable`. `ack` without a stream
-(none started, or after `stop`) → `bad_request`.
-`input`: without a stream (also after `gone`) → `bad_request`; a shape
+`no_grpc` → `unavailable`; the port refusing the token → `unavailable`.
+An emulator not running (no discovery file and not in `adb devices`, a
+discovery file left with no gRPC answering on its port, or another AVD
+on `serial`) is not an error: `{}`, then `gone` (see "Coming back");
+only without an `avd` to look for (an app before 0.12.0, and no
+emulator on `serial`) → `not_found`. `ios`: an empty `udid` →
+`bad_request`; no Xcode (xcrun cannot find simctl) → `not_found`;
+idb_companion not installed, or it exits or does not describe a booted
+simulator within 10 seconds → `unavailable`; a simulator `udid` not
+booted, or simctl failing to list (a timeout, say), is not an error:
+`{}`, then `gone`. `ack`,
+`pause` and `resume` without a stream (none started, or after `stop`) →
+`bad_request`.
+`input`: without a stream (also while `gone`) → `bad_request`; a shape
 wrong for its type (a point outside 0–1, an unknown `type`, `key` or
 `action`, a drag of fewer than two points, `text` without `text` or
 `enter`, `url` without `url`) → `bad_request`; a type the target does

@@ -23,6 +23,9 @@ const (
 	// StallAfter is how long the app may hold MaxInFlight frames before
 	// the stream is paused; its next ack resumes it with a full frame.
 	StallAfter = 2 * time.Second
+	// FrameEvery is the least time between two frames sent: at most 10
+	// a second (ADR 0008 "通信量と電池", #634).
+	FrameEvery = 100 * time.Millisecond
 )
 
 // Frame is one picture of a target.
@@ -37,7 +40,8 @@ type Events interface {
 	Frame(Frame)
 	// State reports wire.HostScreenLive (with the target's title and URL
 	// when it has them) or wire.HostScreenGone, after which no call
-	// follows.
+	// follows, but for a target that comes back (see Reviving): live
+	// again, then frames as after Start, the stream not paused.
 	State(wire.HostScreenState)
 }
 
@@ -47,7 +51,8 @@ type Stream interface {
 	// Start begins delivery: State live first, then a full frame, then a
 	// frame whenever the target changes.
 	Start(Events)
-	// Pause stops capturing while the app is stalled.
+	// Pause stops capturing: while the app is stalled, or while it does
+	// not show the stream (host_screen.pause).
 	Pause()
 	// Resume captures again, beginning with a full frame (the target may
 	// not change by itself).
@@ -93,7 +98,9 @@ type PortsKind interface {
 type Server struct {
 	kinds  []Kind
 	notify func(method string, params any)
-	// afterFunc runs f after d unless stopped; replaceable in tests.
+	// now and afterFunc (which runs f after d unless stopped) are the
+	// clock; replaceable in tests.
+	now       func() time.Time
 	afterFunc func(d time.Duration, f func()) (stop func() bool)
 
 	seq atomic.Int64 // last frame seq of this connection
@@ -109,6 +116,7 @@ func NewServer(notify func(method string, params any), kinds ...Kind) *Server {
 	return &Server{
 		kinds:  kinds,
 		notify: notify,
+		now:    time.Now,
 		afterFunc: func(d time.Duration, f func()) func() bool {
 			return time.AfterFunc(d, f).Stop
 		},
@@ -199,14 +207,47 @@ func (s *Server) Start(ctx context.Context, t wire.HostScreenTarget, started fun
 
 // Ack answers host_screen.ack. It never waits for the stream's target.
 func (s *Server) Ack(seq int64) error {
+	f, err := s.current("host_screen.ack")
+	if err != nil {
+		return err
+	}
+	f.ack(seq)
+	return nil
+}
+
+// Pause answers host_screen.pause: the app does not show the stream, so
+// its target is no longer captured and the frame held is dropped. Like
+// Ack, it never waits for the target. Pausing a paused stream does
+// nothing.
+func (s *Server) Pause() error {
+	f, err := s.current("host_screen.pause")
+	if err != nil {
+		return err
+	}
+	f.pause()
+	return nil
+}
+
+// Resume answers host_screen.resume: the target is captured again,
+// beginning with a full frame. Resuming a stream not paused does nothing.
+func (s *Server) Resume() error {
+	f, err := s.current("host_screen.resume")
+	if err != nil {
+		return err
+	}
+	f.resume()
+	return nil
+}
+
+// current is the stream method's flow; bad_request without one.
+func (s *Server) current(method string) (*flow, error) {
 	s.mu.Lock()
 	f := s.cur
 	s.mu.Unlock()
 	if f == nil {
-		return wire.Errorf(wire.ErrBadRequest, "host_screen.ack: no stream")
+		return nil, wire.Errorf(wire.ErrBadRequest, "%s: no stream", method)
 	}
-	f.ack(seq)
-	return nil
+	return f, nil
 }
 
 // Input answers host_screen.input: it checks in, then has the current
@@ -339,9 +380,9 @@ func (s *Server) stopRunning() {
 	}
 }
 
-// flow paces one stream's frames: at most MaxInFlight wait for an ack;
-// of the frames captured meanwhile only the newest is kept, and sent as
-// soon as an ack frees a place.
+// flow paces one stream's frames: at most MaxInFlight wait for an ack and
+// they are sent at least FrameEvery apart; of the frames captured
+// meanwhile only the newest is kept, and sent as soon as both allow.
 type flow struct {
 	s  *Server
 	st Stream
@@ -349,54 +390,104 @@ type flow struct {
 	mu       sync.Mutex
 	inFlight []int64
 	held     *Frame
+	lastSent time.Time
 	closed   bool
 	gone     bool
 	// unresponsive: an input ended unavailable and no frame came since.
 	unresponsive bool
-	stalled      bool
-	stopWait     func() bool // the stall timer while MaxInFlight are out
+	// The stream is paused while stalled (the app holds MaxInFlight
+	// frames) or paused (host_screen.pause), and resumed once neither.
+	stalled  bool
+	paused   bool
+	stopWait func() bool // the stall timer while MaxInFlight are out
+	stopPace func() bool // the timer sending held once FrameEvery passed
 }
 
 func (f *flow) Frame(fr Frame) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unresponsive = false
-	if f.closed || f.gone {
+	if f.closed || f.gone || f.paused {
 		return
 	}
-	if len(f.inFlight) >= MaxInFlight {
-		f.held = &fr
-		return
-	}
-	f.sendLocked(fr)
+	f.held = &fr
+	f.flushLocked()
 }
 
 func (f *flow) State(st wire.HostScreenState) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.closed || f.gone {
+	if f.closed {
 		return
 	}
-	if st.State == wire.HostScreenGone {
+	switch {
+	case st.State == wire.HostScreenGone && !f.gone:
 		f.gone = true
-		f.held = nil
+		f.dropLocked()
 		f.stopTimerLocked()
+	case st.State == wire.HostScreenLive && f.gone:
+		// The target came back: the frames sent before it went are no
+		// longer waited for, and the stream starts unpaused, so is paused
+		// again while the app does not show it.
+		f.gone = false
+		f.inFlight = nil
+		f.stalled = false
+		f.unresponsive = false
+		if f.paused {
+			f.st.Pause()
+		}
+	case f.gone:
+		return
 	}
 	f.s.notify(wire.NotifyHostScreenState, st)
+}
+
+// flushLocked sends the held frame once a place is free and FrameEvery
+// passed since the last one sent, waiting for the latter on a timer.
+func (f *flow) flushLocked() {
+	if f.held == nil || f.closed || f.gone || f.paused || len(f.inFlight) >= MaxInFlight {
+		return
+	}
+	if wait := f.lastSent.Add(FrameEvery).Sub(f.s.now()); wait > 0 {
+		if f.stopPace == nil {
+			f.stopPace = f.s.afterFunc(wait, f.pace)
+		}
+		return
+	}
+	fr := *f.held
+	f.held = nil
+	f.sendLocked(fr)
+}
+
+func (f *flow) pace() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopPace = nil
+	f.flushLocked()
+}
+
+// dropLocked forgets the held frame.
+func (f *flow) dropLocked() {
+	f.held = nil
+	if f.stopPace != nil {
+		f.stopPace()
+		f.stopPace = nil
+	}
 }
 
 func (f *flow) sendLocked(fr Frame) {
 	seq := f.s.seq.Add(1)
 	f.inFlight = append(f.inFlight, seq)
+	f.lastSent = f.s.now()
 	f.s.notify(wire.NotifyHostScreenFrame, wire.HostScreenFrame{Seq: seq, Data: fr.Data, Width: fr.Width, Height: fr.Height})
 	if len(f.inFlight) >= MaxInFlight && f.stopWait == nil {
 		f.stopWait = f.s.afterFunc(StallAfter, f.stall)
 	}
 }
 
-// stall pauses the stream while the app still holds MaxInFlight frames.
-// Pause and Resume are called under f.mu so they reach the stream in
-// order.
+// stall pauses the stream while the app still holds MaxInFlight frames
+// (it already is while paused). Pause and Resume are called under f.mu so
+// they reach the stream in order.
 func (f *flow) stall() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -405,7 +496,9 @@ func (f *flow) stall() {
 	}
 	f.stalled = true
 	f.stopWait = nil
-	f.st.Pause()
+	if !f.paused {
+		f.st.Pause()
+	}
 }
 
 func (f *flow) stopTimerLocked() {
@@ -419,35 +512,51 @@ func (f *flow) stopTimerLocked() {
 // changes nothing.
 func (f *flow) ack(seq int64) {
 	f.mu.Lock()
-	i := -1
-	for j, s := range f.inFlight {
-		if s == seq {
-			i = j
-			break
-		}
-	}
+	defer f.mu.Unlock()
+	i := slices.Index(f.inFlight, seq)
 	if i < 0 || f.closed {
-		f.mu.Unlock()
 		return
 	}
-	f.inFlight = append(f.inFlight[:i], f.inFlight[i+1:]...)
+	f.inFlight = slices.Delete(f.inFlight, i, i+1)
 	f.stopTimerLocked()
-	if f.held != nil && !f.gone {
-		fr := *f.held
-		f.held = nil
-		f.sendLocked(fr)
-	}
-	if f.stalled && !f.gone {
+	f.flushLocked()
+	if f.stalled && !f.gone && !f.paused {
 		f.st.Resume()
 	}
 	f.stalled = false
-	f.mu.Unlock()
+}
+
+// pause stops capturing until resume; the held frame is dropped.
+func (f *flow) pause() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed || f.paused {
+		return
+	}
+	f.paused = true
+	f.dropLocked()
+	if !f.stalled && !f.gone {
+		f.st.Pause()
+	}
+}
+
+// resume captures again unless stalled, which the next ack ends.
+func (f *flow) resume() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed || !f.paused {
+		return
+	}
+	f.paused = false
+	if !f.stalled && !f.gone {
+		f.st.Resume()
+	}
 }
 
 func (f *flow) close() {
 	f.mu.Lock()
 	f.closed = true
-	f.held = nil
+	f.dropLocked()
 	f.stopTimerLocked()
 	f.mu.Unlock()
 	f.st.Close()

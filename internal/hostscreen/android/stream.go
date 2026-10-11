@@ -40,7 +40,9 @@ const (
 
 // stream shows one emulator: its gRPC streamScreenshot at half the
 // display's resolution in RGB888, encoded to JPEG. The newest image waits
-// for the encoder; older ones are dropped.
+// for the encoder; older ones are dropped, and so is one like the image
+// last encoded (the emulator sends about 20 a second, changed or not:
+// #634).
 type stream struct {
 	cc     *grpc.ClientConn
 	client emupb.EmulatorControllerClient
@@ -64,6 +66,9 @@ type stream struct {
 	paused bool
 	stop   context.CancelFunc // ends the current streamScreenshot
 	latest *emupb.Image       // newest image not yet encoded
+	// shown is the image last encoded; nil after Pause and Resume, whose
+	// first image is sent whatever it shows.
+	shown *emupb.Image
 	// rot: how the last frame showed the display turned (inputs map
 	// through it).
 	rot emupb.Rotation_SkinRotation
@@ -160,7 +165,7 @@ func (s *stream) Start(ev hostscreen.Events) {
 func (s *stream) Pause() {
 	s.mu.Lock()
 	s.paused = true
-	s.latest = nil
+	s.latest, s.shown = nil, nil
 	stop := s.stop
 	s.mu.Unlock()
 	if stop != nil {
@@ -171,6 +176,7 @@ func (s *stream) Pause() {
 func (s *stream) Resume() {
 	s.mu.Lock()
 	s.paused = false
+	s.shown = nil
 	stop := s.stop
 	s.mu.Unlock()
 	if stop != nil {
@@ -295,10 +301,10 @@ func (s *stream) encode() {
 		case <-s.ready:
 		}
 		s.mu.Lock()
-		img := s.latest
+		img, prev := s.latest, s.shown
 		s.latest = nil
 		s.mu.Unlock()
-		if img == nil {
+		if img == nil || samePicture(img, prev) {
 			continue
 		}
 		w, h := int(img.GetFormat().GetWidth()), int(img.GetFormat().GetHeight())
@@ -309,11 +315,22 @@ func (s *stream) encode() {
 		dw, dh := displaySize(s.lcdW, s.lcdH, w, h)
 		s.mu.Lock()
 		s.rot = img.GetFormat().GetRotation().GetRotation()
+		s.shown = img
 		s.mu.Unlock()
 		if ev := s.ev.Load(); ev != nil && s.ctx.Err() == nil {
 			(*ev).Frame(hostscreen.Frame{Data: base64.StdEncoding.EncodeToString(buf.Bytes()), Width: dw, Height: dh})
 		}
 	}
+}
+
+// samePicture tells whether a shows what b does: the same size, rotation
+// and pixels. b may be nil.
+func samePicture(a, b *emupb.Image) bool {
+	return b != nil &&
+		a.GetFormat().GetWidth() == b.GetFormat().GetWidth() &&
+		a.GetFormat().GetHeight() == b.GetFormat().GetHeight() &&
+		a.GetFormat().GetRotation().GetRotation() == b.GetFormat().GetRotation().GetRotation() &&
+		bytes.Equal(a.GetImage(), b.GetImage())
 }
 
 // encodeRGB888 writes pix (w×h, 3 bytes a pixel, rows top down) to buf as
