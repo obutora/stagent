@@ -3,6 +3,82 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.11.0
+
+### Added
+
+- Host screen (ホストの画面, ADR 0008): `host_screen.list`,
+  `host_screen.start`, `host_screen.ack`, `host_screen.stop` and the
+  notifications `host_screen.frame` and `host_screen.state` show a page of
+  a browser an agent drives in an app tab, over the tab's own bridge. The
+  browsers listed are the user's Chromium-family browsers started with
+  `--remote-debugging-port` (`0` read from `DevToolsActivePort`), each
+  port checked with `/json/version`, with their page targets and the tool
+  told by the profile path. A page is shown with one
+  `Page.captureScreenshot` and then `Page.startScreencast` (JPEG, quality
+  70); at most two frames wait for the app's ack, of the frames taken
+  meanwhile only the newest is kept, and a stalled app gets the
+  screencast paused and resumed with a full frame. Served to bridges
+  under a coding agent too (#640).
+- `host_screen.list`: a browser started with `--remote-debugging-pipe`
+  only is listed with `connectable: false` and `reason: "pipe_only"`
+  (with its tool), and `cdp_ports` names ports on 127.0.0.1 by hand: each
+  that answers `/json/version` as CDP is listed with `manual: true`, in
+  one item with a browser found on the same port; a port outside 1–65535
+  is `bad_request` (#642).
+- Host screen: Android emulators. `host_screen.list` has an `android`
+  section: the emulators of `adb devices -l` (never a physical device),
+  matched by serial with the files they advertise their gRPC port in
+  (`avd/running/pid_<pid>.ini`), with the AVD name; one without gRPC
+  (started with `-port` only) is `connectable: false`, `reason:
+  "no_grpc"`, and a host without adb gets `missing: {code:
+  "adb_not_found"}`. `host_screen.start {target: {kind: "android",
+  serial}}` shows the emulator through its gRPC `streamScreenshot`
+  (Bearer `grpc.token`, RGB888 at half resolution, encoded to JPEG
+  quality 70); `width` and `height` are the display's px and swap when
+  it turns, and a stopped emulator sends `state: "gone"` (#643).
+- Host screen of an iOS simulator (macOS only, capability
+  `host_screen_ios`): `host_screen.list` has an `ios` section with the
+  booted iOS simulators (`xcrun simctl`; `missing` `xcode_not_found`
+  without Xcode, `simctl_failed` with simctl's error as the message when
+  it fails or runs out of time, a simulator `companion_not_found` without
+  idb_companion), and `host_screen.start {target: {kind: "ios", udid}}`
+  shows one through an idb_companion started for the stream on a private
+  Unix socket (no TCP port): its MJPEG `video_stream` (half resolution,
+  quality 0.7, redrawn screens only), sized in points. The companion is
+  stopped with the stream (`stop`, another `start`, the bridge exiting;
+  `--idle-shutdown-time` should stagent die), and a simulator shut down
+  sends `state: "gone"`. Other hosts answer `unsupported` (#645).
+- `host_screen.input` operates the page shown: `tap`, `drag`, `scroll`,
+  `text` and `navigate` (`back`, `forward`, `reload`, `url`), points as
+  fractions of the frame turned into CSS px with the screencast's
+  metadata (`deviceWidth`, `deviceHeight`, `offsetTop`,
+  `pageScaleFactor`). A browser gets only `Input.*` (`insertText` for
+  text in any script, an Enter key event for `enter`), `Page.navigate`,
+  `Page.reload` and the history's `Page.getNavigationHistory` and
+  `Page.navigateToHistoryEntry`; `key` is `unsupported`. Inputs
+  run in order on `start`'s queue while acks are answered at once, so a
+  slow input never stops the frames (#641).
+- `host_screen.input` operates an Android emulator: `tap`, `drag` and
+  `scroll` (one swipe from the cursor) through gRPC `sendTouch` in the
+  display's px, turned back with the emulator's rotation; `key` `back`,
+  `home`, `recents` through `adb shell input keyevent` (works with
+  `hw.keyboard=no`, no gRPC `sendKey`); `text` through `adb shell input
+  text` when printable ASCII, else gRPC `setClipboard` and
+  `KEYCODE_PASTE`, with `KEYCODE_ENTER` for `enter`. `navigate` is
+  `unsupported` (#644).
+- `host_screen.input` operates an iOS simulator: `tap`, `drag`, `scroll`
+  (one swipe from the cursor), `text` of ASCII and `key: "home"`, as HID
+  events on the stream's idb_companion `hid` stream, kept open and
+  reopened when the companion ends it (no program per input). Points are
+  fractions of the frame in pt; text is typed as key presses of a US
+  keyboard (Shift for capitals and the upper symbols), `enter` as Return.
+  `back`, `recents`, `navigate` and text with a character other than
+  ASCII (Japanese input is pending, #649) are `unsupported`. A drag cut
+  short (the bridge ending) lifts its touch, and stopping the stream lets
+  the companion perform what was sent (up to a second) before stopping
+  it (#646).
+
 ## 0.10.1
 
 ### Fixed
