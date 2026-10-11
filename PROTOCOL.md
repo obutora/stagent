@@ -52,7 +52,7 @@ sshd, has no agent among its parents, so the app does not see this error
 unless the bridge itself runs under an agent; such a bridge answers
 `session.spawn` with it before starting a holder (which would refuse the
 bridge and keep running out of its reach). It serves the read-only
-`github.*` methods all the same.
+`github.*` methods and `host_screen.*` all the same.
 
 Requests on one connection are processed in order (input keystrokes keep
 their order). Notifications may arrive at any time between responses.
@@ -96,9 +96,12 @@ process that created its stdin pipe ends — Win32-OpenSSH's session process
 - Capabilities are reserved for what depends on the host OS. Linux and
   macOS keep relying on `persist`; Windows needs `persist_shell` as well.
   `github` is announced only on Windows, where the bridge serves the
-  GitHub screen. `push_chat` is the one exception that does not depend on
-  the OS: an older stagent stores `notify.chat` like any unknown config key
-  and silently never sends to it, so the app configures chat destinations
+  GitHub screen, and `host_screen_ios` only on macOS, where the host
+  screen shows iOS simulators (the other kinds work on every OS and need
+  none; a missing tool, such as Xcode, is told by `host_screen.list`).
+  `push_chat` is the one exception that does not depend on the OS: an
+  older stagent stores `notify.chat` like any unknown config key and
+  silently never sends to it, so the app configures chat destinations
   only on hosts that announce it. Whether a key is present is checked only
   for `host_id`.
 
@@ -191,7 +194,8 @@ the bridge starts them in the GUI login session so that the agent can use
 the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
-`push_chat`, `persist`, and on Windows `persist_shell` and `github`. `push_chat`
+`push_chat`, `persist`, on Windows `persist_shell` and `github`, and on
+macOS `host_screen_ios`. `push_chat`
 announces the chat destination (`notify.chat`) and `notify.test`'s
 `channels`: an older stagent stores `notify.chat` like any unknown key
 without sending to it, so an app configures chat destinations only on
@@ -204,7 +208,9 @@ without `persist` as needing an update. Windows bridges before 0.5.0
 announced `persist` but refused `shell` with `unsupported`; on Windows
 `persist_shell` announces that `shell` works, and an app treats a
 Windows bridge without it as needing an update. `github` (Windows only)
-announces the `github.*` methods below.
+announces the `github.*` methods below. `host_screen_ios` (macOS only,
+since 0.11.0) announces the host screen's `ios` kind below: its `list`
+section and `start` of a simulator.
 
 #### Creating a task (`task.create`, `stagent task run`)
 
@@ -575,6 +581,288 @@ request (`gh pr view <branch>`), absent when there is none. States are gh's (`OP
 signed in, not found) is left out of `items`, the rest keep their order.
 An unknown `kind`, a `number` below 1, or a `repo` or `branch` that is
 malformed or starts with `-` is `bad_request`.
+
+#### Host screen
+
+The host screen (ホストの画面, ADR 0008) shows in an app tab what a
+browser an agent drives draws, an Android emulator, or an iOS simulator
+(on macOS). Each such tab has its own SSH connection and its own
+`stagent bridge` (after `hello`), separate from the hub bridge: frames
+would otherwise delay every other notification. Served on every OS
+without a capability, except the `ios` kind (capability
+`host_screen_ios`, macOS only); a stagent before 0.11.0 answers
+`unknown_method`, and the app offers the stagent update (as for an older
+`hello.version`). A bridge under a coding agent serves them too (ADR
+0004): they change no setting, and an agent can drive its browser anyway.
+
+| method | params | result |
+|---|---|---|
+| `host_screen.list` | `{cdp_ports?: int[]}` | `{browser: Section<Browser>, android: Section<Emulator>, ios?: Section<Simulator>}` |
+| `host_screen.start` | `{target: Target}` | `{}` |
+| `host_screen.ack` | `{seq}` | `{}` |
+| `host_screen.stop` | – | `{}` |
+| `host_screen.input` | `Input` | `{}` |
+
+| notification | params |
+|---|---|
+| `host_screen.frame` | `{seq, data, width, height}` — `data`: one JPEG, base64; `width`, `height`: the target's size in its own coordinates (CSS px for a browser, px for an Android emulator, pt for an iOS simulator), which change with its viewport, rotation or orientation |
+| `host_screen.state` | `{state: "live"\|"gone", title?, url?}` |
+
+`list` has one key per kind of target this stagent serves; 0.11.0
+serves `browser` and `android`, and `ios` on hosts announcing
+`host_screen_ios`.
+
+- `Section<T>`: `{items: T[], missing?: {code, message}}`. `missing`
+  tells why the kind's tool lists nothing (then `items` is `[]`):
+  `adb_not_found` (`android`: adb is not installed), `xcode_not_found`
+  (`ios`: xcrun cannot find simctl, no Xcode is selected) or
+  `simctl_failed` (`ios`: simctl failed, e.g. Xcode's license is not
+  accepted yet; `message` has its error). The app shows `message` for a
+  code it does not know.
+- `Browser`: `{pid?, tool, headless?, port?, manual?, connectable, reason?,
+  pages: [{target_id, title, url}]}`. `tool` is `agent-browser`,
+  `playwright-mcp`, `chrome-devtools-mcp`, `playwright`, or `null` when
+  unknown. `connectable: false` comes with `reason`: `pipe_only` (see
+  below; no `port`, `pages: []`). `manual: true`: `port` is one of
+  `cdp_ports`.
+- `Emulator`: `{serial, avd, connectable, reason?}`. `serial` is adb's
+  (`emulator-<console port>`), `avd` the virtual device's name (`""` when
+  unknown). `reason: "no_grpc"` with `connectable: false`: the emulator
+  has no gRPC port (started with `-port` only, say) and cannot be shown.
+- `Simulator`: `{udid, name, runtime, connectable, reason?}`. `runtime`
+  is readable (`iOS 26.2`). `connectable` is `false` with `reason:
+  "companion_not_found"` when idb_companion is not installed.
+- `Target`: `{kind: "browser", port, target_id}` / `{kind: "android",
+  serial}` / `{kind: "ios", udid}`.
+
+**Browsers listed.** Processes of the user stagent runs as (another
+user's browser is never listed: a CDP port has no authentication) whose
+executable is Chromium-family (Chrome, Chrome for Testing,
+chrome-headless-shell, Chromium, Edge, Brave) and whose arguments have
+`--remote-debugging-port`; their child processes (`--type=`) are not.
+The port is `N` of `--remote-debugging-port=N`, or for `0` the first line
+of `DevToolsActivePort` in its `--user-data-dir` (relative to the
+process's working directory when relative; such a browser without
+`--user-data-dir` is not listed). A browser is listed only when
+`http://127.0.0.1:<port>/json/version` answers as CDP; stagent never
+tries ports it did not find this way (9222 and the like). `pages` are the
+`type: "page"` entries of `/json/list` (`id`, `title`, `url`), in its
+order. `headless`: `--headless` is among the arguments or the executable
+is a headless shell. `tool` is told by the `--user-data-dir` path:
+`agent-browser-chrome` → `agent-browser`, `ms-playwright-mcp` →
+`playwright-mcp`, `chrome-devtools-mcp` → `chrome-devtools-mcp`,
+`playwright_chromiumdev_profile` → `playwright`. Items are ordered by pid;
+no browser gives `items: []`.
+
+**Pipe only.** A browser started with `--remote-debugging-pipe` and
+without `--remote-debugging-port` (Chrome DevTools MCP and Playwright do
+so by default) opened no port: it is listed with `connectable: false`,
+`reason: "pipe_only"`, its `pid`, `tool` and `headless`, no `port` and
+`pages: []`. The app tells what to add to the tool's own configuration;
+stagent never changes a tool's configuration. With both arguments the
+browser is listed by its port as above.
+
+**Ports named by hand.** `cdp_ports` are ports on the host's 127.0.0.1
+the app names for a browser stagent cannot find by its arguments (say a
+container's Chromium published on a host port); no host or address is
+taken. Each is checked with `http://127.0.0.1:<port>/json/version`; one
+that answers as CDP is listed with `manual: true` (and its pages), also
+without any process found for it. A port of a browser found above is
+listed once, that browser's item with `manual: true`. A port that does
+not answer as CDP (nothing listening, or something else) is not listed:
+the app tells the user it could not be checked. Ports named by hand come
+after the browsers found, in the order given; repeats are listed once.
+
+**Showing a page.** `start` connects to the page target's WebSocket on
+`127.0.0.1:<port>` and answers `{}`; then come `host_screen.state
+{state: "live", title, url}`, one frame of `Page.captureScreenshot` and
+the frames of `Page.startScreencast` (JPEG, quality 70; Chrome sends one
+when the page is redrawn). Title and URL changes (a navigation, a new
+title) are sent as another `state: "live"`. When the page target closes
+(or its WebSocket drops) `state: "gone"` is sent and the stream ends; no
+frame follows. stagent sends only page-level requests and never changes
+the agent's viewport.
+
+**Emulators listed.** The `emulator-<port>` entries of `adb devices -l`
+in any state (physical devices — USB serials, `ip:port`, mDNS names —
+are never listed), ordered by port. adb is the first found of: the PATH
+of the user's login environment (as `session.spawn` gets it),
+`$ANDROID_HOME/platform-tools`, `$ANDROID_SDK_ROOT/platform-tools`, and
+the default SDK (`~/Library/Android/sdk` on macOS, `~/Android/Sdk` on
+Linux, `%LOCALAPPDATA%\Android\Sdk` on Windows); none →
+`missing: {code: "adb_not_found"}`. Each is matched by its serial with
+the file a running emulator advertises itself in,
+`avd/running/pid_<pid>.ini` (keys `port.serial`, `avd.name`,
+`grpc.port`, `grpc.token`) under `$XDG_RUNTIME_DIR` on Linux
+(`/run/user/<uid>` when unset), `~/Library/Caches/TemporaryItems` on
+macOS and `%LOCALAPPDATA%\Temp` on Windows. An emulator without such a
+file or without `grpc.port` there is `no_grpc`; its `avd` is then the
+answer of `adb -s <serial> emu avd name`.
+
+**Showing an emulator.** `start` reads the emulator's discovery file
+and connects to its gRPC port on the loopback (`[::1]`, then
+`127.0.0.1`), with `authorization: Bearer <grpc.token>` when the file
+has a token, reads the display's size (`getStatus`, `hw.lcd.width` and
+`hw.lcd.height`) and answers `{}`; then come `host_screen.state {state:
+"live", title: <avd>}` and the frames of `streamScreenshot` (the
+emulator sends an image when the display changes): RGB888 at half the
+display's resolution (width and height both half the longer side, so
+either orientation fits), encoded by stagent to JPEG, quality 70.
+`width` and `height` are the display's px as the image shows it: they
+swap when the emulator turns. An image of the display turned off sends
+no frame. When the emulator stops (its screenshot stream ends and
+`getStatus` no longer answers) `state: "gone"` is sent and the stream
+ends. There is no `adb screencap` fallback.
+
+One stream per bridge connection: `start` while streaming stops the
+current stream first (the tab's "pick another"); `stop` ends it (without
+one it does nothing). Closing the bridge ends it too.
+
+**iOS simulators** (macOS, `host_screen_ios`). Listed: the booted
+simulators of `xcrun simctl list devices --json` whose runtime is iOS
+(iPhone and iPad; watchOS, tvOS and visionOS are not), ordered by name,
+then runtime. `start` runs, for the stream, `idb_companion --udid <udid>
+--only simulator --grpc-domain-sock <socket> --idle-shutdown-time 5
+--terminate-offline true --log-level info` (#630; idb_companion is looked
+up on the login shell's `PATH`, then the usual tool directories such as
+`/opt/homebrew/bin`), with its socket in a new directory under the temp
+directory that only the user can enter (no TCP port), waits until it
+describes the simulator and opens its `video_stream` (MJPEG, half the
+simulator's pixels, quality 0.7, frames sent when the screen is
+redrawn); it answers `{}`, then come `host_screen.state {state: "live",
+title}` (`title`: the simulator's name) and the frames. Every payload is
+one JPEG, sent as is; `width` × `height` is the simulator's screen in
+points (its `describe`), turned like the picture. stagent stops the
+companion (SIGTERM, a kill after 2 seconds) with the stream: on `stop`,
+the next `start` and when the bridge exits; `--idle-shutdown-time` ends
+it 5 seconds after its stream closed should stagent die first. When the
+simulator shuts down, its companion exits (`--terminate-offline`):
+`state: "gone"` is sent and the stream ends.
+
+**Flow control.** `seq` grows by one per frame over the bridge
+connection (a new stream continues it). The app answers every frame it
+received with `host_screen.ack {seq}`. While two frames wait for their
+ack, no frame is sent: of the frames taken meanwhile only the newest is
+kept, and sent at once when an ack frees a place. When two frames stay
+unacknowledged for 2 seconds the capture is paused; the next ack sends
+the kept frame and resumes it, beginning with a full frame: a fresh
+`Page.captureScreenshot` (the screencast only sends redrawn pages), a
+new `streamScreenshot` (whose first image is the whole display), or for
+a simulator the newest frame again (its video stream stays open while
+paused, and sends redrawn screens only). An
+ack for a seq not waiting (repeated, or of a replaced stream) is
+answered `{}` and changes nothing; acks keep being answered after
+`gone` until `stop` or the next `start`.
+
+**Input.** `host_screen.input` operates the target being shown. Points are
+fractions of the frame (`0` at its left and top edge, `1` at its right
+and bottom one); stagent turns them into the target's coordinates, so the
+app needs no target's size beyond the frame's.
+
+- `{type: "tap", x, y}`
+- `{type: "drag", points: [{x, y}], duration_ms}` — 2 to 1000 points, in
+  order, the moves spread over `duration_ms` (0–10000). The app sends it
+  once, when the finger that long-pressed and moved is lifted.
+- `{type: "scroll", x, y, dx, dy}` — at `x`, `y`; `dx`, `dy` (±10) are how
+  far the two fingers moved, as fractions of the frame's width and height
+  (the page moves with them).
+- `{type: "text", text, enter?}` — `text` may be empty with `enter`.
+- `{type: "key", key: "back"|"home"|"recents"}`
+- `{type: "navigate", action: "back"|"forward"|"reload"|"url", url?}` —
+  `url` for `action: "url"`.
+
+What each kind of target takes (another type → `unsupported`):
+
+| kind | takes |
+|---|---|
+| `browser` | `tap`, `drag`, `scroll`, `text`, `navigate` (not `key`) |
+| `android` | `tap`, `drag`, `scroll`, `text`, `key` (not `navigate`) |
+| `ios` | `tap`, `drag`, `scroll`, `text` of ASCII only, `key: "home"` (not `back`, `recents`, `navigate`; text with any other character → `unsupported`, nothing typed: Japanese input is pending, #649) |
+
+A browser gets only `Input.*` and `Page.navigate`,
+`Page.getNavigationHistory`, `Page.navigateToHistoryEntry`,
+`Page.reload` (never `Emulation.*`, `Target.createTarget`,
+`Browser.close`, nor an answer to a dialog). A point is CSS px from the
+metadata of the latest screencast frame: `x × deviceWidth /
+pageScaleFactor`, `(y × deviceHeight − offsetTop) / pageScaleFactor` (before
+the first, of the `Page.captureScreenshot` frame's visual viewport).
+`tap`: `Input.dispatchMouseEvent` `mousePressed` then `mouseReleased`
+(left button, `clickCount: 1`). `drag`: `mousePressed` at the first point,
+`mouseMoved` through the others, `mouseReleased` at the last. `scroll`: one
+`mouseWheel` with the deltas the other way (`-dx`, `-dy` in CSS px).
+`text`: `Input.insertText` (any script, Japanese included), then for
+`enter` an Enter `Input.dispatchKeyEvent` (`keyDown`, `keyUp`). `navigate`:
+`back` and `forward` go to the neighbouring entry of
+`Page.getNavigationHistory` with `Page.navigateToHistoryEntry` (nothing
+without one), `reload` is `Page.reload`, `url` is `Page.navigate`. An
+input answers once the browser took it; a person's and an agent's inputs
+both go in (no lock).
+
+An Android emulator gets touches through gRPC `sendTouch` (one finger,
+pressure 1024 while down, 0 to lift) and keys and text through `adb -s
+<serial> shell input`, never gRPC `sendKey` (an AVD with
+`hw.keyboard=no` drops its keys) nor a change to the AVD. A point is the
+display's px in its natural orientation (`hw.lcd.width` ×
+`hw.lcd.height`): the frame's fractions turned back by the rotation of
+the latest `streamScreenshot` image. `tap`: down and up at the point.
+`drag`: down at the first point, moves through the others, up at the
+last. `scroll`: one swipe from `x`, `y` to `x + dx`, `y + dy` (kept on
+the frame) in 150 ms (the content moves with the finger). `key`:
+`input keyevent KEYCODE_BACK`, `KEYCODE_HOME`, `KEYCODE_APP_SWITCH`
+(`recents`). `text`: printable ASCII without `%s` is `input text`, its
+spaces as `%s` and the whole single-quoted for the device's shell; any
+other text (Japanese, say) is put on the clipboard with gRPC
+`setClipboard` and pasted with `input keyevent KEYCODE_PASTE`; `enter`
+adds `input keyevent KEYCODE_ENTER`. An input answers once adb or the
+emulator took it (adb's keys take a few hundred ms).
+
+An iOS simulator gets HID events on its companion's `hid` stream, opened
+by the first input and kept open for the stream (reopened once when the
+companion ended it; no program is started per input). A point is the
+fraction times the frame's `width` and `height` (pt). `tap`: a touch down
+and up. `drag`: a touch down at the first point, again at each next one
+spread over `duration_ms`, and up at the last; cut short (the bridge
+ending), the touch is lifted where it is. `scroll`: one swipe, a touch
+moving from `x`, `y` by `dx`, `dy` (its end kept on the screen) in 10
+steps 16 ms apart, then lifted without a pause (the content may glide on
+as after a fast swipe). `text`: key presses of a US keyboard (Shift held
+for capitals and the upper symbols; newline is Return, tab is Tab), then
+for `enter` Return. `key: "home"`: the HOME button down and up. An input
+answers once its events are sent; `stop` waits up to a second for the
+companion to perform them before stopping it.
+
+**Order.** `start`, `stop` and `input` run in order on one queue: inputs
+keep the app's order, and none reaches a stream being replaced. `list`
+runs on another (probing ports never delays them). `ack` takes no queue:
+it is answered at once, never behind a slow `start` or `input`, so frames
+keep coming. After an `input` ends `unavailable`, the inputs that follow
+fail `unavailable` at once without reaching the target, until it sends a
+frame or another `start`: a page held by a dialog does not hold the queue.
+
+**Errors.** `list`: a port of `cdp_ports` outside 1–65535 →
+`bad_request`. `start`: an unknown `kind` → `bad_request`; `ios` on a
+host not announcing `host_screen_ios` → `unsupported`; a `port` outside
+1–65535 or an empty `target_id` → `bad_request`; no CDP answering
+`/json/list` on the port, or no page target `target_id` there →
+`not_found`; the page's WebSocket cannot be opened → `unavailable`.
+`android`: an empty `serial` → `bad_request`; an emulator that is
+`no_grpc` → `unavailable`; no such emulator (no discovery file and not in
+`adb devices`) or no gRPC answering on its port → `not_found`; the port
+refusing the token → `unavailable`. `ios`: an empty `udid` →
+`bad_request`; no booted iOS simulator `udid` → `not_found`;
+idb_companion not installed, or it exits or does not describe the
+simulator within 10 seconds → `unavailable`. `ack` without a stream
+(none started, or after `stop`) → `bad_request`.
+`input`: without a stream (also after `gone`) → `bad_request`; a shape
+wrong for its type (a point outside 0–1, an unknown `type`, `key` or
+`action`, a drag of fewer than two points, `text` without `text` or
+`enter`, `url` without `url`) → `bad_request`; a type the target does
+not take → `unsupported`; the browser refusing the call (an invalid URL)
+→ `bad_request`; the page not answering within 10 seconds (gone, a
+dialog open) or `Page.navigate` failing to load (`errorText`) →
+`unavailable`; for a simulator, its companion's `hid` stream failing
+again after reopening → `unavailable`; an input after one that ended
+`unavailable`, before the next frame → `unavailable` (see Order).
 
 ### Session (forwarded to the session's holder)
 
@@ -1127,6 +1415,8 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 | `unwrapped.updated` | `{unwrapped[]}` (the whole current list of `UnwrappedLaunch`; replaces the previous one) |
 | `task.updated` | `Task` (full object, added or changed; replaces the previous one) |
 | `task.removed` | `{id, kept_branch?}` — `kept_branch`: the branch `task.remove` kept (see "Removing a task") |
+| `host_screen.frame` | `{seq, data, width, height}` (see "Host screen") |
+| `host_screen.state` | `{state: "live"\|"gone", title?, url?}` (see "Host screen") |
 
 ## Objects
 

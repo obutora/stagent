@@ -23,6 +23,8 @@ import (
 	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/hostid"
+	"github.com/obutora/stagent/internal/hostscreen"
+
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/proc"
@@ -89,6 +91,8 @@ type Bridge struct {
 	// the app cannot run its sh scripts (ADR 0007); tests turn it on.
 	github   bool
 	liveDirs func(holders []int) []string // see github.LiveDirs
+	// hostScreen serves host_screen.* (one stream per connection).
+	hostScreen *hostscreen.Server
 
 	envOnce  sync.Once
 	baseEnv  []string                 // see sessionEnv
@@ -164,6 +168,7 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		return captureLoginEnv(exe)
 	}
 	b.spawnProc = proc.SpawnHolder
+	b.hostScreen = hostscreen.NewServer(func(method string, params any) { b.out.Notify(method, params) }, b.hostScreenKinds(runtime.GOOS)...)
 	return b
 }
 
@@ -259,6 +264,8 @@ func (b *Bridge) shutdown() {
 		c.Close()
 	}
 	b.wg.Wait()
+	// After the workers: no host_screen.start can open a stream later.
+	b.hostScreen.Stop()
 }
 
 // dispatch routes one app message. It never blocks on an upstream: work
@@ -285,6 +292,8 @@ func (b *Bridge) dispatch(m *wire.Msg) {
 		b.enqueue(targetDaemon, m, b.forwardDaemon)
 	case b.github && wire.GitHubMethods[m.Method]:
 		b.enqueue(targetGitHub, m, b.serveGitHub)
+	case wire.HostScreenMethods[m.Method]:
+		b.dispatchHostScreen(m)
 	case wire.HolderMethods[m.Method]:
 		var ref wire.SessionRef
 		if err := rpc.Decode(m, &ref); err != nil {
@@ -317,6 +326,9 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	}
 	if runtime.GOOS == "windows" {
 		caps = append(caps, wire.CapPersistShell)
+	}
+	if b.hostScreen.Serves(wire.HostScreenIOS) {
+		caps = append(caps, wire.CapHostScreenIOS)
 	}
 	if b.github {
 		caps = append(caps, wire.CapGitHub)
