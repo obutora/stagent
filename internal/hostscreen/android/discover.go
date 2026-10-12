@@ -11,18 +11,21 @@ import (
 	"strings"
 
 	"github.com/obutora/stagent/internal/hostscreen"
+	"github.com/obutora/stagent/internal/proc"
 	"github.com/obutora/stagent/internal/wire"
 )
 
 // host is what discovery reads of the host: the OS, the environment the
-// user's sessions get, the home directory and whether it is WSL.
-// Replaceable in tests, so every OS's locations are checked on any.
+// user's sessions get, the home directory, whether it is WSL and which
+// processes run. Replaceable in tests, so every OS's locations are checked
+// on any.
 type host struct {
-	goos string
-	env  []string
-	home string
-	uid  int  // for /run/user/<uid> on Linux
-	wsl  bool // the Windows side's emulators are not seen (hostscreen.WSLNote)
+	goos  string
+	env   []string
+	home  string
+	uid   int            // for /run/user/<uid> on Linux
+	wsl   bool           // the Windows side's emulators are not seen (hostscreen.WSLNote)
+	alive func(int) bool // whether a process runs: proc.Alive (signal 0; a process handle on Windows)
 }
 
 func (h host) getenv(key string) string {
@@ -149,14 +152,20 @@ func parseDiscovery(data []byte) (emulator, bool) {
 	return e, e.serialPort > 0
 }
 
-// readRunning reads the discovery files of dir by serial. A missing dir
-// means no emulator advertises itself.
-func readRunning(dir string) map[string]emulator {
+// readRunning reads the discovery files of the running dir by serial. A
+// missing dir means no emulator advertises itself. An emulator that
+// stops leaves its pid_<pid>.ini behind: a file whose pid does not run
+// is left as it is and not read (#679).
+func (h host) readRunning() map[string]emulator {
 	out := map[string]emulator{}
+	dir := h.runningDir()
 	ents, _ := os.ReadDir(dir)
 	for _, ent := range ents {
 		name := ent.Name()
 		if ent.IsDir() || !strings.HasPrefix(name, "pid_") || !strings.HasSuffix(name, ".ini") {
+			continue
+		}
+		if pid, err := strconv.Atoi(name[len("pid_") : len(name)-len(".ini")]); err != nil || !h.alive(pid) {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, name))
@@ -242,5 +251,5 @@ func avdName(out []byte) string {
 // thisHost is the host stagent runs on, with env as its environment.
 func thisHost(env []string) host {
 	home, _ := os.UserHomeDir()
-	return host{goos: runtime.GOOS, env: env, home: home, uid: os.Getuid(), wsl: hostscreen.IsWSL()}
+	return host{goos: runtime.GOOS, env: env, home: home, uid: os.Getuid(), wsl: hostscreen.IsWSL(), alive: proc.Alive}
 }

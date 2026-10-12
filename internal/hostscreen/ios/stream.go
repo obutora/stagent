@@ -39,6 +39,13 @@ type stream struct {
 	// hidc is the companion's hid stream, opened by the first input; only
 	// Input uses it (see hid).
 	hidc idbpb.CompanionService_HidClient
+	// Only Input uses these (see text): the simulator's clipboard and
+	// files, when no key may be sent before (a ⌘V's banner), the bundle
+	// ids of the apps' pids, and the edit menu's labels of Paste.
+	host        simHost
+	keysAfter   time.Time
+	bundles     map[uint64]string
+	pasteLabels []string
 	// first is the video stream openStream opened (receive's).
 	first video
 
@@ -151,14 +158,16 @@ func (s *stream) Close() {
 // closeHID ends the hid stream and waits, at most hidCloseWait, until the
 // companion performed every event sent on it: the lift of a drag cut
 // short is not lost to stopping the companion, which would leave a touch
-// down in the simulator.
+// down in the simulator. The stream is taken before the wait, as s.hidc
+// may change after it (see flushHID).
 func (s *stream) closeHID() {
-	if s.hidc == nil {
+	c := s.hidc
+	if c == nil {
 		return
 	}
 	done := make(chan struct{})
 	go func() {
-		s.hidc.CloseAndRecv()
+		c.CloseAndRecv()
 		close(done)
 	}()
 	select {

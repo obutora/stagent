@@ -56,9 +56,14 @@ func (s *stream) rotation() emupb.Rotation_SkinRotation {
 	return s.rot
 }
 
-// Input performs in on the emulator: touches through gRPC sendTouch, keys
-// through `adb shell input keyevent`, text through the clipboard.
-func (s *stream) Input(ctx context.Context, in wire.HostScreenInput) error {
+// Input performs in on the emulator; its result is empty.
+func (s *stream) Input(ctx context.Context, in wire.HostScreenInput) (wire.HostScreenInputResult, error) {
+	return wire.HostScreenInputResult{}, s.perform(ctx, in)
+}
+
+// perform performs in: touches through gRPC sendTouch, keys through `adb
+// shell input keyevent`, text through the clipboard.
+func (s *stream) perform(ctx context.Context, in wire.HostScreenInput) error {
 	switch in.Type {
 	case wire.InputTap:
 		return s.drag(ctx, []wire.HostScreenPoint{{X: in.X, Y: in.Y}}, 0)

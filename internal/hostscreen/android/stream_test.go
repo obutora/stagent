@@ -312,13 +312,21 @@ func TestOpenStreamErrors(t *testing.T) {
 	if !errors.As(err, &we) || we.Code != wire.ErrUnavailable {
 		t.Fatalf("wrong token: %v, want unavailable", err)
 	}
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	closed := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-	_, err = openStream(context.Background(), emulator{serialPort: 5554, grpcPort: closed})
+	_, err = openStream(context.Background(), emulator{serialPort: 5554, grpcPort: closedPort(t)})
 	if !errors.As(err, &we) || we.Code != wire.ErrNotFound {
 		t.Fatalf("no gRPC on the port: %v, want not_found", err)
 	}
+}
+
+// closedPort is a loopback port nothing listens on.
+func closedPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // Pause cuts the screenshot stream: the emulator sends nothing while

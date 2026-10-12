@@ -100,11 +100,11 @@ func TestInputTouches(t *testing.T) {
 	st, f, log := openInputStream(t)
 	ctx := context.Background()
 	// The fake's display is 40×20.
-	if err := st.Input(ctx, wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.25}); err != nil {
+	if _, err := st.Input(ctx, wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.25}); err != nil {
 		t.Fatal(err)
 	}
 	drag := wire.HostScreenInput{Type: wire.InputDrag, Points: []wire.HostScreenPoint{{X: 0, Y: 0}, {X: 0.5, Y: 0.5}, {X: 0.75, Y: 0.5}}}
-	if err := st.Input(ctx, drag); err != nil {
+	if _, err := st.Input(ctx, drag); err != nil {
 		t.Fatal(err)
 	}
 	type touch struct{ x, y, p int32 }
@@ -126,7 +126,7 @@ func TestInputTouches(t *testing.T) {
 		t.Errorf("tap and drag: %v, want %v", g, want)
 	}
 	// A scroll is one swipe from the cursor, kept on the display.
-	if err := st.Input(ctx, wire.HostScreenInput{Type: wire.InputScroll, X: 0.5, Y: 0.5, DY: -2}); err != nil {
+	if _, err := st.Input(ctx, wire.HostScreenInput{Type: wire.InputScroll, X: 0.5, Y: 0.5, DY: -2}); err != nil {
 		t.Fatal(err)
 	}
 	g := got()
@@ -161,7 +161,7 @@ func TestInputKeysAndText(t *testing.T) {
 		{wire.HostScreenInput{Type: wire.InputText, Text: "a\nb"}, []string{"input keyevent KEYCODE_PASTE"}, "a\nb"},
 	}
 	for _, c := range cases {
-		if err := st.Input(ctx, c.in); err != nil {
+		if _, err := st.Input(ctx, c.in); err != nil {
 			t.Fatalf("%+v: %v", c.in, err)
 		}
 		if got := log.take(); !slices.Equal(got, c.cmds) {
@@ -184,7 +184,7 @@ func TestInputUnsupported(t *testing.T) {
 		{Type: wire.InputKey, Key: "power"},
 	} {
 		var we *wire.Error
-		if err := st.Input(context.Background(), in); !errors.As(err, &we) || we.Code != wire.ErrUnsupported {
+		if _, err := st.Input(context.Background(), in); !errors.As(err, &we) || we.Code != wire.ErrUnsupported {
 			t.Errorf("%+v: %v, want unsupported", in, err)
 		}
 	}

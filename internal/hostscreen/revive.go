@@ -88,16 +88,16 @@ func (r *reviving) Resume() {
 	}
 }
 
-func (r *reviving) Input(ctx context.Context, in wire.HostScreenInput) error {
+func (r *reviving) Input(ctx context.Context, in wire.HostScreenInput) (wire.HostScreenInputResult, error) {
 	r.inputMu.Lock()
 	defer r.inputMu.Unlock()
 	s := r.live()
 	if s == nil {
-		return wire.Errorf(wire.ErrBadRequest, "host_screen.input: the target is gone")
+		return wire.HostScreenInputResult{}, wire.Errorf(wire.ErrBadRequest, "host_screen.input: the target is gone")
 	}
 	is, ok := s.(Inputter)
 	if !ok {
-		return wire.Errorf(wire.ErrUnsupported, "host_screen.input: this kind of target takes no input")
+		return wire.HostScreenInputResult{}, wire.Errorf(wire.ErrUnsupported, "host_screen.input: this kind of target takes no input")
 	}
 	return is.Input(ctx, in)
 }

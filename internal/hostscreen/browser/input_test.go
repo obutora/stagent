@@ -71,7 +71,7 @@ func TestInputTurnsFractionsIntoCSSPxWithTheScreencastMetadata(t *testing.T) {
 	// A 1000 × 800 DIP frame, 40 DIP of top controls, pinch-zoomed 2×.
 	st, page := liveStream(t, `{"deviceWidth":1000,"deviceHeight":800,"offsetTop":40,"pageScaleFactor":2}`)
 	from := page.callCount()
-	if err := st.Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.25}); err != nil {
+	if _, err := st.Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.25}); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -120,7 +120,7 @@ func TestEveryInputSendsOnlyTheAllowedMethodsInOrder(t *testing.T) {
 		{Type: wire.InputNavigate, Action: wire.NavigateReload},
 		{Type: wire.InputNavigate, Action: wire.NavigateURL, URL: "https://example.com/"},
 	} {
-		if err := st.Input(t.Context(), in); err != nil {
+		if _, err := st.Input(t.Context(), in); err != nil {
 			t.Fatalf("%+v: %v", in, err)
 		}
 	}
@@ -160,7 +160,7 @@ func TestDragSpreadsItsMovesOverItsDuration(t *testing.T) {
 	st, _ := liveStream(t, "")
 	began := time.Now()
 	in := wire.HostScreenInput{Type: wire.InputDrag, Points: []wire.HostScreenPoint{{X: 0, Y: 0}, {X: 0.5, Y: 0.5}, {X: 1, Y: 1}}, DurationMS: 200}
-	if err := st.Input(t.Context(), in); err != nil {
+	if _, err := st.Input(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	if d := time.Since(began); d < 200*time.Millisecond {
@@ -172,7 +172,7 @@ func TestBrowserTakesNoKey(t *testing.T) {
 	st, page := liveStream(t, "")
 	from := page.callCount()
 	var we *wire.Error
-	err := st.Input(t.Context(), wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyBack})
+	_, err := st.Input(t.Context(), wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyBack})
 	if !errors.As(err, &we) || we.Code != wire.ErrUnsupported {
 		t.Fatalf("key: %v, want unsupported", err)
 	}

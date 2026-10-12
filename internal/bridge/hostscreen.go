@@ -77,7 +77,8 @@ func (b *Bridge) dispatchHostScreen(m *wire.Msg) {
 				b.replyResult(m.ID, nil, err)
 				return
 			}
-			b.replyResult(m.ID, struct{}{}, b.hostScreen.Input(b.ctx, in))
+			res, err := b.hostScreen.Input(b.ctx, in)
+			b.replyResult(m.ID, res, err)
 		})
 	}
 }

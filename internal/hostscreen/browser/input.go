@@ -49,9 +49,14 @@ func (s *stream) geometry() geometry {
 	return s.geom
 }
 
-// Input performs in on the page with Input.* and Page.* navigation only
-// (ADR 0008): no Emulation.*, no new targets, no dialogs answered.
-func (s *stream) Input(ctx context.Context, in wire.HostScreenInput) error {
+// Input performs in on the page; its result is empty.
+func (s *stream) Input(ctx context.Context, in wire.HostScreenInput) (wire.HostScreenInputResult, error) {
+	return wire.HostScreenInputResult{}, s.perform(ctx, in)
+}
+
+// perform performs in with Input.* and Page.* navigation only (ADR 0008):
+// no Emulation.*, no new targets, no dialogs answered.
+func (s *stream) perform(ctx context.Context, in wire.HostScreenInput) error {
 	switch in.Type {
 	case wire.InputTap:
 		x, y := s.geometry().toCSS(in.X, in.Y)

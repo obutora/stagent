@@ -84,7 +84,13 @@ func (k *Kind) Open(ctx context.Context, t wire.HostScreenTarget) (hostscreen.St
 	if err != nil {
 		return nil, wire.Errorf(wire.ErrUnavailable, "host_screen.start: simulator %s: %v", t.UDID, err)
 	}
+	st.host = k.simHost(env, sim)
 	return hostscreen.Reviving(st, k.every, reopen), nil
+}
+
+// simHost is sim's clipboard and files for typing text.
+func (k *Kind) simHost(env []string, sim *simulator) simHost {
+	return &simctlHost{sim: *sim, env: env, xcrun: lookPath(env, "xcrun"), run: k.run}
 }
 
 // reopen returns what looks for simulator udid booted and opens it (nil
@@ -99,6 +105,7 @@ func (k *Kind) reopen(udid string) func(context.Context) hostscreen.Stream {
 			return nil
 		}
 		if st, err := connect(ctx, path, env, sim); err == nil {
+			st.host = k.simHost(env, sim)
 			return st
 		}
 		return nil

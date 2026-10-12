@@ -223,7 +223,7 @@ const (
 //	drag     Points (in order), DurationMS
 //	scroll   X, Y, DX, DY (how far the fingers moved, fractions of the
 //	         frame's width and height)
-//	text     Text, Enter
+//	text     Text, Enter; X, Y the cursor (iOS opens the edit menu there)
 //	key      Key
 //	navigate Action, URL (for NavigateURL)
 type HostScreenInput struct {
@@ -245,4 +245,25 @@ type HostScreenInput struct {
 type HostScreenPoint struct {
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
+}
+
+// HostScreenInput vias (HostScreenInputResult.Via): how an iOS simulator
+// took a text (#649).
+const (
+	// InputViaCmdV: pasted with ⌘V into an app allowed to paste from other
+	// apps; keys wait about 3 s after it.
+	InputViaCmdV = "cmd_v"
+	// InputViaEditMenu: pasted by tapping the edit menu's Paste at the
+	// cursor; the app is not allowed to paste from other apps.
+	InputViaEditMenu = "edit_menu"
+	// InputViaKeys: typed as keys (ASCII only), after the 英数 key.
+	InputViaKeys = "keys"
+)
+
+// HostScreenInputResult is the result of host_screen.input: empty but for
+// a text an iOS simulator took, which tells how (Via) and the name of the
+// app in front (App, when known).
+type HostScreenInputResult struct {
+	Via string `json:"via,omitempty"`
+	App string `json:"app,omitempty"`
 }

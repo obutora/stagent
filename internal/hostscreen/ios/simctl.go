@@ -14,9 +14,11 @@ import (
 const iosRuntime = "com.apple.CoreSimulator.SimRuntime.iOS-"
 
 // simulator is one booted iOS simulator of `xcrun simctl list devices
-// --json`.
+// --json`: DataPath is its data directory, RuntimeID simctl's identifier
+// of its runtime (text input reads both, see simctlHost).
 type simulator struct {
 	UDID, Name, Runtime string
+	DataPath, RuntimeID string
 }
 
 // parseDevices returns the booted iOS simulators of `xcrun simctl list
@@ -24,9 +26,10 @@ type simulator struct {
 func parseDevices(out []byte) ([]simulator, error) {
 	var list struct {
 		Devices map[string][]struct {
-			UDID  string `json:"udid"`
-			Name  string `json:"name"`
-			State string `json:"state"`
+			UDID     string `json:"udid"`
+			Name     string `json:"name"`
+			State    string `json:"state"`
+			DataPath string `json:"dataPath"`
 		} `json:"devices"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
@@ -42,7 +45,7 @@ func parseDevices(out []byte) ([]simulator, error) {
 			if d.State != "Booted" || d.UDID == "" {
 				continue
 			}
-			sims = append(sims, simulator{UDID: d.UDID, Name: d.Name, Runtime: "iOS " + strings.ReplaceAll(version, "-", ".")})
+			sims = append(sims, simulator{UDID: d.UDID, Name: d.Name, Runtime: "iOS " + strings.ReplaceAll(version, "-", "."), DataPath: d.DataPath, RuntimeID: runtime})
 		}
 	}
 	slices.SortFunc(sims, func(a, b simulator) int {

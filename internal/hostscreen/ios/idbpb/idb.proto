@@ -24,6 +24,57 @@ service CompanionService {
   rpc hid(stream HIDEvent) returns (HIDResponse) {}
   rpc video_stream(stream VideoStreamRequest)
       returns (stream VideoStreamResponse) {}
+  rpc accessibility_info(AccessibilityInfoRequest)
+      returns (AccessibilityInfoResponse) {}
+  rpc list_apps(ListAppsRequest) returns (ListAppsResponse) {}
+}
+
+message ListAppsRequest {
+  bool suppress_process_state = 1;
+}
+
+message ListAppsResponse {
+  repeated InstalledAppInfo apps = 1;
+}
+
+message InstalledAppInfo {
+  string bundle_id = 1;
+  string name = 2;
+  repeated string architectures = 3;
+  string install_type = 4;
+  enum AppProcessState {
+    UNKNOWN = 0;
+    NOT_RUNNING = 1;
+    RUNNING = 2;
+  }
+  AppProcessState process_state = 5;
+  bool debuggable = 6;
+  uint64 process_identifier = 7;
+}
+
+message AccessibilityInfoRequest {
+  enum Format {
+    LEGACY = 0;
+    NESTED = 1;
+    COMPLETE = 2;
+  }
+  enum Backend {
+    BACKEND_UNSPECIFIED = 0;
+    AX = 1;
+    AXBRIDGE = 2;
+    AXBRIDGE_PERSISTENT = 3;
+  }
+  Point point = 2;
+  Format format = 3;
+  uint32 depth = 6;
+  // Restricts the described accessibility keys to this set; an empty list
+  // returns the default key set.
+  repeated string keys = 7;
+  Backend backend = 8;
+}
+
+message AccessibilityInfoResponse {
+  string json = 1;
 }
 
 message Payload {

@@ -52,7 +52,7 @@ func (a *liveADB) run(_ context.Context, _ string, _ []string, args ...string) (
 func watchedKind(t *testing.T) (*Kind, host, *liveADB) {
 	t.Helper()
 	home := t.TempDir()
-	h := host{goos: "darwin", home: home}
+	h := host{goos: "darwin", home: home, alive: everyAlive}
 	executable(t, filepath.Join(home, "Library", "Android", "sdk", "platform-tools"), "adb")
 	a := &liveADB{}
 	return &Kind{host: func() host { return h }, adb: a.run, every: 5 * time.Millisecond}, h, a
@@ -112,7 +112,7 @@ func TestGoneEmulatorIsShownAgainWhenItsAVDRunsOnAnySerial(t *testing.T) {
 	again.images <- image888(20, 10)
 	ev.frame(t)
 	// Keys go to the emulator by its new serial.
-	if err := st.(hostscreen.Inputter).Input(context.Background(), wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyHome}); err != nil {
+	if _, err := st.(hostscreen.Inputter).Input(context.Background(), wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyHome}); err != nil {
 		t.Fatal(err)
 	}
 	adb.mu.Lock()
@@ -141,6 +141,32 @@ func TestStartOfAStoppedAVDIsGoneUntilItRuns(t *testing.T) {
 	adb.set("emulator-5560")
 	if s := ev.state(t); s.State != wire.HostScreenLive {
 		t.Fatalf("state after the AVD started: %+v, want live", s)
+	}
+}
+
+// A discovery file of a running process whose gRPC does not answer, on a
+// serial adb does not list: the emulator is ending; its AVD is gone until
+// it runs again.
+func TestStartOfAnEndingEmulatorIsGoneUntilItsAVDRuns(t *testing.T) {
+	k, h, adb := watchedKind(t)
+	advertise(t, h, "1", 5554, "Pixel", closedPort(t))
+	st, err := k.Open(context.Background(), wire.HostScreenTarget{Kind: wire.HostScreenAndroid, Serial: "emulator-5554", AVD: "Pixel"})
+	if err != nil {
+		t.Fatalf("start of an ending emulator: %v, want {}", err)
+	}
+	defer st.Close()
+	ev := newEvents()
+	st.Start(ev)
+	if s := ev.state(t); s.State != wire.HostScreenGone {
+		t.Fatalf("first state %+v, want gone", s)
+	}
+	pixel := &fakeEmulator{token: "tok", images: make(chan *emupb.Image, 4)}
+	port, _ := serve(t, pixel)
+	os.Remove(filepath.Join(h.runningDir(), "pid_1.ini"))
+	advertise(t, h, "2", 5554, "Pixel", port)
+	adb.set("emulator-5554")
+	if s := ev.state(t); s.State != wire.HostScreenLive {
+		t.Fatalf("state after the AVD started again: %+v, want live", s)
 	}
 }
 

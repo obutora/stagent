@@ -67,11 +67,12 @@ type Stream interface {
 type Inputter interface {
 	// Input performs in on the target (already checked by CheckInput:
 	// points within the frame, the fields its type needs) and returns once
-	// the target took it. Inputs come one at a time, in the order the app
-	// sent them; Input may block on the target, never on the app's acks.
-	// Errors are *wire.Error: unsupported for an input the kind does not
-	// take.
-	Input(ctx context.Context, in wire.HostScreenInput) error
+	// the target took it, with host_screen.input's result (empty but for
+	// an iOS simulator's text). Inputs come one at a time, in the order the
+	// app sent them; Input may block on the target, never on the app's
+	// acks. Errors are *wire.Error: unsupported for an input the kind does
+	// not take.
+	Input(ctx context.Context, in wire.HostScreenInput) (wire.HostScreenInputResult, error)
 }
 
 // Kind is one kind of target: its section of host_screen.list and its
@@ -253,9 +254,10 @@ func (s *Server) current(method string) (*flow, error) {
 // Input answers host_screen.input: it checks in, then has the current
 // stream perform it. The caller runs inputs one at a time in the app's
 // order (with Start and Stop); acks never wait for them.
-func (s *Server) Input(ctx context.Context, in wire.HostScreenInput) error {
+func (s *Server) Input(ctx context.Context, in wire.HostScreenInput) (wire.HostScreenInputResult, error) {
+	var none wire.HostScreenInputResult
 	if err := CheckInput(in); err != nil {
-		return err
+		return none, err
 	}
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
@@ -263,32 +265,32 @@ func (s *Server) Input(ctx context.Context, in wire.HostScreenInput) error {
 	f := s.cur
 	s.mu.Unlock()
 	if f == nil {
-		return wire.Errorf(wire.ErrBadRequest, "host_screen.input: no stream")
+		return none, wire.Errorf(wire.ErrBadRequest, "host_screen.input: no stream")
 	}
 	f.mu.Lock()
 	gone, unresponsive := f.gone, f.unresponsive
 	f.mu.Unlock()
 	if gone {
-		return wire.Errorf(wire.ErrBadRequest, "host_screen.input: the target is gone")
+		return none, wire.Errorf(wire.ErrBadRequest, "host_screen.input: the target is gone")
 	}
 	is, ok := f.st.(Inputter)
 	if !ok {
-		return wire.Errorf(wire.ErrUnsupported, "host_screen.input: this kind of target takes no input")
+		return none, wire.Errorf(wire.ErrUnsupported, "host_screen.input: this kind of target takes no input")
 	}
 	// A target that did not answer an input (a page held by alert()) would
 	// hold every input queued behind it, and the start or stop after them,
 	// for as long again: they are refused until it sends a frame.
 	if unresponsive {
-		return wire.Errorf(wire.ErrUnavailable, "host_screen.input: the target did not answer the previous input")
+		return none, wire.Errorf(wire.ErrUnavailable, "host_screen.input: the target did not answer the previous input")
 	}
-	err := is.Input(ctx, in)
+	res, err := is.Input(ctx, in)
 	var we *wire.Error
 	if errors.As(err, &we) && we.Code == wire.ErrUnavailable {
 		f.mu.Lock()
 		f.unresponsive = true
 		f.mu.Unlock()
 	}
-	return err
+	return res, err
 }
 
 // Bounds of an input, so one request cannot hold the input queue long.
@@ -336,6 +338,9 @@ func CheckInput(in wire.HostScreenInput) error {
 	case wire.InputText:
 		if in.Text == "" && !in.Enter {
 			return bad("text without text or enter")
+		}
+		if !inFrame(in.X, in.Y) {
+			return bad("text cursor (%v, %v) is outside the frame", in.X, in.Y)
 		}
 	case wire.InputKey:
 		switch in.Key {

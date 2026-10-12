@@ -29,7 +29,8 @@ const envFakeHID = "STAGENT_TEST_FAKE_HID"
 var hidBroken atomic.Bool
 
 // Hid performs events by writing them down; in mode "hidbreak" the first
-// event fails, which ends the stream as a companion does.
+// event fails, which ends the stream as a companion does, and in mode
+// "hidslow" the end of a stream answers only after hidCloseWait.
 func (f *fakeService) Hid(hs grpc.ClientStreamingServer[idbpb.HIDEvent, idbpb.HIDResponse]) error {
 	out, err := os.OpenFile(os.Getenv(envFakeHID), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
@@ -39,6 +40,9 @@ func (f *fakeService) Hid(hs grpc.ClientStreamingServer[idbpb.HIDEvent, idbpb.HI
 	for {
 		e, err := hs.Recv()
 		if err == io.EOF {
+			if f.mode == "hidslow" {
+				time.Sleep(hidCloseWait + 500*time.Millisecond)
+			}
 			return hs.SendAndClose(&idbpb.HIDResponse{})
 		}
 		if err != nil {
@@ -125,7 +129,7 @@ func whats(evs []hidEvent) []string {
 
 func TestTapTouchesThePointOfTheFrame(t *testing.T) {
 	s, log := inputStream(t, "still")
-	if err := s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.25}); err != nil {
+	if _, err := s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.25}); err != nil {
 		t.Fatal(err)
 	}
 	// Fractions of the 402 × 874 pt frame.
@@ -138,7 +142,7 @@ func TestTapTouchesThePointOfTheFrame(t *testing.T) {
 func TestDragMovesTheTouchDownOverItsDurationThenLifts(t *testing.T) {
 	s, log := inputStream(t, "still")
 	in := wire.HostScreenInput{Type: wire.InputDrag, DurationMS: 300, Points: []wire.HostScreenPoint{{X: 0, Y: 0}, {X: 0.5, Y: 0.5}, {X: 1, Y: 1}}}
-	if err := s.Input(t.Context(), in); err != nil {
+	if _, err := s.Input(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	evs := performed(t, log, 4)
@@ -155,7 +159,7 @@ func TestScrollIsOneSwipeFromTheCursorKeptOnTheScreen(t *testing.T) {
 	s, log := inputStream(t, "still")
 	// The fingers moved up a quarter of the frame and far to the left.
 	in := wire.HostScreenInput{Type: wire.InputScroll, X: 0.5, Y: 0.5, DX: -3, DY: -0.25}
-	if err := s.Input(t.Context(), in); err != nil {
+	if _, err := s.Input(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	got := whats(performed(t, log, scrollMoves+2))
@@ -170,24 +174,6 @@ func TestScrollIsOneSwipeFromTheCursorKeptOnTheScreen(t *testing.T) {
 	}
 }
 
-func TestTextTypesASCIIWithShiftForCapitalsAndUpperSymbols(t *testing.T) {
-	s, log := inputStream(t, "still")
-	if err := s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputText, Text: "aZ?1 ", Enter: true}); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{
-		"key down 4", "key up 4", // a
-		"key down 225", "key down 29", "key up 29", "key up 225", // Z
-		"key down 225", "key down 56", "key up 56", "key up 225", // ?
-		"key down 30", "key up 30", // 1
-		"key down 44", "key up 44", // space
-		"key down 40", "key up 40", // enter: Return
-	}
-	if got := whats(performed(t, log, len(want))); !slices.Equal(got, want) {
-		t.Fatalf("text performed %q, want %q", got, want)
-	}
-}
-
 func TestEveryPrintableASCIICharacterHasAKey(t *testing.T) {
 	for c := rune(' '); c <= '~'; c++ {
 		if evs, ok := typeText(string(c)); !ok || len(evs) == 0 {
@@ -198,7 +184,7 @@ func TestEveryPrintableASCIICharacterHasAKey(t *testing.T) {
 
 func TestHomePressesTheHomeButton(t *testing.T) {
 	s, log := inputStream(t, "still")
-	if err := s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyHome}); err != nil {
+	if _, err := s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyHome}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"button down HOME", "button up HOME"}
@@ -214,12 +200,9 @@ func TestInputsASimulatorDoesNotTakeAreUnsupported(t *testing.T) {
 		{Type: wire.InputKey, Key: wire.KeyRecents},
 		{Type: wire.InputNavigate, Action: wire.NavigateReload},
 		{Type: wire.InputNavigate, Action: wire.NavigateURL, URL: "https://example.com"},
-		// Japanese waits for #649: nothing of the text is typed.
-		{Type: wire.InputText, Text: "abc日本語", Enter: true},
-		{Type: wire.InputText, Text: "café"},
 	} {
 		var we *wire.Error
-		if err := s.Input(t.Context(), in); !errors.As(err, &we) || we.Code != wire.ErrUnsupported {
+		if _, err := s.Input(t.Context(), in); !errors.As(err, &we) || we.Code != wire.ErrUnsupported {
 			t.Errorf("Input(%+v) = %v, want unsupported", in, err)
 		}
 	}
@@ -232,7 +215,7 @@ func TestInputReopensTheHIDStreamTheCompanionEnded(t *testing.T) {
 	// it.
 	s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyHome})
 	time.Sleep(200 * time.Millisecond)
-	if err := s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap, X: 0, Y: 1}); err != nil {
+	if _, err := s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap, X: 0, Y: 1}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(200 * time.Millisecond)
@@ -252,7 +235,8 @@ func TestClosingDuringADragLiftsTheTouchAndEndsTheCompanion(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- s.Input(ctx, wire.HostScreenInput{Type: wire.InputDrag, DurationMS: 5000, Points: []wire.HostScreenPoint{{X: 0, Y: 0}, {X: 1, Y: 1}}})
+		_, err := s.Input(ctx, wire.HostScreenInput{Type: wire.InputDrag, DurationMS: 5000, Points: []wire.HostScreenPoint{{X: 0, Y: 0}, {X: 1, Y: 1}}})
+		done <- err
 	}()
 	performed(t, log, 1)
 	// The tab closes: the bridge's context ends, then the stream.

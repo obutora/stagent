@@ -23,8 +23,11 @@ const hidCloseWait = time.Second
 
 // HID usages (USB HID Usage Tables, keyboard page) stagent types with.
 const (
+	hidV         = 0x19
 	hidReturn    = 0x28
+	hidLang2     = 0x91 // 英数: leaves the Japanese input of a ja simulator (#649)
 	hidLeftShift = 0xe1
+	hidLeftGUI   = 0xe3 // ⌘
 )
 
 // toPt turns frame fractions into the simulator's points: the frame is
@@ -34,10 +37,18 @@ func toPt(size [2]int, fx, fy float64) *idbpb.Point {
 }
 
 // Input performs in through the companion's hid stream, kept open for the
-// stream (#630): a touch, the home button or keys. An iOS simulator has no
-// back or recents button and no navigation, and text other than ASCII
-// waits for #649.
-func (s *stream) Input(ctx context.Context, in wire.HostScreenInput) error {
+// stream (#630): a touch, the home button or keys; text is pasted (see
+// text). Its result is empty but for a text.
+func (s *stream) Input(ctx context.Context, in wire.HostScreenInput) (wire.HostScreenInputResult, error) {
+	if in.Type == wire.InputText {
+		return s.text(ctx, in)
+	}
+	return wire.HostScreenInputResult{}, s.perform(ctx, in)
+}
+
+// perform performs an input but text. An iOS simulator has no back or
+// recents button and no navigation.
+func (s *stream) perform(ctx context.Context, in wire.HostScreenInput) error {
 	size := s.frameSize()
 	switch in.Type {
 	case wire.InputTap:
@@ -51,15 +62,6 @@ func (s *stream) Input(ctx context.Context, in wire.HostScreenInput) error {
 		return s.touchPath(ctx, pts, time.Duration(in.DurationMS)*time.Millisecond)
 	case wire.InputScroll:
 		return s.touchPath(ctx, swipePath(size, in), scrollMoves*scrollStep)
-	case wire.InputText:
-		events, ok := typeText(in.Text)
-		if !ok {
-			return wire.Errorf(wire.ErrUnsupported, "host_screen.input: an iOS simulator takes ASCII text only (Japanese input is not available yet)")
-		}
-		if in.Enter {
-			events = append(events, keyStroke(hidReturn, false)...)
-		}
-		return s.hid(events...)
 	case wire.InputKey:
 		if in.Key == wire.KeyHome {
 			return s.hid(button(idbpb.HIDEvent_HOME, idbpb.HIDEvent_DOWN), button(idbpb.HIDEvent_HOME, idbpb.HIDEvent_UP))

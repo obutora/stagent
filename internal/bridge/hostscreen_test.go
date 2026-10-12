@@ -58,14 +58,14 @@ func (s *screenStream) note(c string) {
 	s.mu.Unlock()
 }
 func (*screenStream) Close() {}
-func (s *screenStream) Input(_ context.Context, in wire.HostScreenInput) error {
+func (s *screenStream) Input(_ context.Context, in wire.HostScreenInput) (wire.HostScreenInputResult, error) {
 	if g := s.inputGate.Load(); g != nil {
 		<-*g
 	}
 	s.mu.Lock()
 	s.inputs = append(s.inputs, in.Text)
 	s.mu.Unlock()
-	return nil
+	return wire.HostScreenInputResult{Via: wire.InputViaKeys, App: in.Text}, nil
 }
 
 func withScreen(k *screenKind) func(*Bridge) {
@@ -220,8 +220,14 @@ func TestHostScreenInputsKeepTheirOrderAndAcksPassASlowOne(t *testing.T) {
 	}
 	close(gate)
 	for i, ch := range inputs {
-		if m := <-ch; m.Error != nil {
+		m := <-ch
+		if m.Error != nil {
 			t.Fatalf("input %d: %v", i, m.Error)
+		}
+		// The stream's result is the reply's.
+		var res wire.HostScreenInputResult
+		if err := json.Unmarshal(m.Result, &res); err != nil || res != (wire.HostScreenInputResult{Via: wire.InputViaKeys, App: fmt.Sprint(i)}) {
+			t.Fatalf("input %d answered %s, want the stream's result", i, m.Result)
 		}
 	}
 	st.mu.Lock()
