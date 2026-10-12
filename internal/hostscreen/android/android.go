@@ -67,7 +67,7 @@ func (k *Kind) List(ctx context.Context) (any, error) {
 	// adb failing (its server cannot start, say) lists no emulator rather
 	// than failing the other kinds' sections.
 	out, _ := k.adb(ctx, adb, h.env, "devices", "-l")
-	running := readRunning(h.runningDir())
+	running := h.readRunning()
 	list := items(emulatorSerials(out, running), running)
 	for i := range list {
 		// Without a discovery file (no gRPC) the console tells the name.
@@ -88,7 +88,7 @@ func (k *Kind) Open(ctx context.Context, t wire.HostScreenTarget) (hostscreen.St
 		return nil, wire.Errorf(wire.ErrBadRequest, "host_screen.start: serial is empty")
 	}
 	h := k.host()
-	e, ok := readRunning(h.runningDir())[t.Serial]
+	e, ok := h.readRunning()[t.Serial]
 	avd := t.AVD
 	if ok && avd == "" {
 		avd = e.avd // an app before 0.12.0 names the serial only
@@ -103,19 +103,21 @@ func (k *Kind) Open(ctx context.Context, t wire.HostScreenTarget) (hostscreen.St
 		switch {
 		case err == nil:
 			return hostscreen.Reviving(st, k.every, reopen), nil
-		case avd == "" || !errors.As(err, &we) || we.Code != wire.ErrNotFound:
+		case !errors.As(err, &we) || we.Code != wire.ErrNotFound:
 			return nil, err
 		}
-		// No gRPC on the port: the file of an emulator that ended.
+		// No gRPC on the port: the emulator is ending, or runs without
+		// answering there.
 	}
-	if !ok && isEmulatorSerial(t.Serial) {
-		// An emulator adb lists without a discovery file has no gRPC
-		// either; only adb tells it from one that is not running (or is
-		// offline, not an emulator at all).
+	if (!ok || e.avd == avd) && isEmulatorSerial(t.Serial) {
+		// An emulator adb lists without a discovery file, or whose gRPC
+		// does not answer, cannot be shown; only adb tells it from one
+		// that is not running (or is offline: not an emulator at all, or
+		// one starting or ending, which comes back as its AVD runs).
 		if adb := h.adbPath(); adb != "" {
 			out, _ := k.adb(ctx, adb, h.env, "devices", "-l")
 			if slices.Contains(emulatorSerials(out, nil), t.Serial) {
-				return nil, wire.Errorf(wire.ErrUnavailable, "host_screen.start: %s has no gRPC port (%s)", t.Serial, wire.HostScreenNoGRPC)
+				return nil, wire.Errorf(wire.ErrUnavailable, "host_screen.start: %s has no gRPC answering (%s)", t.Serial, wire.HostScreenNoGRPC)
 			}
 		}
 	}
@@ -149,7 +151,7 @@ func (k *Kind) connect(ctx context.Context, h host, e emulator) (*stream, error)
 func (k *Kind) reopen(avd string) func(context.Context) hostscreen.Stream {
 	return func(ctx context.Context) hostscreen.Stream {
 		h := k.host()
-		running := readRunning(h.runningDir())
+		running := h.readRunning()
 		var listed []string
 		if adb := h.adbPath(); adb != "" {
 			if out, err := k.adb(ctx, adb, h.env, "devices", "-l"); err == nil {

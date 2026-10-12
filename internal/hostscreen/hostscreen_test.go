@@ -60,12 +60,12 @@ type inputStream struct {
 	wait   time.Duration
 }
 
-func (s *inputStream) Input(_ context.Context, in wire.HostScreenInput) error {
+func (s *inputStream) Input(_ context.Context, in wire.HostScreenInput) (wire.HostScreenInputResult, error) {
 	s.inputs = append(s.inputs, in)
 	if s.err != nil {
 		time.Sleep(s.wait)
 	}
-	return s.err
+	return wire.HostScreenInputResult{}, s.err
 }
 
 type fakeKind struct {
@@ -319,7 +319,7 @@ func TestLiveAfterGoneStartsTheFramesOver(t *testing.T) {
 	if got, want := out.take(), []string{"reply", "state:live", "frame:1:a", "frame:2:b", "state:gone", "state:live", "frame:3:c"}; !slices.Equal(got, want) {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
-	if err := s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.5}); err != nil {
+	if _, err := s.Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.5}); err != nil {
 		t.Fatalf("input after live again: %v", err)
 	}
 	// An ack of a frame from before gone resumes nothing.
@@ -399,18 +399,18 @@ func TestInputGoesToTheStreamOrIsRefused(t *testing.T) {
 	s, k, out, _ := newTestServer(t)
 	var we *wire.Error
 	tap := wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.5}
-	if err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
+	if _, err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
 		t.Fatalf("input without a stream: %v, want bad_request", err)
 	}
 	start(t, s, out)
-	if err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrUnsupported {
+	if _, err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrUnsupported {
 		t.Fatalf("input to a stream without inputs: %v, want unsupported", err)
 	}
 	k.input = true
 	start(t, s, out)
 	text := wire.HostScreenInput{Type: wire.InputText, Text: "a"}
 	for _, in := range []wire.HostScreenInput{tap, text} {
-		if err := s.Input(t.Context(), in); err != nil {
+		if _, err := s.Input(t.Context(), in); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -418,11 +418,11 @@ func TestInputGoesToTheStreamOrIsRefused(t *testing.T) {
 		t.Fatalf("stream got %+v, want the tap then the text", got)
 	}
 	k.inputs.ev.State(wire.HostScreenState{State: wire.HostScreenGone})
-	if err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
+	if _, err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
 		t.Fatalf("input after gone: %v, want bad_request", err)
 	}
 	s.Stop()
-	if err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
+	if _, err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
 		t.Fatalf("input after stop: %v, want bad_request", err)
 	}
 }
@@ -438,7 +438,7 @@ func TestInputsBehindOneTheTargetDidNotAnswerAreRefusedAtOnce(t *testing.T) {
 	k.inputs.wait = 200 * time.Millisecond
 	began := time.Now()
 	for range 5 {
-		if err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrUnavailable {
+		if _, err := s.Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrUnavailable {
 			t.Fatalf("input to a held page: %v, want unavailable", err)
 		}
 	}
@@ -451,7 +451,7 @@ func TestInputsBehindOneTheTargetDidNotAnswerAreRefusedAtOnce(t *testing.T) {
 	// A frame says the page draws again.
 	k.inputs.err = nil
 	k.inputs.frame("again")
-	if err := s.Input(t.Context(), tap); err != nil || len(k.inputs.inputs) != 2 {
+	if _, err := s.Input(t.Context(), tap); err != nil || len(k.inputs.inputs) != 2 {
 		t.Fatalf("input after a frame: %v, handed %d", err, len(k.inputs.inputs))
 	}
 	// So does a new start.
@@ -459,7 +459,7 @@ func TestInputsBehindOneTheTargetDidNotAnswerAreRefusedAtOnce(t *testing.T) {
 	s.Input(t.Context(), tap)
 	k.inputs.err = nil
 	start(t, s, out)
-	if err := s.Input(t.Context(), tap); err != nil || len(k.inputs.inputs) != 1 {
+	if _, err := s.Input(t.Context(), tap); err != nil || len(k.inputs.inputs) != 1 {
 		t.Fatalf("input to the new stream: %v, handed %d", err, len(k.inputs.inputs))
 	}
 }
@@ -483,6 +483,8 @@ func TestCheckInputRefusesShapesWrongForTheirType(t *testing.T) {
 		{wire.HostScreenInput{Type: wire.InputScroll, X: 0.5, Y: 0.5, DY: MaxScroll + 1}, false},
 		{wire.HostScreenInput{Type: wire.InputText, Text: "日本語"}, true},
 		{wire.HostScreenInput{Type: wire.InputText, Enter: true}, true},
+		{wire.HostScreenInput{Type: wire.InputText, Text: "日本語", X: 0.3, Y: 0.7}, true},
+		{wire.HostScreenInput{Type: wire.InputText, Text: "日本語", X: 0.3, Y: 1.2}, false},
 		{wire.HostScreenInput{Type: wire.InputText}, false},
 		{wire.HostScreenInput{Type: wire.InputKey, Key: wire.KeyRecents}, true},
 		{wire.HostScreenInput{Type: wire.InputKey, Key: "power"}, false},

@@ -22,13 +22,15 @@ Envelope (JSON-RPC 2.0 shape without the `jsonrpc` member):
 Error codes: `bad_request`, `unknown_method`, `not_found`, `unsupported`,
 `internal`, `unavailable`, `version_mismatch`, `session_ended`,
 `not_size_owner`, `not_configured`, `menu_open`, `foreign_owner`,
-`agent_refused`, `not_clean`, `busy`, `in_use`.
+`agent_refused`, `not_clean`, `busy`, `in_use`, `paste_by_hand`.
 
 `not_clean`: `task.remove` found uncommitted changes and no `force`.
 `busy`: `task.remove` found live sessions of the task and no
 `stop_sessions`, could not stop them, or found the task still
 `preparing` or already `removing`. `in_use`: another number's
-`in_place` task uses that source checkout (see "Tasks").
+`in_place` task uses that source checkout (see "Tasks"). `paste_by_hand`:
+`host_screen.input` could not paste a text into an iOS simulator; it is
+on the simulator's clipboard for the user to paste (see "Host screen").
 
 `foreign_owner`: a request that needs the daemon or a session's holder
 (any daemon or session method, `session.spawn`) found the stagent location
@@ -603,7 +605,7 @@ without a capability, except the `ios` kind (capability
 | `host_screen.pause` | – | `{}` (since 0.12.0) |
 | `host_screen.resume` | – | `{}` (since 0.12.0) |
 | `host_screen.stop` | – | `{}` |
-| `host_screen.input` | `Input` | `{}` |
+| `host_screen.input` | `Input` | `{}`; an iOS simulator's `text`: `{via, app?}` (since 0.13.0) |
 
 | notification | params |
 |---|---|
@@ -720,8 +722,12 @@ the file a running emulator advertises itself in,
 `avd/running/pid_<pid>.ini` (keys `port.serial`, `avd.name`,
 `grpc.port`, `grpc.token`) under `$XDG_RUNTIME_DIR` on Linux
 (`/run/user/<uid>` when unset), `~/Library/Caches/TemporaryItems` on
-macOS and `%LOCALAPPDATA%\Temp` on Windows. An emulator without such a
-file or without `grpc.port` there is `no_grpc`; its `avd` is then the
+macOS and `%LOCALAPPDATA%\Temp` on Windows. An emulator that stops
+leaves its file behind: a file whose `<pid>` is no running process
+(signal 0 on Linux and macOS, opening the process on Windows) is not read,
+and left as it is (since 0.13.0, #679). An emulator without such a file
+or without `grpc.port` there is `no_grpc` — also one started with `-port`
+only on the serial of an ended emulator's file; its `avd` is then the
 answer of `adb -s <serial> emu avd name`.
 
 **Showing an emulator.** `start` reads the emulator's discovery file
@@ -838,7 +844,10 @@ app needs no target's size beyond the frame's.
 - `{type: "scroll", x, y, dx, dy}` — at `x`, `y`; `dx`, `dy` (±10) are how
   far the two fingers moved, as fractions of the frame's width and height
   (the page moves with them).
-- `{type: "text", text, enter?}` — `text` may be empty with `enter`.
+- `{type: "text", text, enter?, x?, y?}` — `text` may be empty with
+  `enter`. `x`, `y` are the user's cursor (0–1, like a tap): an iOS
+  simulator opens its edit menu there (both 0 or missing: no cursor).
+  The other kinds ignore them.
 - `{type: "key", key: "back"|"home"|"recents"}`
 - `{type: "navigate", action: "back"|"forward"|"reload"|"url", url?}` —
   `url` for `action: "url"`.
@@ -849,7 +858,14 @@ What each kind of target takes (another type → `unsupported`):
 |---|---|
 | `browser` | `tap`, `drag`, `scroll`, `text`, `navigate` (not `key`) |
 | `android` | `tap`, `drag`, `scroll`, `text`, `key` (not `navigate`) |
-| `ios` | `tap`, `drag`, `scroll`, `text` of ASCII only, `key: "home"` (not `back`, `recents`, `navigate`; text with any other character → `unsupported`, nothing typed: Japanese input is pending, #649) |
+| `ios` | `tap`, `drag`, `scroll`, `text` (any script), `key: "home"` (not `back`, `recents`, `navigate`) |
+
+`host_screen.input` answers `{}`, but for a `text` with `text` on an iOS
+simulator: `{via, app?}` (since 0.13.0, #649). `via` is how it went in:
+`cmd_v` (pasted with ⌘V), `edit_menu` (pasted with the edit menu's
+Paste), `keys` (typed); `app` is the name of the app in front (absent on
+the home screen, or when the companion cannot tell). The app shows, after
+an `edit_menu`, how to let the app paste from other apps (below).
 
 A browser gets only `Input.*` and `Page.navigate`,
 `Page.getNavigationHistory`, `Page.navigateToHistoryEntry`,
@@ -899,11 +915,56 @@ spread over `duration_ms`, and up at the last; cut short (the bridge
 ending), the touch is lifted where it is. `scroll`: one swipe, a touch
 moving from `x`, `y` by `dx`, `dy` (its end kept on the screen) in 10
 steps 16 ms apart, then lifted without a pause (the content may glide on
-as after a fast swipe). `text`: key presses of a US keyboard (Shift held
-for capitals and the upper symbols; newline is Return, tab is Tab), then
-for `enter` Return. `key: "home"`: the HOME button down and up. An input
-answers once its events are sent; `stop` waits up to a second for the
-companion to perform them before stopping it.
+as after a fast swipe). `key: "home"`: the HOME button down and up. An
+input answers once its events are sent; `stop` waits up to a second for
+the companion to perform them before stopping it.
+
+`text` on an iOS simulator (since 0.13.0, #649) is pasted from the
+simulator's clipboard (`xcrun simctl pbcopy`, overwritten each time), as
+a paste skips the Japanese input (a `ja` simulator types ASCII keys
+through romaji: `example.com` → 「えぁmpぇ。cおm」). How depends on
+the app in front — the root element of the companion's
+`accessibility_info` gives its pid and name, `list_apps` its bundle id —
+and on its 「ほかのアプリからペースト」 (Paste from Other Apps, iOS 16+),
+which stagent reads from the simulator's
+`data/Library/TCC/TCC.db` (`kTCCServicePasteboard`, `sqlite3
+-readonly`) and never changes:
+
+- **Allowed** (`auth_value` 2): ⌘V at the caret (`cmd_v`), ASCII too.
+  iOS then shows "<App> pasted from CoreSimulatorBridge" for about 2.65 s
+  and drops every key meanwhile, so no key (the `enter`'s Return, the
+  next text, another ⌘V) goes until 3 s after the ⌘V: such an input
+  answers that much later. Taps are not held.
+- **No row** yet (the app never asked), whatever the text: first a ⌘V,
+  which iOS refuses but which adds the row, and with it the app's item
+  in Settings; then as not allowed below, the text copied again for the
+  edit menu (which does not paste what iOS just refused).
+- **Not allowed** (ask, deny, no row, TCC.db unreadable, no app in
+  front), text all ASCII (tab, newline included): the 英数 key (LANG2,
+  HID 0x91) leaves the Japanese input, then the text's keys of a US
+  keyboard (`keys`; Shift held for capitals and the upper symbols;
+  newline is Return, tab is Tab).
+- **Not allowed**, any other text: a tap at `x`, `y` (the caret goes
+  there; on the caret the edit menu shows), and a second one if 1 s
+  passes without the menu (the first only focused the field or moved the
+  caret); then a tap on the menu's Paste (`edit_menu`): the element with
+  traits `MenuItem` labelled Paste in the simulator's language (the
+  `Paste` of UIKitCore's `Localizable.strings` of its runtime, for its
+  first `AppleLanguages`), in Japanese 「ペースト」 or in English
+  `Paste`. Without the menu's Paste (or without `x`, `y`) the text
+  stays on the clipboard and the input fails `paste_by_hand`: the user
+  long-presses the field in the simulator and chooses Paste.
+
+`enter` adds Return after the text (after an `edit_menu`, 0.5 s later,
+once the paste inserted). What the user sees and accepts: UIKit may add
+a space before or after letters and digits it pastes (smart insert, as
+when a person pastes); in a simulator whose hardware keyboard is not
+connected (the software keyboard shows), LANG2 does nothing and ASCII
+keys go in unconverted but uncommitted (underlined), so the first Return
+only commits them. Pasting is faster and surer once the user allows the
+app in the simulator: Settings → アプリ (Apps) → 〈App〉 →
+ほかのアプリからペースト → 許可 (Allow); an app without the item
+(Safari) stays on the edit menu.
 
 **Order.** `start`, `stop` and `input` run in order on one queue: inputs
 keep the app's order, and none reaches a stream being replaced. `list`
@@ -921,12 +982,15 @@ host not announcing `host_screen_ios` → `unsupported`; a `port` outside
 `/json/list` on the port, or no page target `target_id` there →
 `not_found`; the page's WebSocket cannot be opened → `unavailable`.
 `android`: an empty `serial` → `bad_request`; an emulator that is
-`no_grpc` → `unavailable`; the port refusing the token → `unavailable`.
-An emulator not running (no discovery file and not in `adb devices`, a
-discovery file left with no gRPC answering on its port, or another AVD
-on `serial`) is not an error: `{}`, then `gone` (see "Coming back");
-only without an `avd` to look for (an app before 0.12.0, and no
-emulator on `serial`) → `not_found`. `ios`: an empty `udid` →
+`no_grpc` → `unavailable`; the port refusing the token → `unavailable`;
+no gRPC answering on the port of its discovery file while `adb devices`
+lists `serial` (in the `device` state) → `unavailable` (`no_grpc`, since
+0.13.0, #679). An emulator not running (no discovery file and not in
+`adb devices`, a discovery file with no gRPC answering on its port and
+`serial` not in `adb devices`, or another AVD on `serial`) is not an
+error: `{}`, then `gone` (see "Coming back"); only without an `avd` to
+look for (an app before 0.12.0, and no emulator on `serial`) →
+`not_found`. `ios`: an empty `udid` →
 `bad_request`; no Xcode (xcrun cannot find simctl) → `not_found`;
 idb_companion not installed, or it exits or does not describe a booted
 simulator within 10 seconds → `unavailable`; a simulator `udid` not
@@ -935,14 +999,17 @@ booted, or simctl failing to list (a timeout, say), is not an error:
 `pause` and `resume` without a stream (none started, or after `stop`) →
 `bad_request`.
 `input`: without a stream (also while `gone`) → `bad_request`; a shape
-wrong for its type (a point outside 0–1, an unknown `type`, `key` or
-`action`, a drag of fewer than two points, `text` without `text` or
-`enter`, `url` without `url`) → `bad_request`; a type the target does
-not take → `unsupported`; the browser refusing the call (an invalid URL)
-→ `bad_request`; the page not answering within 10 seconds (gone, a
-dialog open) or `Page.navigate` failing to load (`errorText`) →
-`unavailable`; for a simulator, its companion's `hid` stream failing
-again after reopening → `unavailable`; an input after one that ended
+wrong for its type (a point outside 0–1, the text's `x`, `y` too, an
+unknown `type`, `key` or `action`, a drag of fewer than two points,
+`text` without `text` or `enter`, `url` without `url`) → `bad_request`;
+a type the target does not take → `unsupported`; the browser refusing
+the call (an invalid URL) → `bad_request`; the page not answering within
+10 seconds (gone, a dialog open) or `Page.navigate` failing to load
+(`errorText`) → `unavailable`; for a simulator, its companion's `hid`
+stream failing again after reopening, or `simctl pbcopy` failing →
+`unavailable`; a text an iOS simulator could not paste (no edit menu
+with Paste at the cursor; the text is left on its clipboard) →
+`paste_by_hand` (since 0.13.0); an input after one that ended
 `unavailable`, before the next frame → `unavailable` (see Order).
 
 ### Session (forwarded to the session's holder)

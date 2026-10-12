@@ -34,6 +34,156 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type InstalledAppInfo_AppProcessState int32
+
+const (
+	InstalledAppInfo_UNKNOWN     InstalledAppInfo_AppProcessState = 0
+	InstalledAppInfo_NOT_RUNNING InstalledAppInfo_AppProcessState = 1
+	InstalledAppInfo_RUNNING     InstalledAppInfo_AppProcessState = 2
+)
+
+// Enum value maps for InstalledAppInfo_AppProcessState.
+var (
+	InstalledAppInfo_AppProcessState_name = map[int32]string{
+		0: "UNKNOWN",
+		1: "NOT_RUNNING",
+		2: "RUNNING",
+	}
+	InstalledAppInfo_AppProcessState_value = map[string]int32{
+		"UNKNOWN":     0,
+		"NOT_RUNNING": 1,
+		"RUNNING":     2,
+	}
+)
+
+func (x InstalledAppInfo_AppProcessState) Enum() *InstalledAppInfo_AppProcessState {
+	p := new(InstalledAppInfo_AppProcessState)
+	*p = x
+	return p
+}
+
+func (x InstalledAppInfo_AppProcessState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (InstalledAppInfo_AppProcessState) Descriptor() protoreflect.EnumDescriptor {
+	return file_idb_proto_enumTypes[0].Descriptor()
+}
+
+func (InstalledAppInfo_AppProcessState) Type() protoreflect.EnumType {
+	return &file_idb_proto_enumTypes[0]
+}
+
+func (x InstalledAppInfo_AppProcessState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use InstalledAppInfo_AppProcessState.Descriptor instead.
+func (InstalledAppInfo_AppProcessState) EnumDescriptor() ([]byte, []int) {
+	return file_idb_proto_rawDescGZIP(), []int{2, 0}
+}
+
+type AccessibilityInfoRequest_Format int32
+
+const (
+	AccessibilityInfoRequest_LEGACY   AccessibilityInfoRequest_Format = 0
+	AccessibilityInfoRequest_NESTED   AccessibilityInfoRequest_Format = 1
+	AccessibilityInfoRequest_COMPLETE AccessibilityInfoRequest_Format = 2
+)
+
+// Enum value maps for AccessibilityInfoRequest_Format.
+var (
+	AccessibilityInfoRequest_Format_name = map[int32]string{
+		0: "LEGACY",
+		1: "NESTED",
+		2: "COMPLETE",
+	}
+	AccessibilityInfoRequest_Format_value = map[string]int32{
+		"LEGACY":   0,
+		"NESTED":   1,
+		"COMPLETE": 2,
+	}
+)
+
+func (x AccessibilityInfoRequest_Format) Enum() *AccessibilityInfoRequest_Format {
+	p := new(AccessibilityInfoRequest_Format)
+	*p = x
+	return p
+}
+
+func (x AccessibilityInfoRequest_Format) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AccessibilityInfoRequest_Format) Descriptor() protoreflect.EnumDescriptor {
+	return file_idb_proto_enumTypes[1].Descriptor()
+}
+
+func (AccessibilityInfoRequest_Format) Type() protoreflect.EnumType {
+	return &file_idb_proto_enumTypes[1]
+}
+
+func (x AccessibilityInfoRequest_Format) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AccessibilityInfoRequest_Format.Descriptor instead.
+func (AccessibilityInfoRequest_Format) EnumDescriptor() ([]byte, []int) {
+	return file_idb_proto_rawDescGZIP(), []int{3, 0}
+}
+
+type AccessibilityInfoRequest_Backend int32
+
+const (
+	AccessibilityInfoRequest_BACKEND_UNSPECIFIED AccessibilityInfoRequest_Backend = 0
+	AccessibilityInfoRequest_AX                  AccessibilityInfoRequest_Backend = 1
+	AccessibilityInfoRequest_AXBRIDGE            AccessibilityInfoRequest_Backend = 2
+	AccessibilityInfoRequest_AXBRIDGE_PERSISTENT AccessibilityInfoRequest_Backend = 3
+)
+
+// Enum value maps for AccessibilityInfoRequest_Backend.
+var (
+	AccessibilityInfoRequest_Backend_name = map[int32]string{
+		0: "BACKEND_UNSPECIFIED",
+		1: "AX",
+		2: "AXBRIDGE",
+		3: "AXBRIDGE_PERSISTENT",
+	}
+	AccessibilityInfoRequest_Backend_value = map[string]int32{
+		"BACKEND_UNSPECIFIED": 0,
+		"AX":                  1,
+		"AXBRIDGE":            2,
+		"AXBRIDGE_PERSISTENT": 3,
+	}
+)
+
+func (x AccessibilityInfoRequest_Backend) Enum() *AccessibilityInfoRequest_Backend {
+	p := new(AccessibilityInfoRequest_Backend)
+	*p = x
+	return p
+}
+
+func (x AccessibilityInfoRequest_Backend) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AccessibilityInfoRequest_Backend) Descriptor() protoreflect.EnumDescriptor {
+	return file_idb_proto_enumTypes[2].Descriptor()
+}
+
+func (AccessibilityInfoRequest_Backend) Type() protoreflect.EnumType {
+	return &file_idb_proto_enumTypes[2]
+}
+
+func (x AccessibilityInfoRequest_Backend) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AccessibilityInfoRequest_Backend.Descriptor instead.
+func (AccessibilityInfoRequest_Backend) EnumDescriptor() ([]byte, []int) {
+	return file_idb_proto_rawDescGZIP(), []int{3, 1}
+}
+
 type HIDEvent_HIDDirection int32
 
 const (
@@ -64,11 +214,11 @@ func (x HIDEvent_HIDDirection) String() string {
 }
 
 func (HIDEvent_HIDDirection) Descriptor() protoreflect.EnumDescriptor {
-	return file_idb_proto_enumTypes[0].Descriptor()
+	return file_idb_proto_enumTypes[3].Descriptor()
 }
 
 func (HIDEvent_HIDDirection) Type() protoreflect.EnumType {
-	return &file_idb_proto_enumTypes[0]
+	return &file_idb_proto_enumTypes[3]
 }
 
 func (x HIDEvent_HIDDirection) Number() protoreflect.EnumNumber {
@@ -77,7 +227,7 @@ func (x HIDEvent_HIDDirection) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use HIDEvent_HIDDirection.Descriptor instead.
 func (HIDEvent_HIDDirection) EnumDescriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4, 0}
+	return file_idb_proto_rawDescGZIP(), []int{9, 0}
 }
 
 type HIDEvent_HIDButtonType int32
@@ -131,11 +281,11 @@ func (x HIDEvent_HIDButtonType) String() string {
 }
 
 func (HIDEvent_HIDButtonType) Descriptor() protoreflect.EnumDescriptor {
-	return file_idb_proto_enumTypes[1].Descriptor()
+	return file_idb_proto_enumTypes[4].Descriptor()
 }
 
 func (HIDEvent_HIDButtonType) Type() protoreflect.EnumType {
-	return &file_idb_proto_enumTypes[1]
+	return &file_idb_proto_enumTypes[4]
 }
 
 func (x HIDEvent_HIDButtonType) Number() protoreflect.EnumNumber {
@@ -144,7 +294,7 @@ func (x HIDEvent_HIDButtonType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use HIDEvent_HIDButtonType.Descriptor instead.
 func (HIDEvent_HIDButtonType) EnumDescriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4, 1}
+	return file_idb_proto_rawDescGZIP(), []int{9, 1}
 }
 
 type VideoStreamRequest_Format int32
@@ -186,11 +336,11 @@ func (x VideoStreamRequest_Format) String() string {
 }
 
 func (VideoStreamRequest_Format) Descriptor() protoreflect.EnumDescriptor {
-	return file_idb_proto_enumTypes[2].Descriptor()
+	return file_idb_proto_enumTypes[5].Descriptor()
 }
 
 func (VideoStreamRequest_Format) Type() protoreflect.EnumType {
-	return &file_idb_proto_enumTypes[2]
+	return &file_idb_proto_enumTypes[5]
 }
 
 func (x VideoStreamRequest_Format) Number() protoreflect.EnumNumber {
@@ -199,7 +349,309 @@ func (x VideoStreamRequest_Format) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use VideoStreamRequest_Format.Descriptor instead.
 func (VideoStreamRequest_Format) EnumDescriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{8, 0}
+	return file_idb_proto_rawDescGZIP(), []int{13, 0}
+}
+
+type ListAppsRequest struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	SuppressProcessState bool                   `protobuf:"varint,1,opt,name=suppress_process_state,json=suppressProcessState,proto3" json:"suppress_process_state,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *ListAppsRequest) Reset() {
+	*x = ListAppsRequest{}
+	mi := &file_idb_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAppsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAppsRequest) ProtoMessage() {}
+
+func (x *ListAppsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_idb_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAppsRequest.ProtoReflect.Descriptor instead.
+func (*ListAppsRequest) Descriptor() ([]byte, []int) {
+	return file_idb_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *ListAppsRequest) GetSuppressProcessState() bool {
+	if x != nil {
+		return x.SuppressProcessState
+	}
+	return false
+}
+
+type ListAppsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Apps          []*InstalledAppInfo    `protobuf:"bytes,1,rep,name=apps,proto3" json:"apps,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAppsResponse) Reset() {
+	*x = ListAppsResponse{}
+	mi := &file_idb_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAppsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAppsResponse) ProtoMessage() {}
+
+func (x *ListAppsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_idb_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAppsResponse.ProtoReflect.Descriptor instead.
+func (*ListAppsResponse) Descriptor() ([]byte, []int) {
+	return file_idb_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ListAppsResponse) GetApps() []*InstalledAppInfo {
+	if x != nil {
+		return x.Apps
+	}
+	return nil
+}
+
+type InstalledAppInfo struct {
+	state             protoimpl.MessageState           `protogen:"open.v1"`
+	BundleId          string                           `protobuf:"bytes,1,opt,name=bundle_id,json=bundleId,proto3" json:"bundle_id,omitempty"`
+	Name              string                           `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Architectures     []string                         `protobuf:"bytes,3,rep,name=architectures,proto3" json:"architectures,omitempty"`
+	InstallType       string                           `protobuf:"bytes,4,opt,name=install_type,json=installType,proto3" json:"install_type,omitempty"`
+	ProcessState      InstalledAppInfo_AppProcessState `protobuf:"varint,5,opt,name=process_state,json=processState,proto3,enum=idb.InstalledAppInfo_AppProcessState" json:"process_state,omitempty"`
+	Debuggable        bool                             `protobuf:"varint,6,opt,name=debuggable,proto3" json:"debuggable,omitempty"`
+	ProcessIdentifier uint64                           `protobuf:"varint,7,opt,name=process_identifier,json=processIdentifier,proto3" json:"process_identifier,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *InstalledAppInfo) Reset() {
+	*x = InstalledAppInfo{}
+	mi := &file_idb_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InstalledAppInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InstalledAppInfo) ProtoMessage() {}
+
+func (x *InstalledAppInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_idb_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InstalledAppInfo.ProtoReflect.Descriptor instead.
+func (*InstalledAppInfo) Descriptor() ([]byte, []int) {
+	return file_idb_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *InstalledAppInfo) GetBundleId() string {
+	if x != nil {
+		return x.BundleId
+	}
+	return ""
+}
+
+func (x *InstalledAppInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *InstalledAppInfo) GetArchitectures() []string {
+	if x != nil {
+		return x.Architectures
+	}
+	return nil
+}
+
+func (x *InstalledAppInfo) GetInstallType() string {
+	if x != nil {
+		return x.InstallType
+	}
+	return ""
+}
+
+func (x *InstalledAppInfo) GetProcessState() InstalledAppInfo_AppProcessState {
+	if x != nil {
+		return x.ProcessState
+	}
+	return InstalledAppInfo_UNKNOWN
+}
+
+func (x *InstalledAppInfo) GetDebuggable() bool {
+	if x != nil {
+		return x.Debuggable
+	}
+	return false
+}
+
+func (x *InstalledAppInfo) GetProcessIdentifier() uint64 {
+	if x != nil {
+		return x.ProcessIdentifier
+	}
+	return 0
+}
+
+type AccessibilityInfoRequest struct {
+	state  protoimpl.MessageState          `protogen:"open.v1"`
+	Point  *Point                          `protobuf:"bytes,2,opt,name=point,proto3" json:"point,omitempty"`
+	Format AccessibilityInfoRequest_Format `protobuf:"varint,3,opt,name=format,proto3,enum=idb.AccessibilityInfoRequest_Format" json:"format,omitempty"`
+	Depth  uint32                          `protobuf:"varint,6,opt,name=depth,proto3" json:"depth,omitempty"`
+	// Restricts the described accessibility keys to this set; an empty list
+	// returns the default key set.
+	Keys          []string                         `protobuf:"bytes,7,rep,name=keys,proto3" json:"keys,omitempty"`
+	Backend       AccessibilityInfoRequest_Backend `protobuf:"varint,8,opt,name=backend,proto3,enum=idb.AccessibilityInfoRequest_Backend" json:"backend,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccessibilityInfoRequest) Reset() {
+	*x = AccessibilityInfoRequest{}
+	mi := &file_idb_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccessibilityInfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccessibilityInfoRequest) ProtoMessage() {}
+
+func (x *AccessibilityInfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_idb_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccessibilityInfoRequest.ProtoReflect.Descriptor instead.
+func (*AccessibilityInfoRequest) Descriptor() ([]byte, []int) {
+	return file_idb_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *AccessibilityInfoRequest) GetPoint() *Point {
+	if x != nil {
+		return x.Point
+	}
+	return nil
+}
+
+func (x *AccessibilityInfoRequest) GetFormat() AccessibilityInfoRequest_Format {
+	if x != nil {
+		return x.Format
+	}
+	return AccessibilityInfoRequest_LEGACY
+}
+
+func (x *AccessibilityInfoRequest) GetDepth() uint32 {
+	if x != nil {
+		return x.Depth
+	}
+	return 0
+}
+
+func (x *AccessibilityInfoRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+func (x *AccessibilityInfoRequest) GetBackend() AccessibilityInfoRequest_Backend {
+	if x != nil {
+		return x.Backend
+	}
+	return AccessibilityInfoRequest_BACKEND_UNSPECIFIED
+}
+
+type AccessibilityInfoResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Json          string                 `protobuf:"bytes,1,opt,name=json,proto3" json:"json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccessibilityInfoResponse) Reset() {
+	*x = AccessibilityInfoResponse{}
+	mi := &file_idb_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccessibilityInfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccessibilityInfoResponse) ProtoMessage() {}
+
+func (x *AccessibilityInfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_idb_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccessibilityInfoResponse.ProtoReflect.Descriptor instead.
+func (*AccessibilityInfoResponse) Descriptor() ([]byte, []int) {
+	return file_idb_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *AccessibilityInfoResponse) GetJson() string {
+	if x != nil {
+		return x.Json
+	}
+	return ""
 }
 
 type Payload struct {
@@ -216,7 +668,7 @@ type Payload struct {
 
 func (x *Payload) Reset() {
 	*x = Payload{}
-	mi := &file_idb_proto_msgTypes[0]
+	mi := &file_idb_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -228,7 +680,7 @@ func (x *Payload) String() string {
 func (*Payload) ProtoMessage() {}
 
 func (x *Payload) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[0]
+	mi := &file_idb_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -241,7 +693,7 @@ func (x *Payload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Payload.ProtoReflect.Descriptor instead.
 func (*Payload) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{0}
+	return file_idb_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Payload) GetSource() isPayload_Source {
@@ -310,7 +762,7 @@ type Point struct {
 
 func (x *Point) Reset() {
 	*x = Point{}
-	mi := &file_idb_proto_msgTypes[1]
+	mi := &file_idb_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -322,7 +774,7 @@ func (x *Point) String() string {
 func (*Point) ProtoMessage() {}
 
 func (x *Point) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[1]
+	mi := &file_idb_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -335,7 +787,7 @@ func (x *Point) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Point.ProtoReflect.Descriptor instead.
 func (*Point) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{1}
+	return file_idb_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Point) GetX() float64 {
@@ -361,7 +813,7 @@ type TargetDescriptionRequest struct {
 
 func (x *TargetDescriptionRequest) Reset() {
 	*x = TargetDescriptionRequest{}
-	mi := &file_idb_proto_msgTypes[2]
+	mi := &file_idb_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -373,7 +825,7 @@ func (x *TargetDescriptionRequest) String() string {
 func (*TargetDescriptionRequest) ProtoMessage() {}
 
 func (x *TargetDescriptionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[2]
+	mi := &file_idb_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -386,7 +838,7 @@ func (x *TargetDescriptionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TargetDescriptionRequest.ProtoReflect.Descriptor instead.
 func (*TargetDescriptionRequest) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{2}
+	return file_idb_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TargetDescriptionRequest) GetFetchDiagnostics() bool {
@@ -405,7 +857,7 @@ type TargetDescriptionResponse struct {
 
 func (x *TargetDescriptionResponse) Reset() {
 	*x = TargetDescriptionResponse{}
-	mi := &file_idb_proto_msgTypes[3]
+	mi := &file_idb_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -417,7 +869,7 @@ func (x *TargetDescriptionResponse) String() string {
 func (*TargetDescriptionResponse) ProtoMessage() {}
 
 func (x *TargetDescriptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[3]
+	mi := &file_idb_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -430,7 +882,7 @@ func (x *TargetDescriptionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TargetDescriptionResponse.ProtoReflect.Descriptor instead.
 func (*TargetDescriptionResponse) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{3}
+	return file_idb_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *TargetDescriptionResponse) GetTargetDescription() *TargetDescription {
@@ -454,7 +906,7 @@ type HIDEvent struct {
 
 func (x *HIDEvent) Reset() {
 	*x = HIDEvent{}
-	mi := &file_idb_proto_msgTypes[4]
+	mi := &file_idb_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -466,7 +918,7 @@ func (x *HIDEvent) String() string {
 func (*HIDEvent) ProtoMessage() {}
 
 func (x *HIDEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[4]
+	mi := &file_idb_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -479,7 +931,7 @@ func (x *HIDEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIDEvent.ProtoReflect.Descriptor instead.
 func (*HIDEvent) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4}
+	return file_idb_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *HIDEvent) GetEvent() isHIDEvent_Event {
@@ -546,7 +998,7 @@ type HIDResponse struct {
 
 func (x *HIDResponse) Reset() {
 	*x = HIDResponse{}
-	mi := &file_idb_proto_msgTypes[5]
+	mi := &file_idb_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -558,7 +1010,7 @@ func (x *HIDResponse) String() string {
 func (*HIDResponse) ProtoMessage() {}
 
 func (x *HIDResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[5]
+	mi := &file_idb_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -571,7 +1023,7 @@ func (x *HIDResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIDResponse.ProtoReflect.Descriptor instead.
 func (*HIDResponse) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{5}
+	return file_idb_proto_rawDescGZIP(), []int{10}
 }
 
 type ScreenDimensions struct {
@@ -587,7 +1039,7 @@ type ScreenDimensions struct {
 
 func (x *ScreenDimensions) Reset() {
 	*x = ScreenDimensions{}
-	mi := &file_idb_proto_msgTypes[6]
+	mi := &file_idb_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -599,7 +1051,7 @@ func (x *ScreenDimensions) String() string {
 func (*ScreenDimensions) ProtoMessage() {}
 
 func (x *ScreenDimensions) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[6]
+	mi := &file_idb_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -612,7 +1064,7 @@ func (x *ScreenDimensions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScreenDimensions.ProtoReflect.Descriptor instead.
 func (*ScreenDimensions) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{6}
+	return file_idb_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ScreenDimensions) GetWidth() uint64 {
@@ -664,7 +1116,7 @@ type TargetDescription struct {
 
 func (x *TargetDescription) Reset() {
 	*x = TargetDescription{}
-	mi := &file_idb_proto_msgTypes[7]
+	mi := &file_idb_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -676,7 +1128,7 @@ func (x *TargetDescription) String() string {
 func (*TargetDescription) ProtoMessage() {}
 
 func (x *TargetDescription) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[7]
+	mi := &file_idb_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -689,7 +1141,7 @@ func (x *TargetDescription) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TargetDescription.ProtoReflect.Descriptor instead.
 func (*TargetDescription) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{7}
+	return file_idb_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *TargetDescription) GetUdid() string {
@@ -747,7 +1199,7 @@ type VideoStreamRequest struct {
 
 func (x *VideoStreamRequest) Reset() {
 	*x = VideoStreamRequest{}
-	mi := &file_idb_proto_msgTypes[8]
+	mi := &file_idb_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -759,7 +1211,7 @@ func (x *VideoStreamRequest) String() string {
 func (*VideoStreamRequest) ProtoMessage() {}
 
 func (x *VideoStreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[8]
+	mi := &file_idb_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -772,7 +1224,7 @@ func (x *VideoStreamRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VideoStreamRequest.ProtoReflect.Descriptor instead.
 func (*VideoStreamRequest) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{8}
+	return file_idb_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *VideoStreamRequest) GetControl() isVideoStreamRequest_Control {
@@ -829,7 +1281,7 @@ type VideoStreamResponse struct {
 
 func (x *VideoStreamResponse) Reset() {
 	*x = VideoStreamResponse{}
-	mi := &file_idb_proto_msgTypes[9]
+	mi := &file_idb_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -841,7 +1293,7 @@ func (x *VideoStreamResponse) String() string {
 func (*VideoStreamResponse) ProtoMessage() {}
 
 func (x *VideoStreamResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[9]
+	mi := &file_idb_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -854,7 +1306,7 @@ func (x *VideoStreamResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VideoStreamResponse.ProtoReflect.Descriptor instead.
 func (*VideoStreamResponse) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{9}
+	return file_idb_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *VideoStreamResponse) GetOutput() isVideoStreamResponse_Output {
@@ -907,7 +1359,7 @@ type HIDEvent_HIDTouch struct {
 
 func (x *HIDEvent_HIDTouch) Reset() {
 	*x = HIDEvent_HIDTouch{}
-	mi := &file_idb_proto_msgTypes[10]
+	mi := &file_idb_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -919,7 +1371,7 @@ func (x *HIDEvent_HIDTouch) String() string {
 func (*HIDEvent_HIDTouch) ProtoMessage() {}
 
 func (x *HIDEvent_HIDTouch) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[10]
+	mi := &file_idb_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -932,7 +1384,7 @@ func (x *HIDEvent_HIDTouch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIDEvent_HIDTouch.ProtoReflect.Descriptor instead.
 func (*HIDEvent_HIDTouch) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4, 0}
+	return file_idb_proto_rawDescGZIP(), []int{9, 0}
 }
 
 func (x *HIDEvent_HIDTouch) GetPoint() *Point {
@@ -951,7 +1403,7 @@ type HIDEvent_HIDButton struct {
 
 func (x *HIDEvent_HIDButton) Reset() {
 	*x = HIDEvent_HIDButton{}
-	mi := &file_idb_proto_msgTypes[11]
+	mi := &file_idb_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -963,7 +1415,7 @@ func (x *HIDEvent_HIDButton) String() string {
 func (*HIDEvent_HIDButton) ProtoMessage() {}
 
 func (x *HIDEvent_HIDButton) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[11]
+	mi := &file_idb_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -976,7 +1428,7 @@ func (x *HIDEvent_HIDButton) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIDEvent_HIDButton.ProtoReflect.Descriptor instead.
 func (*HIDEvent_HIDButton) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4, 1}
+	return file_idb_proto_rawDescGZIP(), []int{9, 1}
 }
 
 func (x *HIDEvent_HIDButton) GetButton() HIDEvent_HIDButtonType {
@@ -995,7 +1447,7 @@ type HIDEvent_HIDKey struct {
 
 func (x *HIDEvent_HIDKey) Reset() {
 	*x = HIDEvent_HIDKey{}
-	mi := &file_idb_proto_msgTypes[12]
+	mi := &file_idb_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1007,7 +1459,7 @@ func (x *HIDEvent_HIDKey) String() string {
 func (*HIDEvent_HIDKey) ProtoMessage() {}
 
 func (x *HIDEvent_HIDKey) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[12]
+	mi := &file_idb_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1020,7 +1472,7 @@ func (x *HIDEvent_HIDKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIDEvent_HIDKey.ProtoReflect.Descriptor instead.
 func (*HIDEvent_HIDKey) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4, 2}
+	return file_idb_proto_rawDescGZIP(), []int{9, 2}
 }
 
 func (x *HIDEvent_HIDKey) GetKeycode() uint64 {
@@ -1044,7 +1496,7 @@ type HIDEvent_HIDPressAction struct {
 
 func (x *HIDEvent_HIDPressAction) Reset() {
 	*x = HIDEvent_HIDPressAction{}
-	mi := &file_idb_proto_msgTypes[13]
+	mi := &file_idb_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1056,7 +1508,7 @@ func (x *HIDEvent_HIDPressAction) String() string {
 func (*HIDEvent_HIDPressAction) ProtoMessage() {}
 
 func (x *HIDEvent_HIDPressAction) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[13]
+	mi := &file_idb_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1069,7 +1521,7 @@ func (x *HIDEvent_HIDPressAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIDEvent_HIDPressAction.ProtoReflect.Descriptor instead.
 func (*HIDEvent_HIDPressAction) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4, 3}
+	return file_idb_proto_rawDescGZIP(), []int{9, 3}
 }
 
 func (x *HIDEvent_HIDPressAction) GetAction() isHIDEvent_HIDPressAction_Action {
@@ -1138,7 +1590,7 @@ type HIDEvent_HIDPress struct {
 
 func (x *HIDEvent_HIDPress) Reset() {
 	*x = HIDEvent_HIDPress{}
-	mi := &file_idb_proto_msgTypes[14]
+	mi := &file_idb_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1150,7 +1602,7 @@ func (x *HIDEvent_HIDPress) String() string {
 func (*HIDEvent_HIDPress) ProtoMessage() {}
 
 func (x *HIDEvent_HIDPress) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[14]
+	mi := &file_idb_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1163,7 +1615,7 @@ func (x *HIDEvent_HIDPress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIDEvent_HIDPress.ProtoReflect.Descriptor instead.
 func (*HIDEvent_HIDPress) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4, 4}
+	return file_idb_proto_rawDescGZIP(), []int{9, 4}
 }
 
 func (x *HIDEvent_HIDPress) GetAction() *HIDEvent_HIDPressAction {
@@ -1192,7 +1644,7 @@ type HIDEvent_HIDSwipe struct {
 
 func (x *HIDEvent_HIDSwipe) Reset() {
 	*x = HIDEvent_HIDSwipe{}
-	mi := &file_idb_proto_msgTypes[15]
+	mi := &file_idb_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1204,7 +1656,7 @@ func (x *HIDEvent_HIDSwipe) String() string {
 func (*HIDEvent_HIDSwipe) ProtoMessage() {}
 
 func (x *HIDEvent_HIDSwipe) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[15]
+	mi := &file_idb_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1217,7 +1669,7 @@ func (x *HIDEvent_HIDSwipe) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIDEvent_HIDSwipe.ProtoReflect.Descriptor instead.
 func (*HIDEvent_HIDSwipe) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4, 5}
+	return file_idb_proto_rawDescGZIP(), []int{9, 5}
 }
 
 func (x *HIDEvent_HIDSwipe) GetStart() *Point {
@@ -1257,7 +1709,7 @@ type HIDEvent_HIDDelay struct {
 
 func (x *HIDEvent_HIDDelay) Reset() {
 	*x = HIDEvent_HIDDelay{}
-	mi := &file_idb_proto_msgTypes[16]
+	mi := &file_idb_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1269,7 +1721,7 @@ func (x *HIDEvent_HIDDelay) String() string {
 func (*HIDEvent_HIDDelay) ProtoMessage() {}
 
 func (x *HIDEvent_HIDDelay) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[16]
+	mi := &file_idb_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1282,7 +1734,7 @@ func (x *HIDEvent_HIDDelay) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIDEvent_HIDDelay.ProtoReflect.Descriptor instead.
 func (*HIDEvent_HIDDelay) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{4, 6}
+	return file_idb_proto_rawDescGZIP(), []int{9, 6}
 }
 
 func (x *HIDEvent_HIDDelay) GetDuration() float64 {
@@ -1307,7 +1759,7 @@ type VideoStreamRequest_Start struct {
 
 func (x *VideoStreamRequest_Start) Reset() {
 	*x = VideoStreamRequest_Start{}
-	mi := &file_idb_proto_msgTypes[17]
+	mi := &file_idb_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1319,7 +1771,7 @@ func (x *VideoStreamRequest_Start) String() string {
 func (*VideoStreamRequest_Start) ProtoMessage() {}
 
 func (x *VideoStreamRequest_Start) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[17]
+	mi := &file_idb_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1332,7 +1784,7 @@ func (x *VideoStreamRequest_Start) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VideoStreamRequest_Start.ProtoReflect.Descriptor instead.
 func (*VideoStreamRequest_Start) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{8, 0}
+	return file_idb_proto_rawDescGZIP(), []int{13, 0}
 }
 
 func (x *VideoStreamRequest_Start) GetFilePath() string {
@@ -1392,7 +1844,7 @@ type VideoStreamRequest_Stop struct {
 
 func (x *VideoStreamRequest_Stop) Reset() {
 	*x = VideoStreamRequest_Stop{}
-	mi := &file_idb_proto_msgTypes[18]
+	mi := &file_idb_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1404,7 +1856,7 @@ func (x *VideoStreamRequest_Stop) String() string {
 func (*VideoStreamRequest_Stop) ProtoMessage() {}
 
 func (x *VideoStreamRequest_Stop) ProtoReflect() protoreflect.Message {
-	mi := &file_idb_proto_msgTypes[18]
+	mi := &file_idb_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1417,14 +1869,52 @@ func (x *VideoStreamRequest_Stop) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VideoStreamRequest_Stop.ProtoReflect.Descriptor instead.
 func (*VideoStreamRequest_Stop) Descriptor() ([]byte, []int) {
-	return file_idb_proto_rawDescGZIP(), []int{8, 1}
+	return file_idb_proto_rawDescGZIP(), []int{13, 1}
 }
 
 var File_idb_proto protoreflect.FileDescriptor
 
 const file_idb_proto_rawDesc = "" +
 	"\n" +
-	"\tidb.proto\x12\x03idb\"\\\n" +
+	"\tidb.proto\x12\x03idb\"G\n" +
+	"\x0fListAppsRequest\x124\n" +
+	"\x16suppress_process_state\x18\x01 \x01(\bR\x14suppressProcessState\"=\n" +
+	"\x10ListAppsResponse\x12)\n" +
+	"\x04apps\x18\x01 \x03(\v2\x15.idb.InstalledAppInfoR\x04apps\"\xe5\x02\n" +
+	"\x10InstalledAppInfo\x12\x1b\n" +
+	"\tbundle_id\x18\x01 \x01(\tR\bbundleId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12$\n" +
+	"\rarchitectures\x18\x03 \x03(\tR\rarchitectures\x12!\n" +
+	"\finstall_type\x18\x04 \x01(\tR\vinstallType\x12J\n" +
+	"\rprocess_state\x18\x05 \x01(\x0e2%.idb.InstalledAppInfo.AppProcessStateR\fprocessState\x12\x1e\n" +
+	"\n" +
+	"debuggable\x18\x06 \x01(\bR\n" +
+	"debuggable\x12-\n" +
+	"\x12process_identifier\x18\a \x01(\x04R\x11processIdentifier\"<\n" +
+	"\x0fAppProcessState\x12\v\n" +
+	"\aUNKNOWN\x10\x00\x12\x0f\n" +
+	"\vNOT_RUNNING\x10\x01\x12\v\n" +
+	"\aRUNNING\x10\x02\"\xe8\x02\n" +
+	"\x18AccessibilityInfoRequest\x12 \n" +
+	"\x05point\x18\x02 \x01(\v2\n" +
+	".idb.PointR\x05point\x12<\n" +
+	"\x06format\x18\x03 \x01(\x0e2$.idb.AccessibilityInfoRequest.FormatR\x06format\x12\x14\n" +
+	"\x05depth\x18\x06 \x01(\rR\x05depth\x12\x12\n" +
+	"\x04keys\x18\a \x03(\tR\x04keys\x12?\n" +
+	"\abackend\x18\b \x01(\x0e2%.idb.AccessibilityInfoRequest.BackendR\abackend\".\n" +
+	"\x06Format\x12\n" +
+	"\n" +
+	"\x06LEGACY\x10\x00\x12\n" +
+	"\n" +
+	"\x06NESTED\x10\x01\x12\f\n" +
+	"\bCOMPLETE\x10\x02\"Q\n" +
+	"\aBackend\x12\x17\n" +
+	"\x13BACKEND_UNSPECIFIED\x10\x00\x12\x06\n" +
+	"\x02AX\x10\x01\x12\f\n" +
+	"\bAXBRIDGE\x10\x02\x12\x17\n" +
+	"\x13AXBRIDGE_PERSISTENT\x10\x03\"/\n" +
+	"\x19AccessibilityInfoResponse\x12\x12\n" +
+	"\x04json\x18\x01 \x01(\tR\x04json\"\\\n" +
 	"\aPayload\x12\x1d\n" +
 	"\tfile_path\x18\x01 \x01(\tH\x00R\bfilePath\x12\x14\n" +
 	"\x04data\x18\x02 \x01(\fH\x00R\x04data\x12\x12\n" +
@@ -1520,11 +2010,13 @@ const file_idb_proto_rawDesc = "" +
 	"\n" +
 	"log_output\x18\x01 \x01(\fH\x00R\tlogOutput\x12(\n" +
 	"\apayload\x18\x02 \x01(\v2\f.idb.PayloadH\x00R\apayloadB\b\n" +
-	"\x06output2\xd4\x01\n" +
+	"\x06output2\xe7\x02\n" +
 	"\x10CompanionService\x12K\n" +
 	"\bdescribe\x12\x1d.idb.TargetDescriptionRequest\x1a\x1e.idb.TargetDescriptionResponse\"\x00\x12*\n" +
 	"\x03hid\x12\r.idb.HIDEvent\x1a\x10.idb.HIDResponse\"\x00(\x01\x12G\n" +
-	"\fvideo_stream\x12\x17.idb.VideoStreamRequest\x1a\x18.idb.VideoStreamResponse\"\x00(\x010\x01B:Z8github.com/obutora/stagent/internal/hostscreen/ios/idbpbb\x06proto3"
+	"\fvideo_stream\x12\x17.idb.VideoStreamRequest\x1a\x18.idb.VideoStreamResponse\"\x00(\x010\x01\x12U\n" +
+	"\x12accessibility_info\x12\x1d.idb.AccessibilityInfoRequest\x1a\x1e.idb.AccessibilityInfoResponse\"\x00\x12:\n" +
+	"\tlist_apps\x12\x14.idb.ListAppsRequest\x1a\x15.idb.ListAppsResponse\"\x00B:Z8github.com/obutora/stagent/internal/hostscreen/ios/idbpbb\x06proto3"
 
 var (
 	file_idb_proto_rawDescOnce sync.Once
@@ -1538,62 +2030,79 @@ func file_idb_proto_rawDescGZIP() []byte {
 	return file_idb_proto_rawDescData
 }
 
-var file_idb_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_idb_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_idb_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_idb_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_idb_proto_goTypes = []any{
-	(HIDEvent_HIDDirection)(0),        // 0: idb.HIDEvent.HIDDirection
-	(HIDEvent_HIDButtonType)(0),       // 1: idb.HIDEvent.HIDButtonType
-	(VideoStreamRequest_Format)(0),    // 2: idb.VideoStreamRequest.Format
-	(*Payload)(nil),                   // 3: idb.Payload
-	(*Point)(nil),                     // 4: idb.Point
-	(*TargetDescriptionRequest)(nil),  // 5: idb.TargetDescriptionRequest
-	(*TargetDescriptionResponse)(nil), // 6: idb.TargetDescriptionResponse
-	(*HIDEvent)(nil),                  // 7: idb.HIDEvent
-	(*HIDResponse)(nil),               // 8: idb.HIDResponse
-	(*ScreenDimensions)(nil),          // 9: idb.ScreenDimensions
-	(*TargetDescription)(nil),         // 10: idb.TargetDescription
-	(*VideoStreamRequest)(nil),        // 11: idb.VideoStreamRequest
-	(*VideoStreamResponse)(nil),       // 12: idb.VideoStreamResponse
-	(*HIDEvent_HIDTouch)(nil),         // 13: idb.HIDEvent.HIDTouch
-	(*HIDEvent_HIDButton)(nil),        // 14: idb.HIDEvent.HIDButton
-	(*HIDEvent_HIDKey)(nil),           // 15: idb.HIDEvent.HIDKey
-	(*HIDEvent_HIDPressAction)(nil),   // 16: idb.HIDEvent.HIDPressAction
-	(*HIDEvent_HIDPress)(nil),         // 17: idb.HIDEvent.HIDPress
-	(*HIDEvent_HIDSwipe)(nil),         // 18: idb.HIDEvent.HIDSwipe
-	(*HIDEvent_HIDDelay)(nil),         // 19: idb.HIDEvent.HIDDelay
-	(*VideoStreamRequest_Start)(nil),  // 20: idb.VideoStreamRequest.Start
-	(*VideoStreamRequest_Stop)(nil),   // 21: idb.VideoStreamRequest.Stop
+	(InstalledAppInfo_AppProcessState)(0), // 0: idb.InstalledAppInfo.AppProcessState
+	(AccessibilityInfoRequest_Format)(0),  // 1: idb.AccessibilityInfoRequest.Format
+	(AccessibilityInfoRequest_Backend)(0), // 2: idb.AccessibilityInfoRequest.Backend
+	(HIDEvent_HIDDirection)(0),            // 3: idb.HIDEvent.HIDDirection
+	(HIDEvent_HIDButtonType)(0),           // 4: idb.HIDEvent.HIDButtonType
+	(VideoStreamRequest_Format)(0),        // 5: idb.VideoStreamRequest.Format
+	(*ListAppsRequest)(nil),               // 6: idb.ListAppsRequest
+	(*ListAppsResponse)(nil),              // 7: idb.ListAppsResponse
+	(*InstalledAppInfo)(nil),              // 8: idb.InstalledAppInfo
+	(*AccessibilityInfoRequest)(nil),      // 9: idb.AccessibilityInfoRequest
+	(*AccessibilityInfoResponse)(nil),     // 10: idb.AccessibilityInfoResponse
+	(*Payload)(nil),                       // 11: idb.Payload
+	(*Point)(nil),                         // 12: idb.Point
+	(*TargetDescriptionRequest)(nil),      // 13: idb.TargetDescriptionRequest
+	(*TargetDescriptionResponse)(nil),     // 14: idb.TargetDescriptionResponse
+	(*HIDEvent)(nil),                      // 15: idb.HIDEvent
+	(*HIDResponse)(nil),                   // 16: idb.HIDResponse
+	(*ScreenDimensions)(nil),              // 17: idb.ScreenDimensions
+	(*TargetDescription)(nil),             // 18: idb.TargetDescription
+	(*VideoStreamRequest)(nil),            // 19: idb.VideoStreamRequest
+	(*VideoStreamResponse)(nil),           // 20: idb.VideoStreamResponse
+	(*HIDEvent_HIDTouch)(nil),             // 21: idb.HIDEvent.HIDTouch
+	(*HIDEvent_HIDButton)(nil),            // 22: idb.HIDEvent.HIDButton
+	(*HIDEvent_HIDKey)(nil),               // 23: idb.HIDEvent.HIDKey
+	(*HIDEvent_HIDPressAction)(nil),       // 24: idb.HIDEvent.HIDPressAction
+	(*HIDEvent_HIDPress)(nil),             // 25: idb.HIDEvent.HIDPress
+	(*HIDEvent_HIDSwipe)(nil),             // 26: idb.HIDEvent.HIDSwipe
+	(*HIDEvent_HIDDelay)(nil),             // 27: idb.HIDEvent.HIDDelay
+	(*VideoStreamRequest_Start)(nil),      // 28: idb.VideoStreamRequest.Start
+	(*VideoStreamRequest_Stop)(nil),       // 29: idb.VideoStreamRequest.Stop
 }
 var file_idb_proto_depIdxs = []int32{
-	10, // 0: idb.TargetDescriptionResponse.target_description:type_name -> idb.TargetDescription
-	17, // 1: idb.HIDEvent.press:type_name -> idb.HIDEvent.HIDPress
-	18, // 2: idb.HIDEvent.swipe:type_name -> idb.HIDEvent.HIDSwipe
-	19, // 3: idb.HIDEvent.delay:type_name -> idb.HIDEvent.HIDDelay
-	9,  // 4: idb.TargetDescription.screen_dimensions:type_name -> idb.ScreenDimensions
-	20, // 5: idb.VideoStreamRequest.start:type_name -> idb.VideoStreamRequest.Start
-	21, // 6: idb.VideoStreamRequest.stop:type_name -> idb.VideoStreamRequest.Stop
-	3,  // 7: idb.VideoStreamResponse.payload:type_name -> idb.Payload
-	4,  // 8: idb.HIDEvent.HIDTouch.point:type_name -> idb.Point
-	1,  // 9: idb.HIDEvent.HIDButton.button:type_name -> idb.HIDEvent.HIDButtonType
-	13, // 10: idb.HIDEvent.HIDPressAction.touch:type_name -> idb.HIDEvent.HIDTouch
-	14, // 11: idb.HIDEvent.HIDPressAction.button:type_name -> idb.HIDEvent.HIDButton
-	15, // 12: idb.HIDEvent.HIDPressAction.key:type_name -> idb.HIDEvent.HIDKey
-	16, // 13: idb.HIDEvent.HIDPress.action:type_name -> idb.HIDEvent.HIDPressAction
-	0,  // 14: idb.HIDEvent.HIDPress.direction:type_name -> idb.HIDEvent.HIDDirection
-	4,  // 15: idb.HIDEvent.HIDSwipe.start:type_name -> idb.Point
-	4,  // 16: idb.HIDEvent.HIDSwipe.end:type_name -> idb.Point
-	2,  // 17: idb.VideoStreamRequest.Start.format:type_name -> idb.VideoStreamRequest.Format
-	5,  // 18: idb.CompanionService.describe:input_type -> idb.TargetDescriptionRequest
-	7,  // 19: idb.CompanionService.hid:input_type -> idb.HIDEvent
-	11, // 20: idb.CompanionService.video_stream:input_type -> idb.VideoStreamRequest
-	6,  // 21: idb.CompanionService.describe:output_type -> idb.TargetDescriptionResponse
-	8,  // 22: idb.CompanionService.hid:output_type -> idb.HIDResponse
-	12, // 23: idb.CompanionService.video_stream:output_type -> idb.VideoStreamResponse
-	21, // [21:24] is the sub-list for method output_type
-	18, // [18:21] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	8,  // 0: idb.ListAppsResponse.apps:type_name -> idb.InstalledAppInfo
+	0,  // 1: idb.InstalledAppInfo.process_state:type_name -> idb.InstalledAppInfo.AppProcessState
+	12, // 2: idb.AccessibilityInfoRequest.point:type_name -> idb.Point
+	1,  // 3: idb.AccessibilityInfoRequest.format:type_name -> idb.AccessibilityInfoRequest.Format
+	2,  // 4: idb.AccessibilityInfoRequest.backend:type_name -> idb.AccessibilityInfoRequest.Backend
+	18, // 5: idb.TargetDescriptionResponse.target_description:type_name -> idb.TargetDescription
+	25, // 6: idb.HIDEvent.press:type_name -> idb.HIDEvent.HIDPress
+	26, // 7: idb.HIDEvent.swipe:type_name -> idb.HIDEvent.HIDSwipe
+	27, // 8: idb.HIDEvent.delay:type_name -> idb.HIDEvent.HIDDelay
+	17, // 9: idb.TargetDescription.screen_dimensions:type_name -> idb.ScreenDimensions
+	28, // 10: idb.VideoStreamRequest.start:type_name -> idb.VideoStreamRequest.Start
+	29, // 11: idb.VideoStreamRequest.stop:type_name -> idb.VideoStreamRequest.Stop
+	11, // 12: idb.VideoStreamResponse.payload:type_name -> idb.Payload
+	12, // 13: idb.HIDEvent.HIDTouch.point:type_name -> idb.Point
+	4,  // 14: idb.HIDEvent.HIDButton.button:type_name -> idb.HIDEvent.HIDButtonType
+	21, // 15: idb.HIDEvent.HIDPressAction.touch:type_name -> idb.HIDEvent.HIDTouch
+	22, // 16: idb.HIDEvent.HIDPressAction.button:type_name -> idb.HIDEvent.HIDButton
+	23, // 17: idb.HIDEvent.HIDPressAction.key:type_name -> idb.HIDEvent.HIDKey
+	24, // 18: idb.HIDEvent.HIDPress.action:type_name -> idb.HIDEvent.HIDPressAction
+	3,  // 19: idb.HIDEvent.HIDPress.direction:type_name -> idb.HIDEvent.HIDDirection
+	12, // 20: idb.HIDEvent.HIDSwipe.start:type_name -> idb.Point
+	12, // 21: idb.HIDEvent.HIDSwipe.end:type_name -> idb.Point
+	5,  // 22: idb.VideoStreamRequest.Start.format:type_name -> idb.VideoStreamRequest.Format
+	13, // 23: idb.CompanionService.describe:input_type -> idb.TargetDescriptionRequest
+	15, // 24: idb.CompanionService.hid:input_type -> idb.HIDEvent
+	19, // 25: idb.CompanionService.video_stream:input_type -> idb.VideoStreamRequest
+	9,  // 26: idb.CompanionService.accessibility_info:input_type -> idb.AccessibilityInfoRequest
+	6,  // 27: idb.CompanionService.list_apps:input_type -> idb.ListAppsRequest
+	14, // 28: idb.CompanionService.describe:output_type -> idb.TargetDescriptionResponse
+	16, // 29: idb.CompanionService.hid:output_type -> idb.HIDResponse
+	20, // 30: idb.CompanionService.video_stream:output_type -> idb.VideoStreamResponse
+	10, // 31: idb.CompanionService.accessibility_info:output_type -> idb.AccessibilityInfoResponse
+	7,  // 32: idb.CompanionService.list_apps:output_type -> idb.ListAppsResponse
+	28, // [28:33] is the sub-list for method output_type
+	23, // [23:28] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_idb_proto_init() }
@@ -1601,25 +2110,25 @@ func file_idb_proto_init() {
 	if File_idb_proto != nil {
 		return
 	}
-	file_idb_proto_msgTypes[0].OneofWrappers = []any{
+	file_idb_proto_msgTypes[5].OneofWrappers = []any{
 		(*Payload_FilePath)(nil),
 		(*Payload_Data)(nil),
 		(*Payload_Url)(nil),
 	}
-	file_idb_proto_msgTypes[4].OneofWrappers = []any{
+	file_idb_proto_msgTypes[9].OneofWrappers = []any{
 		(*HIDEvent_Press)(nil),
 		(*HIDEvent_Swipe)(nil),
 		(*HIDEvent_Delay)(nil),
 	}
-	file_idb_proto_msgTypes[8].OneofWrappers = []any{
+	file_idb_proto_msgTypes[13].OneofWrappers = []any{
 		(*VideoStreamRequest_Start_)(nil),
 		(*VideoStreamRequest_Stop_)(nil),
 	}
-	file_idb_proto_msgTypes[9].OneofWrappers = []any{
+	file_idb_proto_msgTypes[14].OneofWrappers = []any{
 		(*VideoStreamResponse_LogOutput)(nil),
 		(*VideoStreamResponse_Payload)(nil),
 	}
-	file_idb_proto_msgTypes[13].OneofWrappers = []any{
+	file_idb_proto_msgTypes[18].OneofWrappers = []any{
 		(*HIDEvent_HIDPressAction_Touch)(nil),
 		(*HIDEvent_HIDPressAction_Button)(nil),
 		(*HIDEvent_HIDPressAction_Key)(nil),
@@ -1629,8 +2138,8 @@ func file_idb_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_idb_proto_rawDesc), len(file_idb_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   19,
+			NumEnums:      6,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

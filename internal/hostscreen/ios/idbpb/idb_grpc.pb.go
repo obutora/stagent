@@ -32,9 +32,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	CompanionService_Describe_FullMethodName    = "/idb.CompanionService/describe"
-	CompanionService_Hid_FullMethodName         = "/idb.CompanionService/hid"
-	CompanionService_VideoStream_FullMethodName = "/idb.CompanionService/video_stream"
+	CompanionService_Describe_FullMethodName          = "/idb.CompanionService/describe"
+	CompanionService_Hid_FullMethodName               = "/idb.CompanionService/hid"
+	CompanionService_VideoStream_FullMethodName       = "/idb.CompanionService/video_stream"
+	CompanionService_AccessibilityInfo_FullMethodName = "/idb.CompanionService/accessibility_info"
+	CompanionService_ListApps_FullMethodName          = "/idb.CompanionService/list_apps"
 )
 
 // CompanionServiceClient is the client API for CompanionService service.
@@ -46,6 +48,8 @@ type CompanionServiceClient interface {
 	Describe(ctx context.Context, in *TargetDescriptionRequest, opts ...grpc.CallOption) (*TargetDescriptionResponse, error)
 	Hid(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[HIDEvent, HIDResponse], error)
 	VideoStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[VideoStreamRequest, VideoStreamResponse], error)
+	AccessibilityInfo(ctx context.Context, in *AccessibilityInfoRequest, opts ...grpc.CallOption) (*AccessibilityInfoResponse, error)
+	ListApps(ctx context.Context, in *ListAppsRequest, opts ...grpc.CallOption) (*ListAppsResponse, error)
 }
 
 type companionServiceClient struct {
@@ -92,6 +96,26 @@ func (c *companionServiceClient) VideoStream(ctx context.Context, opts ...grpc.C
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type CompanionService_VideoStreamClient = grpc.BidiStreamingClient[VideoStreamRequest, VideoStreamResponse]
 
+func (c *companionServiceClient) AccessibilityInfo(ctx context.Context, in *AccessibilityInfoRequest, opts ...grpc.CallOption) (*AccessibilityInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AccessibilityInfoResponse)
+	err := c.cc.Invoke(ctx, CompanionService_AccessibilityInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *companionServiceClient) ListApps(ctx context.Context, in *ListAppsRequest, opts ...grpc.CallOption) (*ListAppsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAppsResponse)
+	err := c.cc.Invoke(ctx, CompanionService_ListApps_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CompanionServiceServer is the server API for CompanionService service.
 // All implementations must embed UnimplementedCompanionServiceServer
 // for forward compatibility.
@@ -101,6 +125,8 @@ type CompanionServiceServer interface {
 	Describe(context.Context, *TargetDescriptionRequest) (*TargetDescriptionResponse, error)
 	Hid(grpc.ClientStreamingServer[HIDEvent, HIDResponse]) error
 	VideoStream(grpc.BidiStreamingServer[VideoStreamRequest, VideoStreamResponse]) error
+	AccessibilityInfo(context.Context, *AccessibilityInfoRequest) (*AccessibilityInfoResponse, error)
+	ListApps(context.Context, *ListAppsRequest) (*ListAppsResponse, error)
 	mustEmbedUnimplementedCompanionServiceServer()
 }
 
@@ -119,6 +145,12 @@ func (UnimplementedCompanionServiceServer) Hid(grpc.ClientStreamingServer[HIDEve
 }
 func (UnimplementedCompanionServiceServer) VideoStream(grpc.BidiStreamingServer[VideoStreamRequest, VideoStreamResponse]) error {
 	return status.Error(codes.Unimplemented, "method VideoStream not implemented")
+}
+func (UnimplementedCompanionServiceServer) AccessibilityInfo(context.Context, *AccessibilityInfoRequest) (*AccessibilityInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AccessibilityInfo not implemented")
+}
+func (UnimplementedCompanionServiceServer) ListApps(context.Context, *ListAppsRequest) (*ListAppsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListApps not implemented")
 }
 func (UnimplementedCompanionServiceServer) mustEmbedUnimplementedCompanionServiceServer() {}
 func (UnimplementedCompanionServiceServer) testEmbeddedByValue()                          {}
@@ -173,6 +205,42 @@ func _CompanionService_VideoStream_Handler(srv interface{}, stream grpc.ServerSt
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type CompanionService_VideoStreamServer = grpc.BidiStreamingServer[VideoStreamRequest, VideoStreamResponse]
 
+func _CompanionService_AccessibilityInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AccessibilityInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CompanionServiceServer).AccessibilityInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CompanionService_AccessibilityInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CompanionServiceServer).AccessibilityInfo(ctx, req.(*AccessibilityInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CompanionService_ListApps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAppsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CompanionServiceServer).ListApps(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CompanionService_ListApps_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CompanionServiceServer).ListApps(ctx, req.(*ListAppsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CompanionService_ServiceDesc is the grpc.ServiceDesc for CompanionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -183,6 +251,14 @@ var CompanionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "describe",
 			Handler:    _CompanionService_Describe_Handler,
+		},
+		{
+			MethodName: "accessibility_info",
+			Handler:    _CompanionService_AccessibilityInfo_Handler,
+		},
+		{
+			MethodName: "list_apps",
+			Handler:    _CompanionService_ListApps_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

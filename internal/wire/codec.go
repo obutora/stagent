@@ -73,6 +73,10 @@ const (
 	ErrBusy = "busy"
 	// ErrInUse: another number's in_place task uses that source checkout.
 	ErrInUse = "in_use"
+	// ErrPasteByHand: host_screen.input could not paste a text into an
+	// iOS simulator (its edit menu's Paste was not found); the text is on
+	// the simulator's clipboard for the user to paste.
+	ErrPasteByHand = "paste_by_hand"
 )
 
 // Errorf builds an *Error.

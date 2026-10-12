@@ -132,7 +132,7 @@ func TestRevivingWithoutTheTargetStartsGone(t *testing.T) {
 		t.Fatalf("got %s, want gone at once", got)
 	}
 	var we *wire.Error
-	if err := r.(Inputter).Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap}); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
+	if _, err := r.(Inputter).Input(t.Context(), wire.HostScreenInput{Type: wire.InputTap}); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
 		t.Fatalf("input while gone: %v, want bad_request", err)
 	}
 	s := &fakeStream{}
@@ -155,7 +155,7 @@ func TestRevivingInputGoesToTheCurrentStream(t *testing.T) {
 	defer r.Close()
 	r.Start(newRecorder())
 	tap := wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.5}
-	if err := r.(Inputter).Input(t.Context(), tap); err != nil || len(in.inputs) != 1 {
+	if _, err := r.(Inputter).Input(t.Context(), tap); err != nil || len(in.inputs) != 1 {
 		t.Fatalf("input: %v, handed %d", err, len(in.inputs))
 	}
 	plain := &fakeStream{}
@@ -163,7 +163,7 @@ func TestRevivingInputGoesToTheCurrentStream(t *testing.T) {
 	defer r2.Close()
 	r2.Start(newRecorder())
 	var we *wire.Error
-	if err := r2.(Inputter).Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrUnsupported {
+	if _, err := r2.(Inputter).Input(t.Context(), tap); !errors.As(err, &we) || we.Code != wire.ErrUnsupported {
 		t.Fatalf("input to a stream without inputs: %v, want unsupported", err)
 	}
 }

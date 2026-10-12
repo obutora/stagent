@@ -3,6 +3,40 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.13.0
+
+### Added
+
+- Host screen: an iOS simulator takes `text` of any script, Japanese
+  included (it took ASCII only and answered other text `unsupported`;
+  #649, #665). The text is put on the simulator's clipboard (`xcrun
+  simctl pbcopy`) and pasted by what the app in front may do, read
+  (never written) from the simulator's TCC.db: an app allowed to paste
+  from other apps gets ⌘V, and keys (the Return of `enter`, the next
+  text) wait 3 s after it, while iOS drops them under its "pasted from"
+  banner; otherwise ASCII is typed after the 英数 key (LANG2), and other
+  text is pasted with the edit menu's Paste, opened by tapping the user's
+  cursor (`text` gains `x?`, `y?`). An app that never asked first gets a
+  ⌘V iOS refuses, which shows its 「ほかのアプリからペースト」 in Settings.
+  `host_screen.input` answers such a text `{via: "cmd_v" | "edit_menu" |
+  "keys", app?}`; without the edit menu's Paste it fails with the new
+  error `paste_by_hand`, the text left on the clipboard. The companion
+  gains `accessibility_info` and `list_apps` in stagent's subset of
+  idb.proto.
+
+### Fixed
+
+- Host screen, Android: the discovery file an emulator leaves behind
+  when it stops (`avd/running/pid_<pid>.ini`) is no longer read once its
+  `<pid>` is no running process (signal 0 on Linux and macOS, the
+  process's handle on Windows; the file is left as it is). An emulator
+  started with `-port` only on the serial of such a file was listed
+  `connectable: true` with the file's gRPC port, and `host_screen.start`
+  answered `{}`, then `gone` for good; it is now `no_grpc`. `start` of
+  an emulator whose gRPC does not answer while `adb devices` lists its
+  serial is `unavailable` (`no_grpc`) instead of `{}` and `gone`; one
+  adb does not list still waits for its AVD to run again (#679).
+
 ## 0.12.0
 
 ### Added
