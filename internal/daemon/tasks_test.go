@@ -219,6 +219,54 @@ func TestTaskInPlaceInUse(t *testing.T) {
 	}
 }
 
+func namedTask(repo, name, sessionID string) wire.TaskRegisterParams {
+	return wire.TaskRegisterParams{
+		Repo: repo, Kind: wire.TaskKindName, Name: name, Branch: name, Base: "main",
+		Worktree: filepath.Join(abs("/w/worktrees/repo"), name), SessionID: sessionID,
+	}
+}
+
+// A named task's key is its checkout and name: the same name again is the
+// same task, another name or an issue (whatever its number) another one.
+// A named task has no number and is never in_place; an issue or PR has
+// no name.
+func TestTaskRegisterNamed(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{PrepareGrace: time.Minute})
+	c, _ := e.client()
+	otter := registerTask(t, c, namedTask(abs("/w/repo"), "brave-otter", "00000000000000a1"))
+	if otter.Existed || otter.Task.Kind != wire.TaskKindName || otter.Task.Name != "brave-otter" || otter.Task.Number != 0 ||
+		otter.Task.Worktree != filepath.Join(abs("/w/worktrees/repo"), "brave-otter") {
+		t.Fatalf("named task %+v", otter)
+	}
+	if r := registerTask(t, c, namedTask(abs("/w/repo"), "brave-otter", "00000000000000a2")); !r.Existed || r.Task.ID != otter.Task.ID {
+		t.Fatalf("same name again: %+v", r)
+	}
+	fox := registerTask(t, c, namedTask(abs("/w/repo"), "calm-fox", "00000000000000a3"))
+	elsewhere := registerTask(t, c, namedTask(abs("/w/other"), "brave-otter", "00000000000000a4"))
+	issue := registerTask(t, c, issueTask(abs("/w/repo"), 1, "00000000000000a5"))
+	for _, r := range []wire.TaskRegisterResult{fox, elsewhere, issue} {
+		if r.Existed || r.Task.ID == otter.Task.ID {
+			t.Fatalf("another task: %+v", r)
+		}
+	}
+	if ts := listTasks(t, c); len(ts) != 4 {
+		t.Fatalf("task.list %+v", ts)
+	}
+
+	for _, bad := range []func(*wire.TaskRegisterParams){
+		func(p *wire.TaskRegisterParams) { p.Name = "" },
+		func(p *wire.TaskRegisterParams) { p.Number = 3 },
+		func(p *wire.TaskRegisterParams) { p.InPlace = true },
+		func(p *wire.TaskRegisterParams) { p.Kind = wire.TaskKindIssue; p.Number = 3 },
+	} {
+		p := namedTask(abs("/w/repo"), "lone-wolf", "00000000000000a6")
+		bad(&p)
+		if err := callErr(c, wire.MethodTaskRegister, p, nil); errCode(err) != wire.ErrBadRequest {
+			t.Errorf("%+v: %v, want bad_request", p, err)
+		}
+	}
+}
+
 // A preparing task whose prepared session never registers, or ends, is
 // failed with error interrupted.
 func TestTaskInterrupted(t *testing.T) {

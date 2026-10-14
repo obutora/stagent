@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // slugMax is the longest slug of an issue's default branch.
@@ -88,6 +90,41 @@ func CheckBranch(ctx context.Context, env []string, repo, name string) error {
 		return fmt.Errorf("invalid branch name %q", name)
 	}
 	return nil
+}
+
+// nameMax is the longest name of a named task, in characters.
+const nameMax = 64
+
+// ValidName fails when name cannot be a named task's name: it must be 1–64
+// characters without whitespace, control characters or any of
+// / \ : * ? " < > |, not start with . or -, and be a branch name git
+// takes as it is (`git check-ref-format --branch`, run in the checkout
+// repo, printing it back: @ and @{-N} name other branches). The name is
+// also a directory under the worktree folder and the default branch; the
+// app mirrors all but the git check.
+func ValidName(ctx context.Context, env []string, repo, name string) error {
+	if !nameShape(name) {
+		return fmt.Errorf("invalid name %q", name)
+	}
+	out, err := Git(ctx, env, repo, "check-ref-format", "--branch", name)
+	if err != nil || strings.TrimSpace(string(out)) != name {
+		return fmt.Errorf("invalid name %q", name)
+	}
+	return nil
+}
+
+// nameShape is ValidName without git.
+func nameShape(name string) bool {
+	if n := utf8.RuneCountInString(name); n == 0 || n > nameMax || !utf8.ValidString(name) ||
+		name[0] == '.' || name[0] == '-' {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune(`/\:*?"<>|`, r) {
+			return false
+		}
+	}
+	return true
 }
 
 // PullRequestRefs asks gh, in the checkout repo, for a pull request's head

@@ -94,24 +94,51 @@ func (h host) localAppData() string {
 	return filepath.Join(h.home, "AppData", "Local")
 }
 
-// runningDir is where a running emulator advertises itself
-// (avd/running/pid_<pid>.ini): under $XDG_RUNTIME_DIR on Linux
-// (/run/user/<uid> when unset), ~/Library/Caches/TemporaryItems on macOS
-// and %LOCALAPPDATA%\Temp on Windows.
-func (h host) runningDir() string {
-	var root string
+// runningDirs are where a running emulator advertises itself
+// (avd/running/pid_<pid>.ini), as the emulator picks it
+// (ConfigDirs::getDiscoveryDirectory): under $XDG_RUNTIME_DIR on Linux,
+// ~/Library/Caches/TemporaryItems on macOS and %LOCALAPPDATA%\Temp on
+// Windows. On Linux without $XDG_RUNTIME_DIR (a session without logind,
+// su) the emulator takes /run/user/<uid> when it exists, else its user
+// directory (emulatorUserDir): both are read (#705).
+func (h host) runningDirs() []string {
+	var roots []string
 	switch h.goos {
 	case "darwin":
-		root = filepath.Join(h.home, "Library", "Caches", "TemporaryItems")
+		roots = []string{filepath.Join(h.home, "Library", "Caches", "TemporaryItems")}
 	case "windows":
-		root = filepath.Join(h.localAppData(), "Temp")
+		roots = []string{filepath.Join(h.localAppData(), "Temp")}
 	default:
-		root = h.getenv("XDG_RUNTIME_DIR")
-		if root == "" {
-			root = filepath.Join("/run/user", strconv.Itoa(h.uid))
+		if x := h.getenv("XDG_RUNTIME_DIR"); x != "" {
+			roots = []string{x}
+		} else {
+			roots = []string{filepath.Join("/run/user", strconv.Itoa(h.uid)), h.emulatorUserDir()}
 		}
 	}
-	return filepath.Join(root, "avd", "running")
+	dirs := make([]string, len(roots))
+	for i, r := range roots {
+		dirs[i] = filepath.Join(r, "avd", "running")
+	}
+	return dirs
+}
+
+// emulatorUserDir is the emulator's user directory
+// (ConfigDirs::getUserDirectory): $ANDROID_EMULATOR_HOME, else
+// $ANDROID_PREFS_ROOT or the older $ANDROID_SDK_HOME (its .android when
+// that is a directory), else ~/.android.
+func (h host) emulatorUserDir() string {
+	if v := h.getenv("ANDROID_EMULATOR_HOME"); v != "" {
+		return v
+	}
+	for _, k := range []string{"ANDROID_PREFS_ROOT", "ANDROID_SDK_HOME"} {
+		if v := h.getenv(k); v != "" {
+			if st, err := os.Stat(filepath.Join(v, ".android")); err == nil && st.IsDir() {
+				return filepath.Join(v, ".android")
+			}
+			return v
+		}
+	}
+	return filepath.Join(h.home, ".android")
 }
 
 // emulator is one discovery file: the emulator's console port (its adb
@@ -152,28 +179,29 @@ func parseDiscovery(data []byte) (emulator, bool) {
 	return e, e.serialPort > 0
 }
 
-// readRunning reads the discovery files of the running dir by serial. A
-// missing dir means no emulator advertises itself. An emulator that
+// readRunning reads the discovery files of the running dirs by serial. A
+// missing dir means no emulator advertises itself there. An emulator that
 // stops leaves its pid_<pid>.ini behind: a file whose pid does not run
 // is left as it is and not read (#679).
 func (h host) readRunning() map[string]emulator {
 	out := map[string]emulator{}
-	dir := h.runningDir()
-	ents, _ := os.ReadDir(dir)
-	for _, ent := range ents {
-		name := ent.Name()
-		if ent.IsDir() || !strings.HasPrefix(name, "pid_") || !strings.HasSuffix(name, ".ini") {
-			continue
-		}
-		if pid, err := strconv.Atoi(name[len("pid_") : len(name)-len(".ini")]); err != nil || !h.alive(pid) {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		if e, ok := parseDiscovery(data); ok {
-			out[e.serial()] = e
+	for _, dir := range h.runningDirs() {
+		ents, _ := os.ReadDir(dir)
+		for _, ent := range ents {
+			name := ent.Name()
+			if ent.IsDir() || !strings.HasPrefix(name, "pid_") || !strings.HasSuffix(name, ".ini") {
+				continue
+			}
+			if pid, err := strconv.Atoi(name[len("pid_") : len(name)-len(".ini")]); err != nil || !h.alive(pid) {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				continue
+			}
+			if e, ok := parseDiscovery(data); ok {
+				out[e.serial()] = e
+			}
 		}
 	}
 	return out

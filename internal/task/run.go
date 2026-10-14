@@ -177,15 +177,17 @@ func (r *prep) baseRef(ctx context.Context) (string, error) {
 // branch makes the task's branch. Issue: `gh issue develop` links it to
 // the issue on GitHub (or reuses the linked branch of that name), then a
 // local branch tracks it; when gh fails it is made locally from base only.
-// PR: `gh pr checkout` in a detached worktree (fork PRs get their push
-// remote from gh). in_place: the checkout switches to it only with
-// SwitchBranch.
+// Named: as an issue's without gh. PR: `gh pr checkout` in a detached
+// worktree (fork PRs get their push remote from gh). in_place: the
+// checkout switches to it only with SwitchBranch.
 func (r *prep) branch(ctx context.Context) error {
 	t := r.Task
 	switch {
 	case t.InPlace && !r.SwitchBranch:
 		r.logf("staying on the current branch")
 		return nil
+	case t.Kind == wire.TaskKindName:
+		return r.localBranch(ctx)
 	case t.Kind == wire.TaskKindIssue:
 		if err := r.issueBranch(ctx); err != nil {
 			return err
@@ -214,6 +216,14 @@ func (r *prep) issueBranch(ctx context.Context) error {
 		// issue's repository.
 		r.run(ctx, t.Repo, "git", "fetch", "origin", "+refs/heads/"+t.Branch+":refs/remotes/origin/"+t.Branch)
 	}
+	return r.localBranch(ctx)
+}
+
+// localBranch makes the task's branch in the checkout unless it has it:
+// tracking origin's branch of that name when the checkout knows one, else
+// from base.
+func (r *prep) localBranch(ctx context.Context) error {
+	t := r.Task
 	if r.has(ctx, "refs/heads/"+t.Branch) {
 		return nil
 	}

@@ -764,6 +764,9 @@ func (d *Daemon) configSet(patch json.RawMessage) (wire.ConfigResult, error) {
 	if !ok {
 		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "config: the result must be a JSON object")
 	}
+	if err := d.worktreeFolder(p, merged); err != nil {
+		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "%v", err)
+	}
 	if b, err = json.MarshalIndent(merged, "", "  "); err != nil {
 		return wire.ConfigResult{}, err
 	}
@@ -839,6 +842,28 @@ func validRepos(patch any, repos map[string]wire.RepoConfig) error {
 			}
 		}
 	}
+	return nil
+}
+
+// worktreeFolder stores the worktree_folder the patch sets (worktree
+// の置き場) in merged as config.json keeps it: a leading ~ (~, ~/…, ~\…)
+// expanded with the daemon user's home, absolute, clean. "" removes it,
+// as null does. Whether it exists does not matter: task.create makes it.
+func (d *Daemon) worktreeFolder(patch any, merged map[string]any) error {
+	p, _ := patch.(map[string]any)
+	s, ok := p["worktree_folder"].(string)
+	switch {
+	case !ok:
+		return nil // absent or null; another type fails to decode
+	case s == "":
+		delete(merged, "worktree_folder")
+		return nil
+	}
+	s = d.layout.ExpandHome(s)
+	if !filepath.IsAbs(s) {
+		return errors.New("worktree_folder must be an absolute path")
+	}
+	merged["worktree_folder"] = filepath.Clean(s)
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/obutora/stagent/internal/task"
@@ -17,9 +18,10 @@ import (
 
 // Tasks (タスク) live in <root>/state/tasks.json, written by the daemon
 // only. A task's key is its source checkout (元のチェックアウト, canonical)
-// and number. The bridge registers one (task.register) before preparing
-// it, `stagent task run` reports its stages (task.progress), and task.list,
-// watch and task.updated / task.removed show them to the app.
+// and number, or name for a named task (task.SameKey). The bridge
+// registers one (task.register) before preparing it, `stagent task run`
+// reports its stages (task.progress), and task.list, watch and
+// task.updated / task.removed show them to the app.
 
 const (
 	// defaultPrepareGrace is how long a preparing task waits for its
@@ -188,13 +190,16 @@ func (d *Daemon) scheduleReviewLocked(at time.Time) {
 // task.register
 
 func (d *Daemon) taskRegister(p wire.TaskRegisterParams) (wire.TaskRegisterResult, error) {
+	named := p.Kind == wire.TaskKindName
 	switch {
 	case !filepath.IsAbs(p.Repo):
 		return wire.TaskRegisterResult{}, wire.Errorf(wire.ErrBadRequest, "task.register: repo must be an absolute path")
-	case p.Kind != wire.TaskKindIssue && p.Kind != wire.TaskKindPR:
-		return wire.TaskRegisterResult{}, wire.Errorf(wire.ErrBadRequest, "task.register: kind must be issue or pr")
-	case p.Number <= 0:
-		return wire.TaskRegisterResult{}, wire.Errorf(wire.ErrBadRequest, "task.register: number must be positive")
+	case p.Kind != wire.TaskKindIssue && p.Kind != wire.TaskKindPR && !named:
+		return wire.TaskRegisterResult{}, wire.Errorf(wire.ErrBadRequest, "task.register: kind must be issue, pr or name")
+	case named && (p.Name == "" || p.Number != 0 || p.InPlace):
+		return wire.TaskRegisterResult{}, wire.Errorf(wire.ErrBadRequest, "task.register: a named task has a name, no number and is not in_place")
+	case !named && (p.Number <= 0 || p.Name != ""):
+		return wire.TaskRegisterResult{}, wire.Errorf(wire.ErrBadRequest, "task.register: number must be positive, without a name")
 	case p.SessionID == "":
 		return wire.TaskRegisterResult{}, wire.Errorf(wire.ErrBadRequest, "task.register: session_id required")
 	}
@@ -210,7 +215,7 @@ func (d *Daemon) taskRegister(p wire.TaskRegisterParams) (wire.TaskRegisterResul
 	d.reviewTasksLocked(now)
 	snap := d.snapshotTasksLocked()
 	for _, t := range d.tasks {
-		if t.Number != p.Number || !task.SamePath(t.Repo, repo) {
+		if !task.SameKey(t, repo, p.Kind, p.Number, p.Name) {
 			continue
 		}
 		switch t.State {
@@ -247,7 +252,7 @@ func (d *Daemon) taskRegister(p wire.TaskRegisterParams) (wire.TaskRegisterResul
 		}
 	}
 	t := &wire.Task{
-		ID: task.NewID(), Repo: repo, Kind: p.Kind, Number: p.Number, Title: p.Title, URL: p.URL,
+		ID: task.NewID(), Repo: repo, Kind: p.Kind, Number: p.Number, Name: p.Name, Title: p.Title, URL: p.URL,
 		Branch: p.Branch, Base: p.Base, Worktree: worktree, InPlace: p.InPlace,
 		CreatedAt: now.UTC().Truncate(time.Second), SessionID: p.SessionID,
 	}
@@ -456,13 +461,18 @@ func (d *Daemon) rebindLocked() {
 	}
 }
 
-// taskNumberLocked is the number of s's task (0: none).
-func (d *Daemon) taskNumberLocked(s *session) int {
+// taskLabelLocked names s's task in a push's title: "#N", or a named
+// task's name ("": none).
+func (d *Daemon) taskLabelLocked(s *session) string {
 	if s.s.TaskID == "" {
-		return 0
+		return ""
 	}
-	if t := d.taskLocked(s.s.TaskID); t != nil {
-		return t.Number
+	t := d.taskLocked(s.s.TaskID)
+	switch {
+	case t == nil:
+		return ""
+	case t.Kind == wire.TaskKindName:
+		return t.Name
 	}
-	return 0
+	return "#" + strconv.Itoa(t.Number)
 }

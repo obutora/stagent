@@ -36,15 +36,25 @@ func (b *Bridge) taskCreate(m *wire.Msg) {
 // 0006). It runs on the spawn queue.
 func (b *Bridge) doTaskCreate(p wire.TaskCreateParams) (*wire.TaskCreateResult, error) {
 	const method = wire.MethodTaskCreate
+	named := p.Kind == wire.TaskKindName
 	switch {
-	case p.Kind != wire.TaskKindIssue && p.Kind != wire.TaskKindPR:
-		return nil, wire.Errorf(wire.ErrBadRequest, "%s: kind must be issue or pr", method)
-	case p.Number <= 0:
+	case p.Kind != wire.TaskKindIssue && p.Kind != wire.TaskKindPR && !named:
+		return nil, wire.Errorf(wire.ErrBadRequest, "%s: kind must be issue, pr or name", method)
+	case named && p.Number != 0:
+		return nil, wire.Errorf(wire.ErrBadRequest, "%s: a named task has no number", method)
+	case named && p.InPlace:
+		return nil, wire.Errorf(wire.ErrBadRequest, "%s: a named task cannot be in_place", method)
+	case !named && p.Number <= 0:
 		return nil, wire.Errorf(wire.ErrBadRequest, "%s: number must be positive", method)
 	case len(p.Command) > 0 && p.Command[0] == "":
 		return nil, wire.Errorf(wire.ErrBadRequest, "%s: command is empty", method)
 	case p.Repo == "":
 		return nil, wire.Errorf(wire.ErrBadRequest, "%s: repo is empty", method)
+	}
+	if named {
+		p.Title, p.URL = "", ""
+	} else {
+		p.Name = ""
 	}
 	// Nothing starts for a coding agent's process tree (ADR 0004).
 	if werr := b.agentRefusal(); werr != nil {
@@ -70,10 +80,20 @@ func (b *Bridge) doTaskCreate(p wire.TaskCreateParams) (*wire.TaskCreateResult, 
 
 	ctx, cancel := context.WithTimeout(b.ctx, taskCreateWait)
 	defer cancel()
-	repo, err := task.Canonical(ctx, env, b.expandHome(p.Repo))
+	repo, err := task.Canonical(ctx, env, b.l.ExpandHome(p.Repo))
 	if err != nil {
 		return nil, wire.Errorf(wire.ErrBadRequest, "%s: repo %s: %v", method, p.Repo, err)
 	}
+	folder := task.SavedWorktreeFolder(b.l.Config)
+	if named {
+		if err := task.ValidName(ctx, env, repo, p.Name); err != nil {
+			return nil, wire.Errorf(wire.ErrBadRequest, "%s: %v", method, err)
+		}
+		if folder == "" {
+			return nil, wire.Errorf(wire.ErrBadRequest, "%s: worktree_folder is not set", method)
+		}
+	}
+	place := taskPlace(repo, folder, p.Kind, p.Number, p.Title, p.Name)
 	dc, err := b.daemonConn(b.dialDaemon)
 	if err != nil {
 		return nil, upstreamError(err, wire.Errorf(wire.ErrUnavailable, "daemon: %v", err))
@@ -84,9 +104,16 @@ func (b *Bridge) doTaskCreate(p wire.TaskCreateParams) (*wire.TaskCreateResult, 
 		return nil, err
 	}
 	var known *wire.Task
-	for i, t := range list.Tasks {
-		if t.Number == p.Number && task.SamePath(t.Repo, repo) {
+	for i := range list.Tasks {
+		if task.SameKey(&list.Tasks[i], repo, p.Kind, p.Number, p.Name) {
 			known = &list.Tasks[i]
+		}
+	}
+	// A new named task's place is its own: one taken by something else
+	// is not a worktree it may adopt.
+	if named && known == nil {
+		if ents, err := os.ReadDir(place); err == nil && len(ents) > 0 || err != nil && !os.IsNotExist(err) {
+			return nil, wire.Errorf(wire.ErrBadRequest, "%s: %s exists and is not an empty directory", method, place)
 		}
 	}
 	branch, base, err := taskBranch(ctx, env, repo, p, known)
@@ -97,8 +124,8 @@ func (b *Bridge) doTaskCreate(p wire.TaskCreateParams) (*wire.TaskCreateResult, 
 	sessionID := wire.NewSessionID()
 	var reg wire.TaskRegisterResult
 	if err := dc.c.Call(ctx, wire.MethodTaskRegister, wire.TaskRegisterParams{
-		Repo: repo, Kind: p.Kind, Number: p.Number, Title: p.Title, URL: p.URL,
-		Branch: branch, Base: base, Worktree: taskPlace(repo, p.Number), InPlace: p.InPlace,
+		Repo: repo, Kind: p.Kind, Number: p.Number, Name: p.Name, Title: p.Title, URL: p.URL,
+		Branch: branch, Base: base, Worktree: place, InPlace: p.InPlace,
 		SessionID: sessionID,
 	}, &reg); err != nil {
 		return nil, err
@@ -142,17 +169,28 @@ func (b *Bridge) doTaskCreate(p wire.TaskCreateParams) (*wire.TaskCreateResult, 
 	return &wire.TaskCreateResult{Task: t, Session: s}, nil
 }
 
-// taskPlace is where a worktree task of the source checkout repo works:
-// next to it, <parent>/<checkout name>-<number>.
-func taskPlace(repo string, number int) string {
-	return filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-"+strconv.Itoa(number))
+// taskPlace is where a worktree task of the source checkout repo works.
+// With the worktree folder (worktree の置き場) set it is
+// <folder>/<checkout name>/<name> for a named task and
+// <folder>/<checkout name>/<number>-<slug> (task.IssueBranch, whatever the
+// task's branch) for an issue or PR; without it next to the checkout,
+// <parent>/<checkout name>-<number> (a named task needs the folder).
+func taskPlace(repo, folder, kind string, number int, title, name string) string {
+	switch {
+	case folder == "":
+		return filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-"+strconv.Itoa(number))
+	case kind == wire.TaskKindName:
+		return filepath.Join(folder, filepath.Base(repo), name)
+	}
+	return filepath.Join(folder, filepath.Base(repo), task.IssueBranch(number, title))
 }
 
 // taskBranch decides the task's branch and base. A known task keeps its
 // own unless the app names others: its worktree is on that branch. An
 // in_place task that does not switch records the checkout's current
-// branch. Issue: the app's branch or <number>-<slug>. PR: gh's head and
-// base branch. Base: the app's (issue), else the default branch.
+// branch. Issue: the app's branch or <number>-<slug>. Named: the app's
+// branch or the name. PR: gh's head and base branch. Base: the app's
+// (issue, named), else the default branch.
 func taskBranch(ctx context.Context, env []string, repo string, p wire.TaskCreateParams, known *wire.Task) (branch, base string, err error) {
 	const method = wire.MethodTaskCreate
 	if p.Kind == wire.TaskKindPR {
@@ -190,6 +228,9 @@ func taskBranch(ctx context.Context, env []string, repo string, p wire.TaskCreat
 	}
 	if base, err = defaultBase(); err != nil {
 		return "", "", err
+	}
+	if p.Kind == wire.TaskKindName {
+		return cmp.Or(p.Branch, p.Name), base, nil
 	}
 	return cmp.Or(p.Branch, task.IssueBranch(p.Number, p.Title)), base, nil
 }

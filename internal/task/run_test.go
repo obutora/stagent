@@ -185,6 +185,53 @@ func TestPrepareIssueWithoutGitHub(t *testing.T) {
 	}
 }
 
+// A named task: its branch made locally from base without gh (no
+// upstream), or tracking origin's branch of that name the checkout knows,
+// or the local one taken as it is.
+func TestPrepareNamed(t *testing.T) {
+	f := newFixture(t, nil)
+	git(t, f.repo, "push", "-q", "origin", "main:refs/heads/shared-work")
+	git(t, f.repo, "fetch", "-q", "origin")
+	git(t, f.repo, "branch", "-q", "--no-track", "mine", "origin/main")
+	named := func(name string) wire.Task {
+		wt := filepath.Join(f.base, "worktrees", "repo-src", name)
+		if err := os.MkdirAll(wt, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return wire.Task{ID: "t", Repo: f.repo, Kind: wire.TaskKindName, Name: name, Branch: name, Base: "main", Worktree: wt}
+	}
+	for _, c := range []struct{ name, upstream string }{
+		{"brave-otter", ""},
+		{"shared-work", "origin/shared-work"},
+		{"mine", ""},
+	} {
+		tk := named(c.name)
+		stages, out, err := f.prepare(t, Prep{Task: tk})
+		if err != nil {
+			t.Fatalf("Prepare %s: %v\n%s", c.name, err, out)
+		}
+		if want := []string{"fetch", "branch", "worktree", "copy", "setup"}; !slices.Equal(stages, want) {
+			t.Fatalf("stages %q, want %q", stages, want)
+		}
+		if got := f.gitOut(t, tk.Worktree, "symbolic-ref", "--short", "HEAD"); got != c.name {
+			t.Fatalf("worktree on %q", got)
+		}
+		up, _ := Git(context.Background(), f.env, tk.Worktree, "rev-parse", "--abbrev-ref", "@{upstream}")
+		if got := strings.TrimSpace(string(up)); got != c.upstream {
+			t.Fatalf("%s: upstream %q, want %q", c.name, got, c.upstream)
+		}
+		if f.gitOut(t, tk.Worktree, "rev-parse", "HEAD") != f.gitOut(t, f.repo, "rev-parse", "origin/main") {
+			t.Fatalf("%s is not at origin/main", c.name)
+		}
+	}
+	if _, err := os.Stat(f.ghLog); !os.IsNotExist(err) {
+		t.Fatalf("gh ran for a named task:\n%s", readFile(t, f.ghLog))
+	}
+	if HasRef(context.Background(), f.env, f.repo, "refs/remotes/origin/brave-otter") {
+		t.Fatal("the branch reached origin")
+	}
+}
+
 // A PR task (a fork's: only refs/pull/N/head) is checked out by gh in a
 // detached worktree under the head branch's name.
 func TestPreparePR(t *testing.T) {

@@ -148,3 +148,59 @@ func TestTaskPreviewNoCheckout(t *testing.T) {
 		t.Fatalf("task.preview of no checkout: %v", e)
 	}
 }
+
+// With a name, task.preview says why a named task could not take it, the
+// first of invalid, task, folder, branch, no_folder; nothing when it is
+// free. Without one the daemon is not asked.
+func TestTaskPreviewNameProblem(t *testing.T) {
+	repo := checkout(t)
+	gitRun(t, repo, "branch", "taken-branch")
+	gitRun(t, repo, "branch", "taken-dir")
+	folder := filepath.Join(filepath.Dir(repo), "worktrees")
+	writeTree(t, filepath.Join(folder, "app"), map[string]string{"taken-dir/x": "x", "taken-task/x": "x"})
+	other := wire.Task{ID: "o", Repo: filepath.Join(filepath.Dir(repo), "other"), Kind: wire.TaskKindName, Name: "elsewhere"}
+	issue := wire.Task{ID: "i", Repo: repo, Kind: wire.TaskKindIssue, Number: 5}
+	named := wire.Task{ID: "n", Repo: repo, Kind: wire.TaskKindName, Name: "taken-task"}
+	d := &taskDaemon{tasks: []wire.Task{other, issue, named}}
+	lay, a := startBridge(t)
+	serveFake(t, lay.DaemonAddr, d.handle)
+	problem := func(name, branch string) string {
+		t.Helper()
+		var res wire.TaskPreviewResult
+		if e := a.call(t, wire.MethodTaskPreview, wire.TaskPreviewParams{Repo: repo, Name: name, Branch: branch}, &res); e != nil {
+			t.Fatal(e)
+		}
+		return res.NameProblem
+	}
+
+	if got := problem("", ""); got != "" || len(d.calls) != 0 {
+		t.Fatalf("no name: %q, daemon calls %v", got, d.calls)
+	}
+	for _, folderSet := range []bool{false, true} {
+		if folderSet {
+			cfg, _ := json.Marshal(wire.Config{WorktreeFolder: folder})
+			if err := os.WriteFile(lay.Config, cfg, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		free, dir := wire.TaskNameNoFolder, wire.TaskNameBranch // without a folder no place is taken
+		if folderSet {
+			free, dir = "", wire.TaskNameFolder
+		}
+		for _, c := range []struct{ name, branch, want string }{
+			{"a/b", "", wire.TaskNameInvalid},
+			{"-x", "taken-branch", wire.TaskNameInvalid},
+			{"taken-task", "taken-branch", wire.TaskNameTask},
+			{"taken-dir", "", dir},
+			{"taken-branch", "", wire.TaskNameBranch},
+			{"free", "taken-branch", wire.TaskNameBranch},
+			{"free", "", free},
+			{"elsewhere", "", free},
+			{"5", "", free},
+		} {
+			if got := problem(c.name, c.branch); got != c.want {
+				t.Errorf("folder %v, name %q, branch %q: %q, want %q", folderSet, c.name, c.branch, got, c.want)
+			}
+		}
+	}
+}

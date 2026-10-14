@@ -114,20 +114,30 @@ func oneLine(s string) string {
 // (canonical) from config.json at configPath. Only the daemon writes that
 // file (config.set); a missing or unreadable one has none.
 func SavedPatterns(configPath, repo string) []string {
-	b, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil
-	}
-	var c wire.Config
-	if json.Unmarshal(b, &c) != nil {
-		return nil
-	}
-	for key, rc := range c.Repos {
+	for key, rc := range savedConfig(configPath).Repos {
 		if SamePath(key, repo) {
 			return rc.WorktreeInclude
 		}
 	}
 	return nil
+}
+
+// SavedWorktreeFolder reads the worktree folder (worktree の置き場) from
+// config.json at configPath, as config.set stored it: absolute and clean.
+// "": none set, or a missing or unreadable file.
+func SavedWorktreeFolder(configPath string) string {
+	return savedConfig(configPath).WorktreeFolder
+}
+
+// savedConfig is config.json as stored (defaults not applied); a missing
+// or unreadable one is empty.
+func savedConfig(configPath string) wire.Config {
+	var c wire.Config
+	b, err := os.ReadFile(configPath)
+	if err != nil || json.Unmarshal(b, &c) != nil {
+		return wire.Config{}
+	}
+	return c
 }
 
 // ValidRepoKey reports why key cannot be a key of config.json's repos: it

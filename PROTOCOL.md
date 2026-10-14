@@ -116,8 +116,8 @@ process that created its stdin pipe ends — Win32-OpenSSH's session process
 | `hello` | `{protocol, client}` | `{protocol, version, os, arch, home, capabilities[], host_id?, blocked?}` |
 | `ping` | – | `{}` |
 | `session.spawn` | `{command[]?, shell?, cwd?, cols, rows, env?{}, task_id?}` | `{session}` — a detached session; app owns its size |
-| `task.create` | `{repo, kind, number, title, url, base?, branch?, command[]?, cols, rows, env?{}, in_place?, switch_branch?, setup?}` | `{task, session?, existed}` — see "Creating a task"; empty or absent `command` = a terminal (the login shell; `cmd.exe` on Windows) |
-| `task.preview` | `{repo, worktree_include?[]}` | `{repo, copies[{path, source, bytes}], links[{path}], skipped[{entry, source, reason}], total_bytes, truncated, setup?, orca_error?}` — see "Files to copy" |
+| `task.create` | `{repo, kind, number?, name?, title?, url?, base?, branch?, command[]?, cols, rows, env?{}, in_place?, switch_branch?, setup?}` | `{task, session?, existed}` — see "Creating a task"; empty or absent `command` = a terminal (the login shell; `cmd.exe` on Windows) |
+| `task.preview` | `{repo, worktree_include?[], name?, branch?}` | `{repo, copies[{path, source, bytes}], links[{path}], skipped[{entry, source, reason}], total_bytes, truncated, setup?, orca_error?, name_problem?}` — see "Files to copy" and "Creating a task" |
 | `task.remove` | `{id, force?, stop_sessions?, skip_archive?, dry_run?}` | `{changes[]?, changes_truncated?, unpushed?, sessions[]?, kept_branch?}` — see "Removing a task" |
 
 `host_id` (32 lowercase hex chars) is 128 random bits stagent creates the
@@ -223,20 +223,28 @@ preparation runs in that session, not in the bridge (ADR 0006):
 
 1. `repo` is made canonical (`git rev-parse --show-toplevel`, symlinks
    resolved; `bad_request` when it is no git checkout). `kind` is `issue`
-   or `pr`, `number` positive (`bad_request` otherwise).
+   or `pr` with `number` positive, or `name` (a named task, since 0.14.0, #877) with `name`
+   and no `number` (`bad_request` otherwise). A named task ignores
+   `title` and `url` and cannot be `in_place` (`bad_request`); its `name`
+   must be valid (below, `bad_request` otherwise) and `config.json` must
+   have `worktree_folder` (`bad_request` "task.create: worktree_folder is
+   not set" otherwise).
 2. Branch and base: an issue's `branch` is the given one (checked with
    `git check-ref-format --branch`, `bad_request` when invalid) or
    `<number>-<slug>`, the slug being the title lower-cased with every run
    of characters other than `a-z0-9` one `-`, trimmed of `-`, cut to 40
-   characters (`issue-<number>` alone when nothing is left); `base` is the
-   given one or the default branch the checkout knows (`origin/HEAD`, else
-   origin's `main` or `master`; `bad_request` without one). A PR's are its
-   head and base branch from `gh pr view <number> --json
+   characters (`issue-<number>` alone when nothing is left); a named
+   task's the given one (checked the same way) or its `name`; `base` is
+   the given one or the default branch the checkout knows (`origin/HEAD`,
+   else origin's `main` or `master`; `bad_request` without one). A PR's
+   are its head and base branch from `gh pr view <number> --json
    headRefName,baseRefName` (`unavailable` with gh's message when that
    fails); `branch` and `base` are ignored. An `in_place` task without
    `switch_branch` records the checkout's current branch. A task that
-   exists keeps its own unless the app gives an issue's `branch` / `base`.
-3. The daemon registers it (`task.register`, atomic by `repo` + `number`):
+   exists keeps its own unless the app gives an issue's or named task's
+   `branch` / `base`.
+3. The daemon registers it (`task.register`, atomic by `repo` + `number`,
+   or `repo` + `name`):
    - `ready` (or `missing`, `removing`): nothing starts; `{task, existed:
      true}`.
    - `preparing`: nothing starts; `{task, session, existed: true}` with
@@ -245,17 +253,39 @@ preparation runs in that session, not in the bridge (ADR 0006):
    - `failed` (or interrupted): prepared again as below (`existed: false`).
    - `in_place` on a checkout another number's `in_place` task uses:
      `in_use`.
-4. A worktree task works in `<parent of repo>/<repo's name>-<number>`
-   (`task.worktree`): the bridge makes that directory, empty, and starts
-   the prepared session there; an `in_place` task's session starts in
-   `repo`. So the session's `cwd` is the task's place from the start (its
-   `task_id` follows). The session runs `<stagent> task run
-   [--switch-branch] [--setup] <task id> -- <command…>` (`command`, or
-   the login shell `[$SHELL, "-l"]` — on Windows `[%ComSpec%]`, `cmd.exe`
-   — when it is empty); its `harness` is that of `<command…>`. `env`,
-   `cols` and `rows` are as for `session.spawn` (the login shell's
-   environment; git and gh are looked up like a bare command). The reply
-   is `{task, session}` (`existed: false`) once the holder answers.
+4. A worktree task works in its place (`task.worktree`): with
+   `worktree_folder` set, `<worktree_folder>/<repo's name>/<name>` for a
+   named task and `<worktree_folder>/<repo's name>/<number>-<slug>` for an
+   Issue or PR (the default branch above, whatever `branch` is); without
+   it, an Issue's or PR's is `<parent of repo>/<repo's name>-<number>`.
+   A new named task's place must not exist or be an empty directory
+   (`bad_request` before anything is registered); a task that exists
+   keeps the place it has. The bridge makes that directory, empty (with
+   any missing parents), and starts the prepared session there; an
+   `in_place` task's session starts in `repo`. So the session's `cwd` is
+   the task's place from the start (its `task_id` follows). The session
+   runs `<stagent> task run [--switch-branch] [--setup] <task id> --
+   <command…>` (`command`, or the login shell `[$SHELL, "-l"]` — on
+   Windows `[%ComSpec%]`, `cmd.exe` — when it is empty); its `harness` is
+   that of `<command…>`. `env`, `cols` and `rows` are as for
+   `session.spawn` (the login shell's environment; git and gh are looked
+   up like a bare command). The reply is `{task, session}` (`existed:
+   false`) once the holder answers.
+
+A named task's `name` is 1–64 characters without whitespace, control
+characters or any of `/ \ : * ? " < > |`, does not start with `.` or `-`,
+and is a branch name `git check-ref-format --branch` prints back as it is
+(the app checks all but git). It names the task, its default branch and
+its directory under `worktree_folder`.
+
+`task.preview` with a non-empty `name` (since 0.14.0, #877) also answers `name_problem`, why a
+new named task of `repo` could not take that name with `branch` (default
+`name`) — the first of: `invalid` (not a valid name), `task` (a task of
+`repo` has that name), `folder` (`<worktree_folder>/<repo's name>/<name>`
+exists), `branch` (the local branch `refs/heads/<branch>` exists; a
+`task.create` would take it as it is), `no_folder` (`worktree_folder` is
+not set). It is absent when the name is free. The app asks while the name
+is typed; `task.create` checks again.
 
 `stagent task run` reads the task (`task.list`) and runs its stages,
 announcing each with `task.progress {id, stage}` and a `[stagent] <stage>`
@@ -271,6 +301,10 @@ and their output show:
     `origin/<branch>` follows. When gh fails (permissions, network,
     unauthenticated) the branch is made locally from `origin/<base>` (else
     the local `<base>`) only, with one line saying so.
+  - Named: as an issue's without gh: the local `<branch>` as it is, else
+    one tracking `origin/<branch>` when the checkout knows it, else `git
+    branch --no-track <branch>` from `origin/<base>` (else the local
+    `<base>`).
   - PR: `git worktree add --detach <worktree>`, then `gh pr checkout
     <number> --branch <head>` inside it (gh fetches fork PRs and sets
     their push remote). A branch of that name checked out in another
@@ -720,9 +754,14 @@ Linux, `%LOCALAPPDATA%\Android\Sdk` on Windows); none →
 `missing: {code: "adb_not_found"}`. Each is matched by its serial with
 the file a running emulator advertises itself in,
 `avd/running/pid_<pid>.ini` (keys `port.serial`, `avd.name`,
-`grpc.port`, `grpc.token`) under `$XDG_RUNTIME_DIR` on Linux
-(`/run/user/<uid>` when unset), `~/Library/Caches/TemporaryItems` on
-macOS and `%LOCALAPPDATA%\Temp` on Windows. An emulator that stops
+`grpc.port`, `grpc.token`) under `$XDG_RUNTIME_DIR` on Linux,
+`~/Library/Caches/TemporaryItems` on macOS and `%LOCALAPPDATA%\Temp` on
+Windows. On Linux without `$XDG_RUNTIME_DIR` (a session without logind,
+`su`) the emulator writes it under `/run/user/<uid>` when that exists,
+else under its user directory (`$ANDROID_EMULATOR_HOME`, else
+`$ANDROID_PREFS_ROOT` or `$ANDROID_SDK_HOME`, their `.android` when it is
+a directory, else `~/.android`); stagent reads both (since 0.13.1, #705).
+An emulator that stops
 leaves its file behind: a file whose `<pid>` is no running process
 (signal 0 on Linux and macOS, opening the process on Windows) is not read,
 and left as it is (since 0.13.0, #679). An emulator without such a file
@@ -1222,13 +1261,25 @@ absolute path or not clean (`filepath.Clean` would change it; a trailing
 separator) and a pattern that is empty, starts with `!`, is absolute or
 has a `..` or `.git` component. Whether the path exists does not matter.
 
+`worktree_folder` (since 0.14.0, #877) is the worktree folder (worktree の置き場): one folder
+per host under which task worktrees go, `<worktree_folder>/<checkout
+name>/<name>` for a named task and `<worktree_folder>/<checkout
+name>/<number>-<slug>` for an Issue or PR (see "Creating a task").
+`config.set` expands a leading `~` (`~`, `~/…`, `~\…`) with the daemon
+user's home and stores the path cleaned (`filepath.Clean`); the result
+must be absolute, else `bad_request` "worktree_folder must be an absolute
+path" and nothing is written. `""` removes it, as `null` does. Whether it
+exists does not matter (`task.create` makes it), and changing it never
+moves existing worktrees.
+
 Every push (ntfy, webhook, chat, including `notify.test`) is titled with the
 host it comes from: `notify.host_label`, or the host name when it is empty
 (no prefix when that is unknown too). A single notification reads
 `<label> · <title>` (e.g. `開発機 · claude · api`), a digest
 `<label>: <title>`. A notification about a session tied to a task
-(`Session.task_id`) puts the task's number first: `<label> · #N <title>`
-(e.g. `開発機 · #493 claude · agent-orchestra-493`); a digest of several
+(`Session.task_id`) puts the task first, its number or, for a named
+task, its name: `<label> · #N <title>` (e.g. `開発機 · #493 claude ·
+agent-orchestra-493`), `<label> · <name> <title>`; a digest of several
 notifications does not. The in-app `notification` event keeps the plain
 title.
 
@@ -1240,12 +1291,15 @@ the older one. A digest and `notify.test` have no sequence ID.
 
 #### Tasks
 
-A task (タスク; `Task` below) is an Issue or PR being worked on, in a
-worktree of a source checkout (元のチェックアウト) or, `in_place`, in the
+A task (タスク; `Task` below) is an Issue or PR, or a name the user gave
+(`kind: name`, a named task, since 0.14.0), being worked on in a worktree of a source
+checkout (元のチェックアウト) or, for an Issue or PR `in_place`, in the
 checkout itself. The daemon keeps them in `state/tasks.json` (mode 0600,
 apart from `config.json`); only the daemon writes it, and only `uninstall
 --level purge` removes it. A task's key is its checkout's canonical path
-(`repo`) and its `number`: one task per number. `repo` is made by
+(`repo`) and its `number` — or, for a named task, its `name` (exactly,
+case-sensitive): one task per number, one per name, and a name never
+matches a number. `repo` is made by
 stagent — `git rev-parse --show-toplevel` with symlinks resolved, on
 Windows with an upper-case drive letter; a linked worktree chosen as the
 checkout stays itself — and the app uses it as it is.
@@ -1277,7 +1331,7 @@ app; refused with `agent_refused` to a coding agent's process tree):
 
 | method | params | result |
 |---|---|---|
-| `task.register` | `{repo, kind, number, title, url, branch, base, worktree, in_place?, session_id}` | `{task, existed, session?}` |
+| `task.register` | `{repo, kind, number, name?, title, url, branch, base, worktree, in_place?, session_id}` | `{task, existed, session?}` |
 | `task.progress` | `{id, stage, error?, session_id?}` | `{}` |
 | `task.forget` | `{id, kept_branch?}` | `{}` |
 
@@ -1291,9 +1345,10 @@ be started: the task is `ready` (or `missing`, `removing`), or still
 `preparing`, then with its live prepared session in `session` (absent
 while that session has not registered yet). An `in_place` task on a
 checkout another number's `in_place` task uses is `in_use`.
-`bad_request`: `repo` not absolute, `kind` not `issue`/`pr`, `number` not
-positive, no `session_id`, or a worktree task's `worktree` not absolute or
-equal to `repo`.
+`bad_request`: `repo` not absolute, `kind` not `issue`/`pr`/`name`, an
+Issue or PR with a `number` not positive or a `name`, a named task
+without `name`, with a `number` or `in_place`, no `session_id`, or a
+worktree task's `worktree` not absolute or equal to `repo`.
 
 `task.progress` reports a stage. While `preparing`, the stages `fetch`,
 `branch`, `worktree`, `copy`, `setup` set `stage`; `agent` without
@@ -1679,11 +1734,14 @@ when the agent leaves the session. When a session's last approval closes,
 its hook-derived `needs_approval` goes and the terminal/activity state
 shows again.
 
-`Task`: `id, repo, kind (issue|pr), number, title, url, branch, base,
-worktree, in_place, created_at, state (preparing|ready|failed|missing|
-removing), stage?, error?, session_id?`. `repo` is the source checkout's
-canonical path; `worktree` is where the task is worked on (`repo` itself
-when `in_place`). `created_at` is RFC 3339 (UTC, whole seconds). `stage`
+`Task`: `id, repo, kind (issue|pr|name), number, name?, title, url,
+branch, base, worktree, in_place, created_at, state (preparing|ready|
+failed|missing|removing), stage?, error?, session_id?`. A named task
+(`kind: name`) has `name`, `number` 0, empty `title` and `url`, and is
+never `in_place`; an Issue or PR has no `name`. `repo` is the source
+checkout's canonical path; `worktree` is where the task is worked on
+(`repo` itself when `in_place`). `created_at` is RFC 3339 (UTC, whole
+seconds). `stage`
 is, while preparing, `fetch|branch|worktree|copy|setup|agent` (the stage
 it failed at, once `failed`) and, while removing,
 `stop|archive|worktree|branch` (the stage that failed, once a removal
@@ -1719,9 +1777,11 @@ host_label, click_base, click_page, reasons {needs_approval, waiting_input,
 turn_complete, exited, terminal}, lang, skip_when_claude_app_notifies},
 retention {events_days, events_max, scrollback_days,
 scrollback_total_mib, scrollback_session_mib}, idle_after_ms,
-disable_handoff, repos? {<source checkout>: {worktree_include?[]}}`.
-`repos` (absent when empty) holds the app's patterns of files to copy
-per source checkout (see `config.set` and "Files to copy").
+disable_handoff, repos? {<source checkout>: {worktree_include?[]}},
+worktree_folder?`. `repos` (absent when empty) holds the app's patterns
+of files to copy per source checkout (see `config.set` and "Files to
+copy"). `worktree_folder` (absent when unset) is the worktree folder, an
+absolute path (see `config.set`).
 `disable_handoff` (default false) makes
 `stagent run --handoff=auto` — what the shell wrappers run — end the
 program with its terminal unless `STAGENT_HANDOFF` decides otherwise;

@@ -62,7 +62,7 @@ func watchedKind(t *testing.T) (*Kind, host, *liveADB) {
 // port, its gRPC on grpcPort.
 func advertise(t *testing.T, h host, pid string, serialPort int, avd string, grpcPort int) {
 	t.Helper()
-	writeDiscovery(t, h.runningDir(), pid, fmt.Sprintf("port.serial=%d\navd.name=%s\ngrpc.port=%d\ngrpc.token=tok\n", serialPort, avd, grpcPort))
+	writeDiscovery(t, h.runningDirs()[0], pid, fmt.Sprintf("port.serial=%d\navd.name=%s\ngrpc.port=%d\ngrpc.token=tok\n", serialPort, avd, grpcPort))
 }
 
 func TestGoneEmulatorIsShownAgainWhenItsAVDRunsOnAnySerial(t *testing.T) {
@@ -84,7 +84,7 @@ func TestGoneEmulatorIsShownAgainWhenItsAVDRunsOnAnySerial(t *testing.T) {
 
 	// The emulator is closed.
 	stop()
-	os.Remove(filepath.Join(h.runningDir(), "pid_1.ini"))
+	os.Remove(filepath.Join(h.runningDirs()[0], "pid_1.ini"))
 	adb.set()
 	if s := ev.state(t); s.State != wire.HostScreenGone {
 		t.Fatalf("state after the emulator stopped: %+v, want gone", s)
@@ -162,7 +162,7 @@ func TestStartOfAnEndingEmulatorIsGoneUntilItsAVDRuns(t *testing.T) {
 	}
 	pixel := &fakeEmulator{token: "tok", images: make(chan *emupb.Image, 4)}
 	port, _ := serve(t, pixel)
-	os.Remove(filepath.Join(h.runningDir(), "pid_1.ini"))
+	os.Remove(filepath.Join(h.runningDirs()[0], "pid_1.ini"))
 	advertise(t, h, "2", 5554, "Pixel", port)
 	adb.set("emulator-5554")
 	if s := ev.state(t); s.State != wire.HostScreenLive {

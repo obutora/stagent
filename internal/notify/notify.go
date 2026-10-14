@@ -28,7 +28,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -396,11 +395,11 @@ func (s *Sender) push(ctx context.Context, cfg wire.NotifyConfig, n wire.Notific
 
 // labelled prefixes n's title with the host: hostLabel, else the host name
 // (no prefix when that fails too). A digest reads "<host>: <title>",
-// anything else "<host> · <title>", or "<host> · #N <title>" for a session
-// of task N.
+// anything else "<host> · <title>", or "<host> · <task> <title>" for a
+// session of a task ("#N", or a named task's name).
 func labelled(n wire.NotificationData, hostLabel string, hostname func() (string, error)) wire.NotificationData {
-	if n.TaskNumber > 0 && n.Reason != "digest" {
-		n.Title = "#" + strconv.Itoa(n.TaskNumber) + " " + n.Title
+	if n.TaskLabel != "" && n.Reason != "digest" {
+		n.Title = n.TaskLabel + " " + n.Title
 	}
 	label := strings.TrimSpace(hostLabel)
 	if label == "" {
