@@ -212,10 +212,10 @@ type NotificationData struct {
 	// digest, notify.test and approvals of no session. ntfy's sequence ID
 	// and the s= of the Click link are both made from it.
 	SessionID string `json:"session_id,omitempty"`
-	// TaskNumber is the number of the session's task (0: none). Not part
-	// of the event: pushes title the notification "#N <title>" (see
-	// notify's labelled), a digest of several never.
-	TaskNumber int `json:"-"`
+	// TaskLabel names the session's task: "#N", or a named task's name
+	// ("": none). Not part of the event: pushes title the notification
+	// "<label> <title>" (see notify's labelled), a digest of several never.
+	TaskLabel string `json:"-"`
 }
 
 // Approval is a pending permission request reported by a harness hook. It
@@ -311,6 +311,11 @@ type Config struct {
 	// Repos holds settings per source checkout (元のチェックアウト), keyed
 	// by its canonical path (task.Canonical).
 	Repos map[string]RepoConfig `json:"repos,omitempty"`
+	// WorktreeFolder is the worktree folder (worktree の置き場): an
+	// absolute, clean path under which task worktrees go,
+	// <folder>/<checkout name>/<name or number-slug>. Unset: issue and PR
+	// tasks go next to their checkout, named tasks cannot be made.
+	WorktreeFolder string `json:"worktree_folder,omitempty"`
 }
 
 // RepoConfig is one source checkout's settings.

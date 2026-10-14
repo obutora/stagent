@@ -44,7 +44,7 @@ func (d *Daemon) notifyLocked(s *session, n wire.NotificationData, push *wire.No
 	}
 	p := *push
 	p.SessionID = s.s.ID
-	p.TaskNumber = d.taskNumberLocked(s)
+	p.TaskLabel = d.taskLabelLocked(s)
 	cfg := d.eff.Notify
 	if !notify.Enabled(cfg) || !notify.Wants(cfg, p) || cfg.SkipWhenClaudeAppNotifies && s.remoteControl {
 		return

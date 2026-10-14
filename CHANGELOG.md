@@ -3,6 +3,39 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.14.0
+
+### Added
+
+- Tasks: a task can be tied to a name instead of an Issue or PR (`kind:
+  name`, `Task.name`): a worktree on a branch of that name (or the app's)
+  made from the base without gh, with the same copied files, shared
+  directories, setup and 片付け as an issue's. Its key is the checkout
+  and the name (an issue's number never matches it); it is never
+  `in_place`. `task.create` and `task.register` gain `name`;
+  `task.create` refuses an invalid name, a missing `worktree_folder` and
+  a place that is a non-empty directory (`bad_request`). `task.preview`
+  gains `name?` and `branch?` and answers `name_problem` (`invalid`,
+  `task`, `folder`, `branch` or `no_folder`) while the app's name is
+  typed. A push about a named task's session puts its name where an
+  issue's `#N` goes (#877).
+- `config.json` gains `worktree_folder`, the worktree folder (worktree
+  の置き場): named tasks go in `<folder>/<checkout name>/<name>`, and
+  with it set Issue and PR tasks in `<folder>/<checkout
+  name>/<number>-<slug>` instead of next to the checkout. `config.set`
+  expands a leading `~` with the host's home and refuses a path that is
+  not absolute (#877).
+
+### Fixed
+
+- Host screen, Android: on Linux without `$XDG_RUNTIME_DIR` (an SSH
+  session in a container without logind, `su`), the emulator's discovery
+  file is also read where the emulator falls back to when `/run/user/<uid>`
+  does not exist: `avd/running` in its user directory (`~/.android`, or
+  `$ANDROID_EMULATOR_HOME`, `$ANDROID_PREFS_ROOT`, `$ANDROID_SDK_HOME` as
+  the emulator takes them). Such an emulator was listed `no_grpc` and
+  `host_screen.start` answered `unavailable` (#705).
+
 ## 0.13.0
 
 ### Added

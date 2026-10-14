@@ -7,26 +7,42 @@ package wire
 
 // TaskPreviewParams is task.preview. WorktreeInclude, when present (an
 // empty list included), replaces the patterns saved in config.json for
-// repo: an unsaved trial. Absent (null) uses the saved ones.
+// repo: an unsaved trial. Absent (null) uses the saved ones. Name, when
+// not empty, asks whether a named task of repo could take it (and Branch,
+// default Name, as its branch): TaskPreviewResult.NameProblem.
 type TaskPreviewParams struct {
 	Repo            string   `json:"repo"`
 	WorktreeInclude []string `json:"worktree_include"`
+	Name            string   `json:"name,omitempty"`
+	Branch          string   `json:"branch,omitempty"`
 }
 
 // TaskPreviewResult: what a new worktree of Repo (canonical) would get.
 // Copies holds at most TaskPreviewRows rows (Truncated then), Skipped too;
 // TotalBytes counts every copy. Setup is the source checkout's orca.yaml
 // scripts.setup; OrcaError, one line, says that orca.yaml is unusable.
+// NameProblem (TaskName*) is the first reason TaskPreviewParams.Name
+// cannot be taken, omitted when it can or none was asked.
 type TaskPreviewResult struct {
-	Repo       string     `json:"repo"`
-	Copies     []TaskCopy `json:"copies"`
-	Links      []TaskLink `json:"links"`
-	Skipped    []TaskSkip `json:"skipped"`
-	TotalBytes int64      `json:"total_bytes"`
-	Truncated  bool       `json:"truncated"`
-	Setup      string     `json:"setup,omitempty"`
-	OrcaError  string     `json:"orca_error,omitempty"`
+	Repo        string     `json:"repo"`
+	Copies      []TaskCopy `json:"copies"`
+	Links       []TaskLink `json:"links"`
+	Skipped     []TaskSkip `json:"skipped"`
+	TotalBytes  int64      `json:"total_bytes"`
+	Truncated   bool       `json:"truncated"`
+	Setup       string     `json:"setup,omitempty"`
+	OrcaError   string     `json:"orca_error,omitempty"`
+	NameProblem string     `json:"name_problem,omitempty"`
 }
+
+// Why a named task cannot take a name, checked in this order.
+const (
+	TaskNameInvalid  = "invalid"   // not a valid name (task.ValidName)
+	TaskNameTask     = "task"      // a task of the repo has that name
+	TaskNameFolder   = "folder"    // <worktree_folder>/<repo name>/<name> exists
+	TaskNameBranch   = "branch"    // the local branch (Branch, else Name) exists
+	TaskNameNoFolder = "no_folder" // config.json has no worktree_folder
+)
 
 // TaskPreviewRows caps TaskPreviewResult.Copies and Skipped.
 const TaskPreviewRows = 500

@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/obutora/stagent/internal/wire"
 )
 
 // NewID returns a random 16-hex-char task id.
@@ -146,6 +148,19 @@ func SamePath(a, b string) bool {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
+}
+
+// SameKey reports whether t is the task keyed by the source checkout repo
+// (canonical) and, for kind name, name (exactly), else number: a named
+// task never shares its key with an issue's or PR's.
+func SameKey(t *wire.Task, repo, kind string, number int, name string) bool {
+	if !SamePath(t.Repo, repo) {
+		return false
+	}
+	if kind == wire.TaskKindName {
+		return t.Kind == wire.TaskKindName && t.Name == name
+	}
+	return t.Kind != wire.TaskKindName && t.Number == number
 }
 
 // Within reports whether canonical path p is dir or lies inside it.

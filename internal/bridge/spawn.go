@@ -54,7 +54,7 @@ func (b *Bridge) doSpawn(p wire.SpawnParams) (*wire.SpawnResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	cwd := b.expandHome(p.Cwd)
+	cwd := b.l.ExpandHome(p.Cwd)
 	if st, err := os.Stat(cwd); err != nil || !st.IsDir() {
 		return nil, wire.Errorf(wire.ErrBadRequest, "session.spawn: cwd %q is not a directory", cwd)
 	}
@@ -212,17 +212,6 @@ func (b *Bridge) registeredSession(ctx context.Context, id string) *wire.Session
 		}
 	}
 	return nil
-}
-
-// expandHome resolves "", "~" and "~/..." against the home directory.
-func (b *Bridge) expandHome(p string) string {
-	switch {
-	case p == "" || p == "~":
-		return b.l.Home
-	case strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`):
-		return filepath.Join(b.l.Home, p[2:])
-	}
-	return p
 }
 
 // logTail returns the end of a holder's stderr log for error messages.

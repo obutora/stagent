@@ -6,7 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/obutora/stagent/internal/wire"
 )
 
 func git(t *testing.T, dir string, args ...string) {
@@ -112,6 +115,59 @@ func TestWithin(t *testing.T) {
 	} {
 		if got := Within(filepath.FromSlash(p), dir); got != want {
 			t.Errorf("Within(%s, %s) = %v, want %v", p, dir, got, want)
+		}
+	}
+}
+
+// A task's key is its checkout and number, or name for a named task: an
+// issue never matches a name, nor one name another.
+func TestSameKey(t *testing.T) {
+	repo := filepath.FromSlash("/w/repo")
+	issue := &wire.Task{Repo: repo, Kind: wire.TaskKindIssue, Number: 5}
+	pr := &wire.Task{Repo: repo, Kind: wire.TaskKindPR, Number: 5}
+	named := &wire.Task{Repo: repo, Kind: wire.TaskKindName, Name: "brave-otter"}
+	for _, c := range []struct {
+		t      *wire.Task
+		repo   string
+		kind   string
+		number int
+		name   string
+		want   bool
+	}{
+		{issue, repo, wire.TaskKindIssue, 5, "", true},
+		{pr, repo, wire.TaskKindIssue, 5, "", true}, // number keys issues and PRs alike
+		{issue, repo, wire.TaskKindIssue, 6, "", false},
+		{issue, filepath.FromSlash("/w/other"), wire.TaskKindIssue, 5, "", false},
+		{issue, repo, wire.TaskKindName, 0, "5", false},
+		{named, repo, wire.TaskKindName, 0, "brave-otter", true},
+		{named, repo, wire.TaskKindName, 0, "Brave-otter", false},
+		{named, repo, wire.TaskKindName, 0, "calm-fox", false},
+		{named, repo, wire.TaskKindIssue, 0, "", false},
+		{named, filepath.FromSlash("/w/other"), wire.TaskKindName, 0, "brave-otter", false},
+	} {
+		if got := SameKey(c.t, c.repo, c.kind, c.number, c.name); got != c.want {
+			t.Errorf("SameKey(%+v, %s, %s, %d, %q) = %v", *c.t, c.repo, c.kind, c.number, c.name, got)
+		}
+	}
+}
+
+// A name is 1–64 characters, no whitespace, control characters or
+// / \ : * ? " < > |, not starting with . or -, and a branch name git takes.
+func TestValidName(t *testing.T) {
+	_, repo := newRepo(t)
+	ctx := context.Background()
+	for _, ok := range []string{"brave-otter", "a", "Issue_42", "v1.2", "名前", strings.Repeat("a", 64), strings.Repeat("あ", 64)} {
+		if err := ValidName(ctx, nil, repo, ok); err != nil {
+			t.Errorf("ValidName(%q): %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"", strings.Repeat("a", 65), ".", "..", ".hidden", "-x", "two words", "tab\tx", "nl\nx", "nul\x00x",
+		"a/b", `a\b`, "a:b", "a*b", "a?b", `a"b`, "a<b", "a>b", "a|b",
+		"a..b", "a.lock", "a@{b", "a~b", "a^b", "a[b", "x.", "@{-1}", "a\xffb",
+	} {
+		if err := ValidName(ctx, nil, repo, bad); err == nil {
+			t.Errorf("ValidName(%q) accepted", bad)
 		}
 	}
 }

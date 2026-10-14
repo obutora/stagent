@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -111,6 +112,18 @@ func resolve(home string, isolated bool) (*Layout, error) {
 		return nil, err
 	}
 	return l, nil
+}
+
+// ExpandHome resolves "", "~", "~/..." and `~\...` against Home; any
+// other p is returned as it is.
+func (l *Layout) ExpandHome(p string) string {
+	switch {
+	case p == "" || p == "~":
+		return l.Home
+	case strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`):
+		return filepath.Join(l.Home, p[2:])
+	}
+	return p
 }
 
 // HolderAddr is the IPC address a session holder listens on.

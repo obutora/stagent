@@ -3,9 +3,10 @@ package wire
 import "time"
 
 // ---------------------------------------------------------------------------
-// Tasks (タスク): an Issue or PR being worked on in a worktree of a source
-// checkout (元のチェックアウト), or in the checkout itself (in_place). The
-// daemon keeps them in <root>/state/tasks.json and is the only writer.
+// Tasks (タスク): an Issue or PR, or a name the user gave, being worked on
+// in a worktree of a source checkout (元のチェックアウト), or an Issue or PR
+// in the checkout itself (in_place). The daemon keeps them in
+// <root>/state/tasks.json and is the only writer.
 
 // Task methods (see PROTOCOL.md).
 const (
@@ -24,8 +25,9 @@ const (
 	// task.progress reports a stage of `stagent task run` / `stagent task
 	// remove` (TaskProgressParams → {}).
 	MethodTaskProgress = "task.progress"
-	// task.register adds a task by its key (source checkout + number), or
-	// answers the existing one (TaskRegisterParams → TaskRegisterResult).
+	// task.register adds a task by its key (source checkout + number, or
+	// + name), or answers the existing one (TaskRegisterParams →
+	// TaskRegisterResult).
 	// The bridge's task.create calls it before preparing anything.
 	MethodTaskRegister = "task.register"
 	// task.forget deletes a task's record (TaskRemoved → {}): its sessions
@@ -41,6 +43,7 @@ const (
 const (
 	TaskKindIssue = "issue"
 	TaskKindPR    = "pr"
+	TaskKindName  = "name" // tied to Task.Name, no Issue or PR; never in_place
 )
 
 // Task states.
@@ -70,12 +73,15 @@ const (
 const TaskErrInterrupted = "interrupted"
 
 // Task is one task. Repo is the canonical path of the source checkout
-// (task.Canonical); with Number it is the task's key.
+// (task.Canonical); with Number (issue, pr) or Name (name) it is the
+// task's key (task.SameKey). A named task has Number 0 and no Title or
+// URL.
 type Task struct {
 	ID     string `json:"id"`
 	Repo   string `json:"repo"`
 	Kind   string `json:"kind"` // TaskKind*
 	Number int    `json:"number"`
+	Name   string `json:"name,omitempty"` // kind name only (task.ValidName)
 	Title  string `json:"title"`
 	URL    string `json:"url"`
 	Branch string `json:"branch"`
@@ -123,6 +129,7 @@ type TaskRegisterParams struct {
 	Repo      string `json:"repo"`
 	Kind      string `json:"kind"`
 	Number    int    `json:"number"`
+	Name      string `json:"name,omitempty"`
 	Title     string `json:"title"`
 	URL       string `json:"url"`
 	Branch    string `json:"branch"`
@@ -146,14 +153,17 @@ type TaskRegisterResult struct {
 // TaskCreateParams is task.create: register the task (task.register) and
 // start its prepared session, `stagent task run <id> -- <command…>`, in
 // the task's place. Branch overrides an issue's default branch
-// (<number>-<slug>); a PR's is its head branch. Base defaults to the
-// repository's default branch. An empty Command opens a terminal (the
-// login shell; cmd.exe on Windows). SwitchBranch and Setup apply to
-// in_place tasks only: a worktree task always gets its branch and setup.
+// (<number>-<slug>) and a named task's (Name); a PR's is its head branch.
+// Base defaults to the repository's default branch. Kind name takes Name
+// instead of Number, Title and URL, needs config.json's worktree_folder
+// and is never InPlace. An empty Command opens a terminal (the login
+// shell; cmd.exe on Windows). SwitchBranch and Setup apply to in_place
+// tasks only: a worktree task always gets its branch and setup.
 type TaskCreateParams struct {
 	Repo         string            `json:"repo"`
 	Kind         string            `json:"kind"`
 	Number       int               `json:"number"`
+	Name         string            `json:"name,omitempty"`
 	Title        string            `json:"title"`
 	URL          string            `json:"url"`
 	Base         string            `json:"base,omitempty"`

@@ -86,33 +86,45 @@ func TestRunningDirPerOS(t *testing.T) {
 	home := t.TempDir()
 	xdg := t.TempDir()
 	local := t.TempDir()
+	emuHome := t.TempDir()
+	prefs := t.TempDir()
+	os.Mkdir(filepath.Join(prefs, ".android"), 0o755)
+	sdkHome := t.TempDir()
 	cases := []struct {
 		name string
 		h    host
-		want string
+		want []string // the emulator writes in the last
 	}{
-		{"linux", host{goos: "linux", env: []string{"XDG_RUNTIME_DIR=" + xdg}, home: home, alive: aliveOnly(4242)}, filepath.Join(xdg, "avd", "running")},
-		{"linux without XDG_RUNTIME_DIR", host{goos: "linux", home: home, uid: 1000, alive: aliveOnly(4242)}, filepath.Join("/run/user/1000", "avd", "running")},
-		{"darwin", host{goos: "darwin", env: []string{"XDG_RUNTIME_DIR=" + xdg}, home: home, alive: aliveOnly(4242)}, filepath.Join(home, "Library", "Caches", "TemporaryItems", "avd", "running")},
-		{"windows", host{goos: "windows", env: []string{"LocalAppData=" + local}, home: home, alive: aliveOnly(4242)}, filepath.Join(local, "Temp", "avd", "running")},
-		{"windows without LOCALAPPDATA", host{goos: "windows", home: home, alive: aliveOnly(4242)}, filepath.Join(home, "AppData", "Local", "Temp", "avd", "running")},
+		{"linux", host{goos: "linux", env: []string{"XDG_RUNTIME_DIR=" + xdg}, home: home, alive: aliveOnly(4242)}, []string{filepath.Join(xdg, "avd", "running")}},
+		// The emulator's fallback (#705): /run/user/<uid> when it exists,
+		// else its user directory. No user has uid 99999 here.
+		{"linux without XDG_RUNTIME_DIR", host{goos: "linux", home: home, uid: 99999, alive: aliveOnly(4242)},
+			[]string{filepath.Join("/run/user/99999", "avd", "running"), filepath.Join(home, ".android", "avd", "running")}},
+		{"linux without XDG_RUNTIME_DIR, ANDROID_EMULATOR_HOME", host{goos: "linux", env: []string{"ANDROID_PREFS_ROOT=" + prefs, "ANDROID_EMULATOR_HOME=" + emuHome}, home: home, uid: 99999, alive: aliveOnly(4242)},
+			[]string{filepath.Join("/run/user/99999", "avd", "running"), filepath.Join(emuHome, "avd", "running")}},
+		{"linux without XDG_RUNTIME_DIR, ANDROID_PREFS_ROOT with .android", host{goos: "linux", env: []string{"ANDROID_PREFS_ROOT=" + prefs, "ANDROID_SDK_HOME=" + sdkHome}, home: home, uid: 99999, alive: aliveOnly(4242)},
+			[]string{filepath.Join("/run/user/99999", "avd", "running"), filepath.Join(prefs, ".android", "avd", "running")}},
+		{"linux without XDG_RUNTIME_DIR, ANDROID_SDK_HOME without .android", host{goos: "linux", env: []string{"ANDROID_SDK_HOME=" + sdkHome}, home: home, uid: 99999, alive: aliveOnly(4242)},
+			[]string{filepath.Join("/run/user/99999", "avd", "running"), filepath.Join(sdkHome, "avd", "running")}},
+		{"darwin", host{goos: "darwin", env: []string{"XDG_RUNTIME_DIR=" + xdg}, home: home, alive: aliveOnly(4242)}, []string{filepath.Join(home, "Library", "Caches", "TemporaryItems", "avd", "running")}},
+		{"windows", host{goos: "windows", env: []string{"LocalAppData=" + local}, home: home, alive: aliveOnly(4242)}, []string{filepath.Join(local, "Temp", "avd", "running")}},
+		{"windows without LOCALAPPDATA", host{goos: "windows", home: home, alive: aliveOnly(4242)}, []string{filepath.Join(home, "AppData", "Local", "Temp", "avd", "running")}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := c.h.runningDir()
-			if got != c.want {
-				t.Fatalf("runningDir = %q, want %q", got, c.want)
+			got := c.h.runningDirs()
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("runningDirs = %q, want %q", got, c.want)
 			}
-			if !strings.HasPrefix(got, string(filepath.Separator)+"run") {
-				writeDiscovery(t, got, "4242", discovery5554)
-				// Sorted after pid_4242.ini: read, it would win the serial.
-				writeDiscovery(t, got, "9128004", "port.serial=5554\navd.name=motion_test\ngrpc.port=8556\n")
-				writeDiscovery(t, got, "3128004", "port.serial=5556\navd.name=motion_test\ngrpc.port=8558\n")
-				defer os.RemoveAll(got)
-				running := c.h.readRunning()
-				if e, ok := running["emulator-5554"]; !ok || e.grpcPort != 8554 || len(running) != 1 {
-					t.Fatalf("readRunning in %q = %v, want emulator-5554 of pid 4242 only", got, running)
-				}
+			dir := got[len(got)-1]
+			writeDiscovery(t, dir, "4242", discovery5554)
+			// Sorted after pid_4242.ini: read, it would win the serial.
+			writeDiscovery(t, dir, "9128004", "port.serial=5554\navd.name=motion_test\ngrpc.port=8556\n")
+			writeDiscovery(t, dir, "3128004", "port.serial=5556\navd.name=motion_test\ngrpc.port=8558\n")
+			defer os.RemoveAll(dir)
+			running := c.h.readRunning()
+			if e, ok := running["emulator-5554"]; !ok || e.grpcPort != 8554 || len(running) != 1 {
+				t.Fatalf("readRunning in %q = %v, want emulator-5554 of pid 4242 only", dir, running)
 			}
 		})
 	}
@@ -120,7 +132,7 @@ func TestRunningDirPerOS(t *testing.T) {
 
 func TestReadRunningSkipsOtherFiles(t *testing.T) {
 	h := host{goos: "linux", env: []string{"XDG_RUNTIME_DIR=" + t.TempDir()}, alive: everyAlive}
-	dir := h.runningDir()
+	dir := h.runningDirs()[0]
 	if len(h.readRunning()) != 0 {
 		t.Fatal("a missing directory has no emulators")
 	}
@@ -276,7 +288,7 @@ func TestListSection(t *testing.T) {
 	home := t.TempDir()
 	h := host{goos: "darwin", home: home, alive: everyAlive}
 	executable(t, filepath.Join(home, "Library", "Android", "sdk", "platform-tools"), "adb")
-	writeDiscovery(t, h.runningDir(), "4242", discovery5554)
+	writeDiscovery(t, h.runningDirs()[0], "4242", discovery5554)
 	k := &Kind{
 		host: func() host { return h },
 		adb:  fakeADB(adbOutput, nil),
@@ -321,8 +333,8 @@ func TestListSkipsOfflineWithoutDiscovery(t *testing.T) {
 	home := t.TempDir()
 	h := host{goos: "darwin", home: home, alive: everyAlive}
 	executable(t, filepath.Join(home, "Library", "Android", "sdk", "platform-tools"), "adb")
-	writeDiscovery(t, h.runningDir(), "4242", discovery5554)
-	writeDiscovery(t, h.runningDir(), "4243", "port.serial=5558\navd.name=Booting\n")
+	writeDiscovery(t, h.runningDirs()[0], "4242", discovery5554)
+	writeDiscovery(t, h.runningDirs()[0], "4243", "port.serial=5558\navd.name=Booting\n")
 	devices := "List of devices attached\n" +
 		"emulator-5562          offline transport_id:2\n" +
 		"emulator-5558          offline transport_id:6\n" +
@@ -378,7 +390,7 @@ func TestListShowsAnEmulatorWithAnEndedEmulatorsFileAsNoGRPC(t *testing.T) {
 	home := t.TempDir()
 	h := host{goos: "linux", env: []string{"XDG_RUNTIME_DIR=" + t.TempDir()}, home: home, alive: aliveOnly()}
 	executable(t, filepath.Join(home, "Android", "Sdk", "platform-tools"), "adb")
-	writeDiscovery(t, h.runningDir(), "3128004", discoveryOfAnEndedEmulator)
+	writeDiscovery(t, h.runningDirs()[0], "3128004", discoveryOfAnEndedEmulator)
 	devices := "List of devices attached\n" +
 		"emulator-5554          device product:p model:m device:d transport_id:1\n"
 	k := &Kind{host: func() host { return h }, adb: fakeADB(devices, map[string]string{"emulator-5554": "motion_test"})}
@@ -398,10 +410,10 @@ func TestOpenErrors(t *testing.T) {
 	home := t.TempDir()
 	h := host{goos: "darwin", home: home, alive: aliveOnly(1, 2, 3)}
 	executable(t, filepath.Join(home, "Library", "Android", "sdk", "platform-tools"), "adb")
-	writeDiscovery(t, h.runningDir(), "1", "port.serial=5558\navd.name=NoGRPC\n")
+	writeDiscovery(t, h.runningDirs()[0], "1", "port.serial=5558\navd.name=NoGRPC\n")
 	advertise(t, h, "2", 5560, "Silent", closedPort(t))
-	writeDiscovery(t, h.runningDir(), "3", fmt.Sprintf("port.serial=5564\ngrpc.port=%d\n", closedPort(t))) // no avd.name
-	writeDiscovery(t, h.runningDir(), "3128004", discoveryOfAnEndedEmulator)
+	writeDiscovery(t, h.runningDirs()[0], "3", fmt.Sprintf("port.serial=5564\ngrpc.port=%d\n", closedPort(t))) // no avd.name
+	writeDiscovery(t, h.runningDirs()[0], "3128004", discoveryOfAnEndedEmulator)
 	devices := adbOutput +
 		"emulator-5560          device product:p model:m device:d transport_id:8\n" +
 		"emulator-5564          device product:p model:m device:d transport_id:10\n"

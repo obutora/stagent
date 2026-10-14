@@ -180,3 +180,65 @@ func TestTaskCreateEndToEnd(t *testing.T) {
 		t.Fatalf("task.create of a ready task = %+v", again)
 	}
 }
+
+// A named task end to end: config.set expands the worktree folder, the
+// name is free until the task takes it, and the task gets its worktree on
+// a branch of its name in <folder>/<repo>/<name>, made from base without gh.
+func TestNamedTaskEndToEnd(t *testing.T) {
+	a, _, _, home := startPersistBridge(t)
+	gitIn := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed := filepath.Join(home, "seed")
+	gitIn(home, "init", "-q", "-b", "main", seed)
+	gitIn(seed, "commit", "-q", "--allow-empty", "-m", "init")
+	gitIn(home, "clone", "-q", "--bare", seed, "origin.git")
+	gitIn(home, "clone", "-q", "origin.git", "app")
+	repo := filepath.Join(home, "app")
+	place := filepath.Join(home, "wt", "app", "brave-otter")
+
+	var cfg wire.ConfigResult
+	a.call(t, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{"worktree_folder":"~/wt"}`)}, &cfg)
+	if want := filepath.Join(home, "wt"); cfg.Config.WorktreeFolder != want {
+		t.Fatalf("worktree_folder %q, want %q", cfg.Config.WorktreeFolder, want)
+	}
+	preview := func() string {
+		var res wire.TaskPreviewResult
+		a.call(t, wire.MethodTaskPreview, wire.TaskPreviewParams{Repo: repo, Name: "brave-otter"}, &res)
+		return res.NameProblem
+	}
+	if got := preview(); got != "" {
+		t.Fatalf("name_problem of a free name %q", got)
+	}
+
+	var res wire.TaskCreateResult
+	a.call(t, wire.MethodTaskCreate, wire.TaskCreateParams{
+		Repo: repo, Kind: wire.TaskKindName, Name: "brave-otter",
+		Command: []string{"sh", "-c", "echo AGENT-RAN; exec sleep 60"}, Cols: 80, Rows: 24,
+	}, &res)
+	if res.Existed || res.Session == nil || res.Task.Worktree != place || res.Task.Branch != "brave-otter" {
+		t.Fatalf("task.create = %+v", res)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		a.Call(ctx, wire.MethodSessionSignal, wire.SignalParams{ID: res.Session.ID, Signal: wire.SignalKill}, nil)
+	})
+	a.waitFor(t, "named task ready", func(m *wire.Msg) bool {
+		return taskUpdated(m, func(tk wire.Task) bool { return tk.ID == res.Task.ID && tk.State == wire.TaskReady })
+	})
+	if got := gitIn(place, "symbolic-ref", "--short", "HEAD"); got != "brave-otter" {
+		t.Fatalf("worktree on %q", got)
+	}
+	if got := preview(); got != wire.TaskNameTask {
+		t.Fatalf("name_problem of a taken name %q, want task", got)
+	}
+}

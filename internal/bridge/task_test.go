@@ -4,6 +4,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -277,6 +278,139 @@ func TestTaskCreateRefusals(t *testing.T) {
 	bad.Repo = t.TempDir()
 	if e := a2.call(t, wire.MethodTaskCreate, bad, nil); e == nil || e.Code != wire.ErrBadRequest {
 		t.Fatalf("no checkout: %v", e)
+	}
+	if slices.Contains(d.calls, wire.MethodTaskRegister) || slices.Contains(d2.calls, wire.MethodTaskRegister) || len(starts())+len(starts2()) != 0 {
+		t.Fatalf("daemon calls %v %v, starts %v %v", d.calls, d2.calls, starts(), starts2())
+	}
+}
+
+// withFolder makes the bridge's config.json hold worktree_folder folder
+// ("": none), as config.set stores it.
+func withFolder(t *testing.T, folder string) func(*Bridge) {
+	return func(b *Bridge) {
+		cfg, _ := json.Marshal(wire.Config{WorktreeFolder: folder})
+		if err := os.WriteFile(b.l.Config, cfg, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A named task: registered by its name (no number, title or url), on a
+// branch of that name (or the app's) from the default branch, in
+// <worktree folder>/<checkout name>/<name>, made with its parents.
+func TestTaskCreateNamed(t *testing.T) {
+	repo := checkout(t)
+	folder := filepath.Join(filepath.Dir(repo), "worktrees")
+	d := &taskDaemon{reg: wire.TaskRegisterResult{Task: wire.Task{ID: "task9", State: wire.TaskPreparing}}}
+	a, starts := startTaskBridge(t, d, withFolder(t, folder))
+	var res wire.TaskCreateResult
+	if e := a.call(t, wire.MethodTaskCreate, wire.TaskCreateParams{
+		Repo: repo, Kind: wire.TaskKindName, Name: "brave-otter", Title: "ignored", URL: "https://example.com",
+		Command: []string{"claude"},
+	}, &res); e != nil {
+		t.Fatal(e)
+	}
+	place := filepath.Join(folder, "app", "brave-otter")
+	reg := d.register
+	if reg.Kind != wire.TaskKindName || reg.Name != "brave-otter" || reg.Number != 0 || reg.Title != "" || reg.URL != "" ||
+		reg.Branch != "brave-otter" || reg.Base != "trunk" || reg.Worktree != place || reg.InPlace {
+		t.Fatalf("task.register %+v", reg)
+	}
+	if empty, err := os.ReadDir(place); err != nil || len(empty) != 0 {
+		t.Fatalf("task place %v, %v", empty, err)
+	}
+	if s := starts(); len(s) != 1 || s[0].args[slices.Index(s[0].args, "--cwd")+1] != place {
+		t.Fatalf("holder starts %v", s)
+	}
+
+	if e := a.call(t, wire.MethodTaskCreate, wire.TaskCreateParams{
+		Repo: repo, Kind: wire.TaskKindName, Name: "calm-fox", Branch: "feature/fox", Base: "dev", Command: []string{"claude"},
+	}, nil); e != nil {
+		t.Fatal(e)
+	}
+	if reg := d.register; reg.Branch != "feature/fox" || reg.Base != "dev" || reg.Worktree != filepath.Join(folder, "app", "calm-fox") {
+		t.Fatalf("task.register %+v", reg)
+	}
+}
+
+// With a worktree folder an issue's (or PR's) place is
+// <folder>/<checkout name>/<number>-<slug>, whatever its branch.
+func TestTaskCreateIssueInWorktreeFolder(t *testing.T) {
+	repo := checkout(t)
+	folder := filepath.Join(filepath.Dir(repo), "worktrees")
+	d := &taskDaemon{reg: wire.TaskRegisterResult{Task: wire.Task{ID: "task1"}}}
+	a, _ := startTaskBridge(t, d, withFolder(t, folder))
+	if e := a.call(t, wire.MethodTaskCreate, wire.TaskCreateParams{
+		Repo: repo, Kind: wire.TaskKindIssue, Number: 493, Title: "Windows GitHub icon", Branch: "icon-fix", Command: []string{"claude"},
+	}, nil); e != nil {
+		t.Fatal(e)
+	}
+	if reg := d.register; reg.Branch != "icon-fix" || reg.Worktree != filepath.Join(folder, "app", "493-windows-github-icon") {
+		t.Fatalf("task.register %+v", reg)
+	}
+}
+
+// A known task is found by its key: a name finds the named task of that
+// name only, a number the issue's; the known one keeps its branch and its
+// place may hold its worktree.
+func TestTaskCreateNamedKeys(t *testing.T) {
+	repo := checkout(t)
+	folder := filepath.Join(filepath.Dir(repo), "worktrees")
+	known := wire.Task{ID: "named", Repo: repo, Kind: wire.TaskKindName, Name: "brave-otter", Branch: "otter-branch", Base: "trunk", State: wire.TaskReady}
+	issue := wire.Task{ID: "issue", Repo: repo, Kind: wire.TaskKindIssue, Number: 5, Branch: "5-old", Base: "trunk", State: wire.TaskReady}
+	writeTree(t, filepath.Join(folder, "app", "brave-otter"), map[string]string{"README": "worktree"})
+	for _, c := range []struct {
+		p      wire.TaskCreateParams
+		branch string
+	}{
+		{wire.TaskCreateParams{Kind: wire.TaskKindName, Name: "brave-otter"}, "otter-branch"},
+		{wire.TaskCreateParams{Kind: wire.TaskKindName, Name: "calm-fox"}, "calm-fox"},
+		{wire.TaskCreateParams{Kind: wire.TaskKindName, Name: "5"}, "5"},
+		{wire.TaskCreateParams{Kind: wire.TaskKindIssue, Number: 5, Title: "New"}, "5-old"},
+	} {
+		d := &taskDaemon{tasks: []wire.Task{issue, known}, reg: wire.TaskRegisterResult{Task: wire.Task{ID: "new"}}}
+		a, _ := startTaskBridge(t, d, withFolder(t, folder))
+		c.p.Repo, c.p.Command = repo, []string{"claude"}
+		if e := a.call(t, wire.MethodTaskCreate, c.p, nil); e != nil {
+			t.Fatalf("%+v: %v", c.p, e)
+		}
+		if d.register.Branch != c.branch || d.register.Name != c.p.Name || d.register.Number != c.p.Number {
+			t.Fatalf("%+v: task.register %+v", c.p, d.register)
+		}
+	}
+}
+
+// A named task is refused before anything is registered or started
+// (bad_request): no worktree folder, in_place, a number, an invalid name,
+// or a place already taken by a non-empty directory or a file.
+func TestTaskCreateNamedRefusals(t *testing.T) {
+	repo := checkout(t)
+	folder := filepath.Join(filepath.Dir(repo), "worktrees")
+	writeTree(t, filepath.Join(folder, "app"), map[string]string{"full/x": "x", "file": "x"})
+	ok := wire.TaskCreateParams{Repo: repo, Kind: wire.TaskKindName, Name: "brave-otter", Command: []string{"claude"}}
+
+	d := &taskDaemon{}
+	a, starts := startTaskBridge(t, d)
+	if e := a.call(t, wire.MethodTaskCreate, ok, nil); e == nil || e.Code != wire.ErrBadRequest || e.Message != "task.create: worktree_folder is not set" {
+		t.Fatalf("no worktree folder: %v", e)
+	}
+	d2 := &taskDaemon{}
+	a2, starts2 := startTaskBridge(t, d2, withFolder(t, folder))
+	for _, bad := range []func(*wire.TaskCreateParams){
+		func(p *wire.TaskCreateParams) { p.InPlace = true },
+		func(p *wire.TaskCreateParams) { p.Number = 3 },
+		func(p *wire.TaskCreateParams) { p.Name = "" },
+		func(p *wire.TaskCreateParams) { p.Name = "a/b" },
+		func(p *wire.TaskCreateParams) { p.Name = ".hidden" },
+		func(p *wire.TaskCreateParams) { p.Branch = "two words" },
+		func(p *wire.TaskCreateParams) { p.Name = "full" },
+		func(p *wire.TaskCreateParams) { p.Name = "file" },
+	} {
+		p := ok
+		bad(&p)
+		if e := a2.call(t, wire.MethodTaskCreate, p, nil); e == nil || e.Code != wire.ErrBadRequest {
+			t.Errorf("%+v: %v", p, e)
+		}
 	}
 	if slices.Contains(d.calls, wire.MethodTaskRegister) || slices.Contains(d2.calls, wire.MethodTaskRegister) || len(starts())+len(starts2()) != 0 {
 		t.Fatalf("daemon calls %v %v, starts %v %v", d.calls, d2.calls, starts(), starts2())

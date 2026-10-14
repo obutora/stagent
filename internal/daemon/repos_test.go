@@ -71,3 +71,61 @@ func TestConfigSetRepos(t *testing.T) {
 		t.Fatalf("a refused config.set wrote %s", after)
 	}
 }
+
+// config.set stores worktree_folder absolute and clean, a leading ~
+// expanded with the daemon user's home; "" and null remove it; a path
+// that is not absolute is refused (bad_request, nothing written).
+func TestConfigSetWorktreeFolder(t *testing.T) {
+	e := startDaemon(t, wire.Config{}, Options{})
+	c, _ := e.client()
+	set := func(v any) error {
+		patch, _ := json.Marshal(map[string]any{"worktree_folder": v})
+		return c.Call(t.Context(), wire.MethodConfigSet, wire.ConfigSetParams{Config: patch}, nil)
+	}
+	get := func() string {
+		var res wire.ConfigResult
+		call(t, c, wire.MethodConfigGet, nil, &res)
+		return res.Config.WorktreeFolder
+	}
+	stored := func() string {
+		b, _ := os.ReadFile(e.layout.Config)
+		var cfg wire.Config
+		json.Unmarshal(b, &cfg)
+		return cfg.WorktreeFolder
+	}
+	sep := string(filepath.Separator)
+	dir := filepath.Join(t.TempDir(), "wt")
+	for _, tc := range []struct {
+		set  any
+		want string
+	}{
+		{"~", e.layout.Home},
+		{"~/worktrees", filepath.Join(e.layout.Home, "worktrees")},
+		{"~" + sep + "a" + sep + ".." + sep + "b", filepath.Join(e.layout.Home, "b")},
+		{dir + sep, dir},
+		{"", ""},
+		{dir, dir},
+		{nil, ""},
+	} {
+		if err := set(tc.set); err != nil {
+			t.Fatalf("config.set worktree_folder %v: %v", tc.set, err)
+		}
+		if got, s := get(), stored(); got != tc.want || s != tc.want {
+			t.Fatalf("worktree_folder %v: %q (stored %q), want %q", tc.set, got, s, tc.want)
+		}
+	}
+
+	if err := set(dir); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(e.layout.Config)
+	for _, bad := range []any{"worktrees", "./wt", "~user/wt", 3} {
+		var we *wire.Error
+		if err := set(bad); !errors.As(err, &we) || we.Code != wire.ErrBadRequest {
+			t.Errorf("config.set worktree_folder %v: %v, want bad_request", bad, err)
+		}
+	}
+	if after, _ := os.ReadFile(e.layout.Config); !bytes.Equal(after, before) {
+		t.Fatalf("a refused config.set wrote %s", after)
+	}
+}
