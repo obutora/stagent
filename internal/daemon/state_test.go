@@ -71,27 +71,46 @@ func TestClassifyHook(t *testing.T) {
 	payload := func(s string) hookPayload { return parseHookPayload(json.RawMessage(s)) }
 	cases := []struct {
 		name    string
+		harness string // claude when empty
 		event   string
 		payload string
 		want    hookEffect
 	}{
-		{"prompt", "UserPromptSubmit", `{}`, hookEffect{event: hookUserPromptSubmit, state: working}},
-		{"stop", "Stop", `{}`, hookEffect{event: hookStop, state: idle, turnComplete: true}},
-		{"permission", "PermissionRequest", `{"tool_name":"Bash"}`, hookEffect{event: hookPermissionRequest, state: needsAp, approval: true}},
-		{"event from payload", "", `{"hook_event_name":"UserPromptSubmit"}`, hookEffect{event: hookUserPromptSubmit, state: working}},
-		{"permission prompt", "Notification", `{"notification_type":"permission_prompt","message":"x"}`, hookEffect{event: hookNotification, state: needsAp}},
-		{"idle prompt", "Notification", `{"notification_type":"idle_prompt"}`, hookEffect{event: hookNotification, state: waiting}},
-		{"elicitation", "Notification", `{"notification_type":"elicitation_dialog"}`, hookEffect{event: hookNotification, state: waiting}},
-		{"auth success", "Notification", `{"notification_type":"auth_success","message":"ok"}`, hookEffect{event: hookNotification}},
-		{"legacy permission message", "Notification", `{"message":"Claude needs your permission to use Bash"}`, hookEffect{event: hookNotification, state: needsAp}},
-		{"legacy idle message", "Notification", `{"message":"Claude is waiting for your input"}`, hookEffect{event: hookNotification, state: waiting}},
-		{"codex notify", "notify", `{"type":"agent-turn-complete","thread-id":"t1"}`, hookEffect{event: hookStop, state: idle, turnComplete: true}},
-		{"session end", "SessionEnd", `{}`, hookEffect{event: hookSessionEnd, clear: true}},
-		{"session start", "SessionStart", `{}`, hookEffect{event: hookSessionStart}},
+		{"prompt", "", "UserPromptSubmit", `{}`, hookEffect{event: hookUserPromptSubmit, state: working}},
+		{"stop", "", "Stop", `{}`, hookEffect{event: hookStop, state: idle, turnComplete: true}},
+		{"permission", "", "PermissionRequest", `{"tool_name":"Bash"}`, hookEffect{event: hookPermissionRequest, state: needsAp, approval: true}},
+		{"event from payload", "", "", `{"hook_event_name":"UserPromptSubmit"}`, hookEffect{event: hookUserPromptSubmit, state: working}},
+		{"permission prompt", "", "Notification", `{"notification_type":"permission_prompt","message":"x"}`, hookEffect{event: hookNotification, state: needsAp}},
+		{"idle prompt", "", "Notification", `{"notification_type":"idle_prompt"}`, hookEffect{event: hookNotification, state: waiting}},
+		{"elicitation", "", "Notification", `{"notification_type":"elicitation_dialog"}`, hookEffect{event: hookNotification, state: waiting}},
+		{"auth success", "", "Notification", `{"notification_type":"auth_success","message":"ok"}`, hookEffect{event: hookNotification}},
+		{"legacy permission message", "", "Notification", `{"message":"Claude needs your permission to use Bash"}`, hookEffect{event: hookNotification, state: needsAp}},
+		{"legacy idle message", "", "Notification", `{"message":"Claude is waiting for your input"}`, hookEffect{event: hookNotification, state: waiting}},
+		{"codex notify", "codex", "notify", `{"type":"agent-turn-complete","thread-id":"t1"}`, hookEffect{event: hookStop, state: idle, turnComplete: true}},
+		{"session end", "", "SessionEnd", `{}`, hookEffect{event: hookSessionEnd, clear: true}},
+		{"session start", "", "SessionStart", `{}`, hookEffect{event: hookSessionStart}},
+		// Copilot CLI asks its PermissionRequest hook before its own checks
+		// (a rule or an earlier "for the session" may allow the tool without
+		// a menu): the hook only names the tool; the permission_prompt
+		// notification, sent with the menu, is the approval.
+		{"copilot permission check", "copilot", "PermissionRequest", `{"tool_name":"Bash"}`, hookEffect{event: hookPermissionRequest, permissionCheck: true}},
+		{"copilot permission prompt", "copilot", "Notification", `{"notification_type":"permission_prompt","message":"x"}`, hookEffect{event: hookNotification, state: needsAp, approval: true}},
+		{"copilot elicitation", "copilot", "Notification", `{"notification_type":"elicitation_dialog","message":"Copilot has a question"}`, hookEffect{event: hookNotification, state: waiting}},
+		// Copilot CLI's notices of background work are no state of the
+		// session's.
+		{"copilot shell completed", "copilot", "Notification", `{"notification_type":"shell_completed","message":"Shell completed"}`, hookEffect{event: hookNotification}},
+		{"copilot shell detached", "copilot", "Notification", `{"notification_type":"shell_detached_completed","message":"x"}`, hookEffect{event: hookNotification}},
+		{"copilot agent completed", "copilot", "Notification", `{"notification_type":"agent_completed","message":"x"}`, hookEffect{event: hookNotification}},
+		{"copilot agent idle", "copilot", "Notification", `{"notification_type":"agent_idle","message":"x"}`, hookEffect{event: hookNotification}},
+		{"copilot stop", "copilot", "Stop", `{"stop_reason":"end_turn"}`, hookEffect{event: hookStop, state: idle, turnComplete: true}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := classifyHook(c.event, payload(c.payload)); got != c.want {
+			h := c.harness
+			if h == "" {
+				h = "claude"
+			}
+			if got := classifyHook(h, c.event, payload(c.payload)); got != c.want {
 				t.Fatalf("classifyHook = %+v, want %+v", got, c.want)
 			}
 		})

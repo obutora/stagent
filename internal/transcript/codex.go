@@ -17,7 +17,7 @@ import (
 var codexFormat = format{
 	dir:       func(root string) string { return filepath.Join(root, "sessions") },
 	enumerate: listCodex,
-	named:     func(base, id string) bool { return strings.HasSuffix(base, "-"+id+".jsonl") },
+	named:     func(path, id string) bool { return strings.HasSuffix(filepath.Base(path), "-"+id+".jsonl") },
 	scan:      scanCodex,
 	titler:    codexTitler,
 	parse:     parseCodex,

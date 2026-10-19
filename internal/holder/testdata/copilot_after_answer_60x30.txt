@@ -1,0 +1,31 @@
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|● Clean the build directory and rebuild.
+|
+|● I'll remove the build directory first.
+|
+|● Run shell command
+|  $ rm -rf build
+|  └ 1 line...
+|
+|● Removed. Rebuilding now:
+|  1. Yes, run make
+|  2. Then run the tests
+cursor=0,29 alt=false appCursor=false bracketed=true

@@ -50,12 +50,18 @@ var wrappedCommands = func() []string {
 
 // The batch functions of the scripts tell whether the arguments of a
 // wrapped command ask for a non-interactive run, by its harness.Batch:
-// the first argument is one of Subcommands, any argument is one of Flags,
-// or Mode is given (`Mode value` or `Mode=value`) with a value other than
-// ModeInteractive. A harness with no Batch has no branch.
+// the first argument is one of Subcommands, any argument is one of Flags
+// or starts with one of Prefixes, or Mode is given (`Mode value` or
+// `Mode=value`) with a value other than ModeInteractive. A harness with no
+// Batch has no branch.
 
 func hasBatch(b harness.Batch) bool {
-	return len(b.Subcommands) > 0 || len(b.Flags) > 0 || b.Mode != ""
+	return len(b.Subcommands) > 0 || hasArgBatch(b)
+}
+
+// hasArgBatch: some argument anywhere on the line can ask for a batch run.
+func hasArgBatch(b harness.Batch) bool {
+	return len(b.Flags) > 0 || len(b.Prefixes) > 0 || b.Mode != ""
 }
 
 // quoteAll quotes each of ss with quote and joins them with sep.
@@ -84,7 +90,7 @@ func posixBatch() string {
 		if len(b.Subcommands) > 0 {
 			sb.WriteString("      case ${1-} in " + quoteAll(b.Subcommands, shellQuote, "|") + ") return 0 ;; esac\n")
 		}
-		if len(b.Flags) > 0 || b.Mode != "" {
+		if hasArgBatch(b) {
 			sb.WriteString(`      for __stagent_a in "$@"; do` + "\n")
 			if b.Mode != "" {
 				sb.WriteString(`        if [ -n "$__stagent_mode" ]; then
@@ -97,6 +103,9 @@ func posixBatch() string {
 			sb.WriteString("        case $__stagent_a in\n")
 			if len(b.Flags) > 0 {
 				sb.WriteString("          " + quoteAll(b.Flags, shellQuote, "|") + ") return 0 ;;\n")
+			}
+			if len(b.Prefixes) > 0 {
+				sb.WriteString("          " + quoteAll(b.Prefixes, func(p string) string { return shellQuote(p) + "*" }, "|") + ") return 0 ;;\n")
 			}
 			if b.Mode != "" {
 				sb.WriteString("          " + shellQuote(b.Mode) + ") __stagent_mode=1 ;;\n")
@@ -130,7 +139,7 @@ func fishBatch() string {
 				"                return 0\n" +
 				"            end\n")
 		}
-		if len(b.Flags) > 0 || b.Mode != "" {
+		if hasArgBatch(b) {
 			if b.Mode != "" {
 				sb.WriteString("            set -l mode 0\n")
 			}
@@ -145,6 +154,10 @@ func fishBatch() string {
 			sb.WriteString("                switch \"$a\"\n")
 			if len(b.Flags) > 0 {
 				sb.WriteString("                    case " + quoteAll(b.Flags, fishQuote, " ") + "\n" +
+					"                        return 0\n")
+			}
+			if len(b.Prefixes) > 0 {
+				sb.WriteString("                    case " + quoteAll(b.Prefixes, func(p string) string { return fishQuote(p + "*") }, " ") + "\n" +
 					"                        return 0\n")
 			}
 			if b.Mode != "" {
@@ -181,10 +194,15 @@ func powershellBatch() string {
 		if len(b.Subcommands) > 0 {
 			sb.WriteString("    if ($a.Count -gt 0 -and (" + quoteAll(b.Subcommands, is("$a[0]"), " -or ") + ")) { return $true }\n")
 		}
-		if len(b.Flags) > 0 || b.Mode != "" {
+		if hasArgBatch(b) {
 			sb.WriteString("    for ($i = 0; $i -lt $a.Count; $i++) {\n")
 			if len(b.Flags) > 0 {
 				sb.WriteString("      if (" + quoteAll(b.Flags, is("$a[$i]"), " -or ") + ") { return $true }\n")
+			}
+			if len(b.Prefixes) > 0 {
+				sb.WriteString("      if (" + quoteAll(b.Prefixes, func(p string) string {
+					return "$a[$i].StartsWith(" + psQuote(p) + ", [StringComparison]::Ordinal)"
+				}, " -or ") + ") { return $true }\n")
 			}
 			if b.Mode != "" {
 				sb.WriteString("      if (($a[$i] -ceq " + psQuote(b.Mode) + " -and $i + 1 -lt $a.Count -and $a[$i + 1] -cne " + psQuote(b.ModeInteractive) + ") -or " +

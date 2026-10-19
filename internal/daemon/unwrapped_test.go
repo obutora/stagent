@@ -30,6 +30,12 @@ func TestUnwrappedReason(t *testing.T) {
 		{"codex exec typed in a terminal", wire.HookEventParams{Harness: wire.HarnessCodex, ParentTTY: tty, ShellWrapper: true, ParentBatch: true}, ""},
 		{"omp -p", wire.HookEventParams{Harness: wire.HarnessOmp, ParentTTY: tty, ParentBatch: true}, ""},
 		{"omp, terminal unknown", wire.HookEventParams{Harness: wire.HarnessOmp}, wire.UnwrappedOldTerminal},
+		{"pi --mode rpc (from the extension's argv)", wire.HookEventParams{Harness: wire.HarnessPi, ParentTTY: tty, ParentBatch: true}, ""},
+		{"pi in an old terminal", wire.HookEventParams{Harness: wire.HarnessPi, ParentTTY: tty}, wire.UnwrappedOldTerminal},
+		{"command pi", wire.HookEventParams{Harness: wire.HarnessPi, ParentTTY: tty, ShellWrapper: true}, wire.UnwrappedBypassed},
+		{"copilot -p", wire.HookEventParams{Harness: wire.HarnessCopilot, ParentTTY: tty, ParentBatch: true}, ""},
+		{"copilot in an old terminal", wire.HookEventParams{Harness: wire.HarnessCopilot, ParentTTY: tty}, wire.UnwrappedOldTerminal},
+		{"command copilot", wire.HookEventParams{Harness: wire.HarnessCopilot, ParentTTY: tty, ShellWrapper: true}, wire.UnwrappedBypassed},
 		{"not an agent harness", wire.HookEventParams{Harness: "other", ParentTTY: tty}, ""},
 		// Codex tells how a conversation started (session_meta.originator).
 		{"codex TUI in an old terminal", wire.HookEventParams{Harness: wire.HarnessCodex, Originator: "codex-tui", ParentTTY: tty}, wire.UnwrappedOldTerminal},

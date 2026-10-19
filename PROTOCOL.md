@@ -39,7 +39,7 @@ another user (see `hello`'s `blocked`). Nothing was sent there. The
 message names the location and its owner.
 
 `agent_refused`: the local connection came from a process that a coding
-agent (claude, codex, omp) started — stagent walks its parents — or, on
+agent (claude, codex, omp, pi, copilot) started — stagent walks its parents — or, on
 macOS, from a process in a sandbox (Seatbelt, which coding agents run
 their commands in), or from one it could not check: it exited first, or
 its parents were more than 256 deep or kept changing (ADR 0004). A
@@ -1623,8 +1623,8 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 
 ## Objects
 
-`Session`: `id, harness (claude|codex|omp|other), command_harness
-(claude|codex|omp|other), command[], cwd, pid,
+`Session`: `id, harness (claude|codex|omp|pi|copilot|other), command_harness
+(claude|codex|omp|pi|copilot|other), command[], cwd, pid,
 holder_pid, mode (passthrough|detached), attached, state (working|idle|
 waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
 process), title?, conversation_id?, transcript_path?, last_message?, cols,
@@ -1710,10 +1710,20 @@ tells when the prompt is answered: claude does not stop the hook (it runs
 until the approved tool finished), and an Esc on Codex's prompt ends the
 turn without Stop while Codex blinks its terminal title for as long as the
 prompt is up, so no output activity marks the answer. The session's holder
-therefore watches its screen (local IPC only): while a claude or Codex
-approval of the session is pending, the daemon sends the holder
-`holder.prompt_watch {id, gen, on: true}` (a new `gen` with every approval;
-`on: false` once none is pending, again to a holder that re-registers).
+therefore watches its screen (local IPC only): while a claude, Codex or
+Copilot CLI approval of the session is pending, the daemon sends the holder
+`holder.prompt_watch {id, gen, on: true, harness}` (a new `gen` with every
+approval; `harness` (since 0.16.0) names the harness whose menu to read:
+Copilot CLI draws its menu in a box `╭─╮ │ │ ╰─╯` with claude's `❯` cursor,
+its dialog starting at the box's top border; `on: false` once none is
+pending, again to a holder that re-registers). Copilot CLI runs its
+PermissionRequest hook before its own permission checks (rules, approvals
+for the session), so that hook returns at once and registers nothing; the
+`Notification` with `notification_type` `permission_prompt` that Copilot CLI
+sends with its menu registers the approval, `tool_name` and `summary` from
+the latest PermissionRequest of the session (else the notification's
+`message`). It closes like a Codex approval (prompt watch, output activity,
+Stop).
 The holder takes the permission menu — numbered options starting with `1.
 Yes`, one under the cursor (claude's `❯`, Codex's `›`), a key hint below
 them, claude's plan approval included — that is on the screen during the
@@ -1758,7 +1768,7 @@ failed and the task is back to `ready` or `failed`). `error` is one line; detail
 terminal's output. `session_id` is the session that prepares the task;
 sessions are tied to tasks by `Session.task_id`, not by it.
 
-`UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp), cwd, reason
+`UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp|pi|copilot), cwd, reason
 (old_terminal|bypassed|ide|ssh|no_terminal), first_seen_at,
 last_activity_at` (unix ms, host clock: the first and the latest hook of
 the conversation). `reason`:
@@ -1816,8 +1826,9 @@ is `bad_request`.
 ## `stagent follow` (terminal chat view, follow protocol 1)
 
 `stagent follow` streams the transcript of the coding agent (Claude Code,
-Codex, omp) running in a terminal tab. The app runs it over an exec channel
-**on the same SSH connection as the tab's shell**, with the command forms of
+Codex, omp, Pi, Copilot CLI) running in a terminal tab. The app runs it over
+an exec channel **on the same SSH connection as the tab's shell**, with the
+command forms of
 "Starting the bridge" (`follow` instead of `bridge`). It needs no daemon,
 hooks or installation beyond the binary, and exits when stdin reaches EOF.
 
@@ -1948,9 +1959,12 @@ user's own processes). When stagent's own `SSH_CONNECTION` is unset there
 is then no tab to find: the target is `no_terminal`.
 
 In the tab's process tree, agents are recognized by process name or argv
-(`claude`, `codex`, `omp`, also `node|bun … <script>` of their npm
-packages); a process of the same harness below an agent belongs to it
-(Codex's native binary under its node launcher). A multiplexer client there
+(`claude`, `codex`, `omp`, `pi`, `copilot`, also `node|bun … <script>` of
+their npm packages; Pi sets its process title to `pi`, which Linux shows as
+its name and macOS as its argv, `["pi", "", …]`, its arguments
+overwritten); a process of the same harness below an agent belongs to it
+(Codex's and Copilot CLI's native binaries under their node launchers, a
+pi Pi's bash tool started). A multiplexer client there
 is followed into the pane it shows:
 
 | client | shown pane |
@@ -1973,8 +1987,8 @@ agent comes to the foreground while it is not. The tree is walked every
 second and the followed transcript polled every 300 ms.
 
 Transcripts: Claude Code — `${CLAUDE_CONFIG_DIR:-~/.claude}/sessions/<pid>.json`
-(`sessionId`) → `projects/*/<sessionId>.jsonl`. Codex and omp, first match
-wins:
+(`sessionId`) → `projects/*/<sessionId>.jsonl`. Codex, omp and Pi, first
+match wins:
 
 1. the rollout / session file the agent has open (Linux; both keep it open
    once they have written to it);
@@ -1988,14 +2002,36 @@ wins:
    `sessions/**/rollout-*-<uuid>.jsonl`; `omp -r/--resume <id prefix|path>`
    → the newest `<ts>_<id>.jsonl` whose id starts with the prefix, or the
    file; `omp -c/--continue` → the newest session of the agent's directory
-   created before the agent started (`--session-dir` honoured);
+   created before the agent started (`--session-dir` honoured); `pi
+   --session <path|id prefix>` → the file, or the newest
+   `<ts>_<id>.jsonl` whose id starts with the prefix; `pi --session-id
+   <id>` → that session, a new one when there is none; `pi
+   -c/--continue` → the session of the agent's directory
+   (`--<cwd, / \ : as ->--`) created before the agent started and written
+   last (`--session-dir` honoured); `pi --fork` starts a new one. Pi's
+   command line is readable only where its process title does not
+   overwrite it (Windows);
 4. the harness's newest conversation in the agent's working directory
-   written since the agent started that no other running Codex / omp
-   process has open or names on its command line, and no other listed
-   agent already follows. An agent that starts a new conversation (no
-   resume / continue) prefers one created since it started.
+   written since the agent started that no other running agent process
+   (Codex, omp, Pi, Copilot CLI) has open or names on its command line,
+   and no other listed agent already follows. An agent that starts a new
+   conversation (no resume / continue) prefers one created since it
+   started.
 
-`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are read from the agent's environment.
+Pi opens its session file only to append a record (Linux rarely sees it
+open) and keeps no record per terminal, so a Pi agent's session is mostly
+the one of 4.
+
+Copilot CLI (`copilot`, its native binary, also under its npm launcher
+`node …/@github/copilot/npm-loader.js`): `session-state/<id>/events.jsonl`
+of the session directory one of its processes has a file of open, else
+the session `--resume[=]<id>`, `-r <id>` or `--session-id[=]<id>` names,
+else 4. Its records are read tolerantly: types not read and lines that do
+not parse are skipped.
+
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` (Pi's sessions
+are in its `sessions`, default `~/.pi/agent/sessions`) and `COPILOT_HOME`
+(default `~/.copilot`) are read from the agent's environment.
 
 ### Security
 
@@ -2039,7 +2075,7 @@ success (non-zero with `{"error": "..."}` on failure).
 |---|---|
 | `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, replaced_daemon?, changes[], notes[{code, text, args?}]}` — creates directories and the manifest and completes an update (below); idempotent |
 | `stagent doctor --json` | `DoctorReport` |
-| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp] [--shell-wrapper] [--service] [--linger] [--terminal] [--execution-policy] [--wsl-keep-running] [--remove claude,codex,omp,shell-wrapper,service,linger,terminal,wsl-keep-running]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
+| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp,pi,copilot] [--shell-wrapper] [--service] [--linger] [--terminal] [--execution-policy] [--wsl-keep-running] [--remove claude,codex,omp,pi,copilot,shell-wrapper,service,linger,terminal,wsl-keep-running]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
 | `stagent uninstall --json --level stop\|unhook\|purge [--uploads] [--linger]` | `{level, steps[{action, target, ok, error?}], removed[], failed[{path, reason, sessions[]}], remaining[]}` |
 | `stagent wsl-shutdown --json` | (WSL) runs `wsl.exe --shutdown`, which normally ends this command, see below |
 
@@ -2188,7 +2224,9 @@ code it does not know.
 |---|---|---|
 | `claude_restart` | – | running Claude sessions load the new hooks only after a restart |
 | `claude_windows_hooks` | – | on Windows the hooks run `stagent.exe` directly; deleting the binary without `uninstall --level unhook` leaves hooks that error until removed (`doctor` lists them as orphans) |
-| `omp_restart` | – | running omp sessions load the extension only after a restart |
+| `omp_restart` | – | running omp sessions load the extension only after a restart (given when the extension changes and omp is on the host) |
+| `pi_restart` | – | running Pi sessions load the extension only after a restart (or `/reload`) (given when the extension changes and pi is on the host) |
+| `copilot_restart` | – | running Copilot CLI sessions load the hooks (`$COPILOT_HOME/hooks/ssh-term-stagent.json`, default `~/.copilot/hooks/`) only after a restart (given when the hooks file changes and copilot is on the host) |
 | `codex_trust` | – | Codex asks to review and trust the new hooks at its next start; stagent writes no trust entries |
 | `codex_notify_fallback` | `reason` | Codex is integrated through the notify program (turn complete only, no approvals); `reason`: `inline_features` (`features` is an inline table), `hooks_removed` (this Codex removed the hooks feature), `no_hooks_feature` (this Codex has none) |
 | `codex_notify_kept` | `command` | Codex already has another notify program (`command`); stagent left it, so turn-complete events are not reported |
@@ -2231,7 +2269,10 @@ time>`), and the backup is deleted. When the file changed since, only
 stagent's elements are taken out and the backup stays, as the only copy
 of the content before stagent: `doctor` lists it (`purge` level) and
 `uninstall --level purge` deletes it. A directory holding anything else
-stays.
+stays. Pi's extension and Copilot CLI's hooks file are also removed where
+the manifest records them, so one written under another
+`PI_CODING_AGENT_DIR` / `COPILOT_HOME` than the current one goes too
+(`doctor` lists it there until then).
 
 `install` completes an update of the binary (the app runs it after
 placing a new one):
@@ -2539,15 +2580,23 @@ that started it, so the hooks of every later session would carry that
 session's `STAGENT_SESSION_ID`. The session's `command` stays as given.
 
 The shell wrappers (`integrate --shell-wrapper`; bash/zsh block, fish file,
-PowerShell profile block) define functions `claude`, `codex` and `omp`
+PowerShell profile block) define functions `claude`, `codex`, `omp`, `pi`
+and `copilot` (every harness stagent knows)
 that run the real command as `stagent run --handoff=auto -- <name>
 <args…>` when the shell is interactive, stdin and stdout are terminals, the
 shell is not already inside a stagent session (`STAGENT_SESSION_ID` unset)
 and the stagent binary exists. Non-interactive invocations run the real
 command directly: claude with `-p` / `--print` anywhere in its arguments,
 codex whose first argument is `exec` / `e`, omp with `-p` / `--print` or a
-`--mode` (`--mode X` or `--mode=X`) other than `text`. The block also
-exports `STAGENT_SHELL_WRAPPER=1`, marking shells that have the wrapper.
+`--mode` (`--mode X` or `--mode=X`) other than `text`, pi with `-p` /
+`--print` / `--no-session`, a `--mode` other than `text`, or a first
+argument `install`, `remove`, `uninstall`, `update`, `list`, `config`,
+`auth` or `mcp`, copilot with `-p` / `--prompt` / `--prompt=…` / `--acp`
+or a first argument that is one of its subcommands (`login`, `help`,
+`init`, `config`, `update`, `version`, `workflow`, `sessions`, `memories`,
+`plugin`, `mcp`, `skill`, `instruction`, `lsp`, `sandbox`, `completion`,
+`app`). The block also exports `STAGENT_SHELL_WRAPPER=1`, marking shells
+that have the wrapper.
 The wrapper itself does not look at `STAGENT_HANDOFF`; `stagent run
 --handoff=auto` does. The PowerShell block also wraps the prompt defined
 before it with the working-directory hook described under
@@ -2594,23 +2643,50 @@ Windows.
 ## Harness hooks
 
 Installed hook commands call `stagent hook <harness>` with the harness's
-hook payload on stdin (`hook_event_name` inside the payload names the
-event). Codex's `notify` program is `stagent hook codex notify` and gets the
-JSON as its last argument. The omp extension runs `stagent hook omp` with
-`{hook_event_name, session_id, transcript_path, cwd, message?}` on stdin,
-using Claude's event names (`SessionStart`, `UserPromptSubmit`, `Stop`,
-`SessionEnd`). A hook never fails the harness: when the daemon is
+hook payload on stdin. An event name given as an argument (`stagent hook
+<harness> <event>`) names the event, else `hook_event_name` inside the
+payload does. Codex's `notify` program is `stagent hook codex notify` and
+gets the JSON as its last argument. Copilot CLI's hooks file
+(`$COPILOT_HOME/hooks/ssh-term-stagent.json`, default
+`~/.copilot/hooks/`) registers the PascalCase events `SessionStart`,
+`SessionEnd`, `UserPromptSubmit`, `Stop`, `Notification` and
+`PermissionRequest`, whose payloads are Claude Code's snake_case form
+(the camelCase fields `sessionId`, `transcriptPath`, `toolName`,
+`toolArgs` are read too); each hook passes its event as the argument,
+`stagent hook copilot <event>`, from a bash command (`[ -x '<bin>' ] &&
+'<bin>' hook copilot <event> || true`) and a powershell one (below). Its
+`PermissionRequest` hook answers nothing and returns at once: Copilot CLI
+shows its menu only after the hook. The omp extension runs `stagent hook
+omp` with `{hook_event_name, session_id, transcript_path, cwd, message?}`
+on stdin, and Pi's extension (`$PI_CODING_AGENT_DIR` or `~/.pi/agent`,
+`extensions/ssh-term-stagent.ts`) runs `stagent hook pi` with the same and
+`argv` (Pi's arguments, `process.argv` after the script), both using
+Claude's event names (`SessionStart`, `UserPromptSubmit`, `Stop`,
+`SessionEnd`; Pi's: `session_start`, `before_agent_start`,
+`agent_settled` — the end of a run no retry, compaction or queued message
+follows — and `session_shutdown`). Both stay silent in a run without a
+terminal UI (the extension context's `hasUI` false, e.g. `-p`, `--mode
+json`); Pi's also when its arguments hold `-p` /
+`--print` or `--mode json` / `--mode rpc` (also `--mode=…`), as Pi
+reports a UI in rpc mode, and in a pi that Pi's bash tool started
+(`PI_SESSION_ID` set, which Pi gives only to those commands; such a pi
+has no terminal and is one of the former anyway), so a nested agent is
+not counted twice. A hook never fails the harness: when the daemon is
 unreachable it exits 0 without output.
 A hook run with `CLAUDE_CODE_BRIDGE_SESSION_ID` set (claude connected to
 Remote Control) tells the daemon so (`notify.skip_when_claude_app_notifies`).
-On Windows the commands run `stagent.exe` by its absolute path with
-forward slashes. Claude Code runs them through Git Bash or cmd, so its
-command quotes the path (`"C:/…/stagent.exe" hook claude`). Codex runs
-them with the session's shell, PowerShell on Windows, where a quoted path
-followed by arguments does not parse: its command leaves the path bare
+On Windows the commands run `stagent.exe` by its absolute path. Claude Code
+runs them through Git Bash or cmd, so its command quotes the path with
+forward slashes (`"C:/…/stagent.exe" hook claude`). Codex runs them with
+the session's shell, PowerShell on Windows, where a quoted path followed by
+arguments does not parse: its command leaves the forward-slash path bare
 (`C:/…/stagent.exe hook codex`, valid in every shell), or uses the call
 operator (`& 'C:/…/stagent.exe' hook codex`) when the path holds a space
-or another character PowerShell reads specially.
+or another character PowerShell reads specially. Copilot CLI's powershell
+command keeps the path's backslashes, single-quoted for PowerShell (`'`
+doubled), and skips a missing binary as the bash command does: `if
+(Test-Path -LiteralPath 'C:\…\stagent.exe') { & 'C:\…\stagent.exe' hook
+copilot <event> }`.
 
 ### Agents without a stagent session
 
@@ -2623,7 +2699,7 @@ only):
 | `shell_wrapper` | `STAGENT_SHELL_WRAPPER` is set: the shell has the wrapper's rc block |
 | `entrypoint` | `CLAUDE_CODE_ENTRYPOINT` (Claude Code: `cli`, `sdk-cli`, `sdk-ts`, `claude-vscode`, …) |
 | `parent_tty` | the harness — the hook's nearest ancestor that is not a shell (the installed Codex command keeps `sh -c` in between) — reads a terminal: its stdin (`/proc/<pid>/fd/0`) on Linux, its controlling terminal (as `ps -o tty=`) on macOS; absent when unknown (Windows) |
-| `parent_batch` | the harness's command line asks for a non-interactive run by the shell wrapper's rule (`claude -p` / `--print`; `codex exec` / `e` as the first argument; `omp -p` / `--print` or `--mode` other than `text`) |
+| `parent_batch` | the harness's command line asks for a non-interactive run by the shell wrapper's rule (`claude -p` / `--print`; `codex exec` / `e` as the first argument; `omp -p` / `--print` or `--mode` other than `text`; the same for pi, plus `--no-session` and its subcommands, whose command line is the payload's `argv`: its process title hides it; `copilot -p` / `--prompt` / `--prompt=…` / `--acp` or one of its subcommands) |
 | `ssh` | `SSH_CONNECTION` is set |
 | `terminal_ancestor` | (Windows; absent elsewhere or when unknown) a shell — `powershell`, `pwsh`, `cmd`, `bash` or `sh` — runs above the harness, the hook's nearest ancestor that is not one of them (Claude Code runs hooks through Git Bash) |
 | `originator`, `subagent` | (codex) `originator` and whether `source` is a `subagent` thread, from the `session_meta` line that starts the conversation's rollout file: the payload's `transcript_path`, else `$CODEX_HOME/sessions/*/*/*/rollout-*-<thread-id>.jsonl` for the notify program. Seen (Codex 0.160): `codex-tui` (the terminal UI), `codex_exec` (`codex exec`), `Codex Desktop` (the desktop app) |
@@ -2641,7 +2717,7 @@ only, and the watchers get `unwrapped.updated`:
 | codex `originator` `Codex Desktop` / `codex_vscode` | `ide` |
 | Claude Code `entrypoint` `sdk-*` | not recorded (non-interactive) |
 | Claude Code `entrypoint` other than `cli` | `ide` |
-| codex / omp (and Claude Code without `entrypoint`) with `parent_tty` false or `parent_batch` | not recorded (non-interactive) |
+| codex / omp / pi / copilot (and Claude Code without `entrypoint`) with `parent_tty` false or `parent_batch` | not recorded (non-interactive) |
 | otherwise, on Windows with `ssh` | `ssh` |
 | otherwise, `shell_wrapper` set | `bypassed` |
 | otherwise, on Windows with `terminal_ancestor` false | `no_terminal` |
@@ -2654,7 +2730,8 @@ judged like before.
 
 Every hook of a recorded conversation updates `last_activity_at` (watchers
 get it at most once a minute unless something else changed). The record
-goes away at the conversation's `SessionEnd` (Claude Code; omp's
-`session_shutdown`), 12 hours after its last hook (Codex sends no end), when
+goes away at the conversation's `SessionEnd` (Claude Code, Copilot CLI;
+omp's and Pi's `session_shutdown`), 12 hours after its last hook (Codex
+sends no end), when
 a stagent session carries the conversation, and with the daemon; nothing is
 written to disk. Recording changes nothing else about the hook.

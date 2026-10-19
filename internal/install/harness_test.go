@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/obutora/stagent/internal/harness"
+	"github.com/obutora/stagent/internal/wire"
 )
 
 // TestMain checks first that every harness of the registry has its
@@ -48,6 +49,9 @@ func TestWrapperBatchMatchesRegistry(t *testing.T) {
 		}
 		for _, f := range b.Flags {
 			argvs = append(argvs, []string{f}, []string{"x", f})
+		}
+		for _, p := range b.Prefixes {
+			argvs = append(argvs, []string{p + "hi"}, []string{"x", p}, []string{"x" + p})
 		}
 		if b.Mode != "" {
 			argvs = append(argvs,
@@ -115,5 +119,65 @@ func TestWrapperBatchMatchesRegistry(t *testing.T) {
 				t.Errorf("printed\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 			}
 		})
+	}
+}
+
+// A harness found on the host gets its restart note when its integration
+// changes, not on an integrate that leaves it as it is.
+func TestRestartNoteOnlyWhenChanged(t *testing.T) {
+	for _, c := range []struct{ id, note string }{
+		{wire.HarnessOmp, noteOmpRestart},
+		{wire.HarnessPi, notePiRestart},
+		{wire.HarnessCopilot, noteCopilotRestart},
+	} {
+		te := newTestEnv(t, "linux")
+		h, _ := harness.Lookup(c.id)
+		te.bins[h.Command] = "/usr/bin/" + h.Command
+		first := te.integrate(t, integrateOpts{apply: true, harness: []string{c.id}})
+		again := te.integrate(t, integrateOpts{apply: true, harness: []string{c.id}})
+		if n := len(notesWith(first.Notes, c.note)); n != 1 {
+			t.Errorf("%s: %d %s notes on install", c.id, n, c.note)
+		}
+		if n := len(notesWith(again.Notes, c.note)); n != 0 || len(again.Changes) != 0 {
+			t.Errorf("%s: %d %s notes on an unchanged integrate (changes %+v)", c.id, n, c.note, again.Changes)
+		}
+	}
+}
+
+// A harness whose directory comes from the environment is removed where it
+// was integrated, even when the variable is unset (unhook) or points
+// elsewhere (--remove) by then: the file, the directories created for it
+// and the manifest record go.
+func TestRemovalFollowsRecordedDir(t *testing.T) {
+	for _, c := range []struct{ id, env, file string }{
+		{wire.HarnessPi, "PI_CODING_AGENT_DIR", filepath.Join("extensions", "ssh-term-stagent.ts")},
+		{wire.HarnessCopilot, "COPILOT_HOME", filepath.Join("hooks", "ssh-term-stagent.json")},
+	} {
+		for _, how := range []string{"unhook", "remove"} {
+			te := newTestEnv(t, "linux")
+			dir := filepath.Join(t.TempDir(), "custom")
+			te.vars[c.env] = dir
+			te.integrate(t, integrateOpts{apply: true, harness: []string{c.id}})
+			if !exists(filepath.Join(dir, c.file)) {
+				t.Fatalf("%s: nothing installed under %s", c.id, dir)
+			}
+			if how == "unhook" {
+				delete(te.vars, c.env)
+				te.reload()
+				te.uninstall("unhook", false, false)
+			} else {
+				te.vars[c.env] = filepath.Join(t.TempDir(), "other")
+				te.integrate(t, integrateOpts{apply: true, remove: []string{c.id}})
+			}
+			te.reload()
+			if exists(dir) {
+				t.Errorf("%s %s: %s left behind", c.id, how, dir)
+			}
+			for _, rec := range te.m.Configs {
+				if rec.ID == c.id {
+					t.Errorf("%s %s: manifest still records %s", c.id, how, rec.Path)
+				}
+			}
+		}
 	}
 }

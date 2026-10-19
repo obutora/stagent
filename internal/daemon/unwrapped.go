@@ -13,7 +13,7 @@ import (
 // ホストの agent に出ない起動) are recorded from their hooks, one per
 // conversation, in memory only: the list says why an agent is not shown
 // now, it is not a history. A record goes away at the conversation's
-// SessionEnd (Claude Code; omp's session_shutdown), UnwrappedTTL after its
+// SessionEnd (from a harness that reports one), UnwrappedTTL after its
 // last hook, or with the daemon. Recording changes nothing else a
 // sessionless hook does.
 
@@ -33,11 +33,11 @@ type unwrappedRec struct {
 // unwrappedReason says why a sessionless hook's agent has no session, ""
 // when it is not recorded: a non-interactive run (Claude Code's sdk-*
 // entry points; a Codex conversation of `codex exec`, the SDK or a
-// subagent; a codex / omp whose terminal is known to be missing or whose
-// command line asks for a batch run) or a program that is not an agent
-// harness. Claude Code tells its entry point and Codex its originator
-// (daemonHarness.launch); without them (older versions, unreadable
-// rollout) they are judged like the others.
+// subagent; an agent of any other harness whose terminal is known to be
+// missing or whose command line asks for a batch run) or a program that is
+// not an agent harness. Claude Code tells its entry point and Codex its
+// originator (daemonHarness.launch); without them (older versions,
+// unreadable rollout) they are judged like the others.
 //
 // On a Windows host (windows) the terminal is never known: every other
 // launch counts. One from an SSH session has its own reason (the wrapper

@@ -1,0 +1,31 @@
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|● Write hi into a.txt.
+|
+|╭──────────────────────────────────────────────────────────╮
+|│ Edit file                                                │
+|│ ──────────────────────────────────────────────────────── │
+|│ ╭──────────────────────────────────────────────────────╮ │
+|│ │ a.txt                                                │ │
+|│ │ 1 + hi                                               │ │
+|│ ╰──────────────────────────────────────────────────────╯ │
+|│                                                          │
+|│ Do you want to edit a.txt?                               │
+|│                                                          │
+|│ ❯ 1. Yes                                                 │
+|│   2. Yes, and approve all file operations for the rest   │
+|│   of the running session                                 │
+|│   3. No, and tell Copilot what to do differently (Esc to │
+|│   stop)                                                  │
+|│                                                          │
+|│ ↑/↓ to navigate · enter to select · esc to cancel        │
+|╰──────────────────────────────────────────────────────────╯
+cursor=0,29 alt=false appCursor=false bracketed=true

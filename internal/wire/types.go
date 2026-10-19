@@ -31,10 +31,12 @@ const (
 // Harness ids. The harnesses stagent knows are listed by the harness
 // registry (internal/harness); HarnessOther is any other program.
 const (
-	HarnessClaude = "claude"
-	HarnessCodex  = "codex"
-	HarnessOmp    = "omp"
-	HarnessOther  = "other"
+	HarnessClaude  = "claude"
+	HarnessCodex   = "codex"
+	HarnessOmp     = "omp"
+	HarnessPi      = "pi"
+	HarnessCopilot = "copilot"
+	HarnessOther   = "other"
 )
 
 // Session modes.

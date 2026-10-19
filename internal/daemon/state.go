@@ -85,8 +85,9 @@ func (t stateTrack) merged() (state, source string) {
 // ---------------------------------------------------------------------------
 // Hook events
 
-// Normalized hook event names (Claude's; Codex and the omp extension use
-// the same names, Codex's legacy notify program maps to Stop).
+// Normalized hook event names (Claude's; Codex and the omp and Pi
+// extensions use the same names, Codex's legacy notify program maps to
+// Stop).
 const (
 	hookSessionStart      = "SessionStart"
 	hookSessionEnd        = "SessionEnd"
@@ -142,17 +143,22 @@ type hookEffect struct {
 	turnComplete bool
 	// approval: a blocking permission request.
 	approval bool
+	// permissionCheck: the harness checks a tool call's permission and
+	// may show its menu next (daemonHarness.checksFirst); the tool is kept
+	// for that menu's approval.
+	permissionCheck bool
 }
 
-// classifyHook maps a harness hook event to its effect. event is the name
-// given on the command line or in the payload.
-func classifyHook(event string, p hookPayload) hookEffect {
+// classifyHook maps a hook event of harness harnessID to its effect. event
+// is the name given on the command line or in the payload.
+func classifyHook(harnessID, event string, p hookPayload) hookEffect {
 	if event == "" {
 		event = p.HookEventName
 	}
 	if event == codexNotify || p.Type == "agent-turn-complete" {
 		event = hookStop
 	}
+	checksFirst := daemonHarnesses[harnessID].checksFirst
 	e := hookEffect{event: event}
 	switch event {
 	case hookUserPromptSubmit:
@@ -161,28 +167,34 @@ func classifyHook(event string, p hookPayload) hookEffect {
 		e.state = wire.StateIdle
 		e.turnComplete = true
 	case hookPermissionRequest:
+		if checksFirst {
+			e.permissionCheck = true
+			break
+		}
 		e.state = wire.StateNeedsApproval
 		e.approval = true
 	case hookNotification:
 		e.state = notificationState(p)
+		e.approval = checksFirst && p.NotificationType == "permission_prompt"
 	case hookSessionEnd:
 		e.clear = true
 	}
 	return e
 }
 
-// notificationState maps Claude's Notification hook to a state:
-// permission_prompt → needs_approval; idle_prompt and elicitation dialogs →
-// waiting_input; auth_success and unknown types without a message → none.
-// Payloads without notification_type (older Claude Code) are classified by
-// their message.
+// notificationState maps Claude's (and Copilot CLI's) Notification hook to
+// a state: permission_prompt → needs_approval; idle_prompt and elicitation
+// dialogs → waiting_input; auth_success, Copilot CLI's notices of
+// background work and unknown types without a message → none. Payloads
+// without notification_type (older Claude Code) are classified by their
+// message.
 func notificationState(p hookPayload) string {
 	switch p.NotificationType {
 	case "permission_prompt":
 		return wire.StateNeedsApproval
 	case "idle_prompt", "elicitation_dialog":
 		return wire.StateWaitingInput
-	case "auth_success":
+	case "auth_success", "shell_completed", "shell_detached_completed", "agent_completed", "agent_idle":
 		return ""
 	}
 	msg := strings.ToLower(p.Message)

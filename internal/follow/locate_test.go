@@ -64,6 +64,36 @@ func TestLocateMergesLauncherAndNativeBinary(t *testing.T) {
 	}
 }
 
+// A pi that Pi's bash tool started (detached, through a shell) belongs to
+// the Pi above it: one agent, not two. macOS shows Pi as node with argv
+// ["pi", "", …] once it set its process title.
+func TestLocateNestedPiIsOneAgent(t *testing.T) {
+	tr := sshTree()
+	tr.add(102, 101, "node", "pi", "", "", "").fg()
+	tr.add(103, 102, "bash", "/bin/bash", "-c", "pi -p review").bg()
+	tr.add(104, 103, "node", "pi", "", "").bg()
+	tr.add(105, 101, "node", "node", "/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js").bg()
+	loc := testLocator(&fakeMux{}).locate(tr.snapshot())
+	if got, want := summary(loc), "none|||pi[102 104]* pi[105]"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// Copilot CLI's npm launcher (node npm-loader.js) runs its native binary,
+// also called copilot: one agent. The native binary installed by brew or
+// WinGet runs alone.
+func TestLocateCopilotLauncherAndNativeBinary(t *testing.T) {
+	tr := sshTree()
+	tr.add(102, 101, "node", "node", "/usr/lib/node_modules/@github/copilot/npm-loader.js", "--resume=0193").fg()
+	tr.add(103, 102, "copilot", "/usr/lib/node_modules/@github/copilot/node_modules/@github/copilot-linux-x64/copilot", "--resume=0193").fg()
+	tr.add(104, 103, "bash", "/bin/bash", "-c", "go test ./...").fg()
+	tr.add(105, 101, "copilot", "/opt/homebrew/bin/copilot").bg()
+	loc := testLocator(&fakeMux{}).locate(tr.snapshot())
+	if got, want := summary(loc), "none|||copilot[102 103]* copilot[105]"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestLocateTmuxPane(t *testing.T) {
 	tr := sshTree()
 	// Linux names a tmux client "tmux: client" (macOS keeps "tmux").

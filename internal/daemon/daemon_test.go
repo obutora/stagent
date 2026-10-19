@@ -427,6 +427,60 @@ func TestCodexApprovalClosesWhenPromptLeavesScreen(t *testing.T) {
 	}
 }
 
+// Copilot CLI runs its PermissionRequest hook before its own permission
+// checks, and shows its menu only once the hook returned, if at all: the
+// hook is answered at once and registers nothing. The permission_prompt
+// notification Copilot CLI sends with the menu registers the approval, named
+// by the tool the hook asked about; the holder watches for Copilot's menu
+// (the watch names the harness), and its report closes the approval.
+func TestCopilotApprovalFromPermissionPrompt(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	holderConn, holderMsgs := e.client()
+	call(t, holderConn, wire.MethodHolderRegister, testSession(sid), nil)
+
+	_, reply := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessCopilot, Event: "PermissionRequest", SessionID: sid,
+		Payload: json.RawMessage(`{"hook_event_name":"PermissionRequest","session_id":"0193","cwd":"/srv/api","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}`)})
+	answered(t, reply, "copilot PermissionRequest")
+	var list wire.ApprovalsListResult
+	call(t, watcher, wire.MethodApprovalsList, nil, &list)
+	if len(list.Approvals) != 0 {
+		t.Fatalf("approval registered by the permission check: %+v", list)
+	}
+
+	_, reply = e.hookAsync(wire.HookEventParams{Harness: wire.HarnessCopilot, Event: "Notification", SessionID: sid,
+		Payload: json.RawMessage(`{"hook_event_name":"Notification","session_id":"0193","cwd":"/srv/api","message":"Copilot needs your permission","title":"Permission needed","notification_type":"permission_prompt"}`)})
+	answered(t, reply, "copilot Notification")
+	m := await(t, events, "approval_requested", event(wire.EventApprovalRequested, nil))
+	_, ap := decodeEvent[wire.Approval](t, m)
+	if ap.SessionID != sid || ap.Harness != wire.HarnessCopilot || ap.ToolName != "Bash" || ap.Summary != "Bash: rm -rf build" {
+		t.Fatalf("approval %+v", ap)
+	}
+	await(t, events, "needs_approval", sessionState(wire.StateNeedsApproval))
+	w := nextPromptWatch(t, holderMsgs, "watch for the copilot prompt")
+	if !w.On || w.ID != sid || w.Gen <= 0 || w.Harness != wire.HarnessCopilot {
+		t.Fatalf("prompt_watch %+v", w)
+	}
+
+	// Answered on the PC: the menu left the screen.
+	holderConn.Notify(wire.MethodHolderPromptGone, wire.HolderPromptGoneParams{ID: sid, Gen: w.Gen})
+	m = await(t, events, "approval_resolved", event(wire.EventApprovalResolved, nil))
+	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd.RequestID != ap.RequestID {
+		t.Fatalf("approval_resolved %+v, want %s", rd, ap.RequestID)
+	}
+	await(t, events, "needs_approval cleared", sessionState(wire.StateIdle))
+
+	// A menu without a permission check before it (none was named, e.g. a
+	// path outside the workspace) is summarized by the notification.
+	e.hookAsync(wire.HookEventParams{Harness: wire.HarnessCopilot, Event: "Notification", SessionID: sid,
+		Payload: json.RawMessage(`{"session_id":"0193","message":"Copilot needs your permission","notification_type":"permission_prompt"}`)})
+	_, ap = decodeEvent[wire.Approval](t, await(t, events, "second approval", event(wire.EventApprovalRequested, nil)))
+	if ap.ToolName != "" || ap.Summary != "Copilot needs your permission" {
+		t.Fatalf("second approval %+v", ap)
+	}
+}
+
 // A claude approval that output activity already closed releases its hook,
 // and only the last pending approval of a session clears needs_approval.
 func TestClaudeApprovalsCloseOneByOne(t *testing.T) {

@@ -161,7 +161,7 @@ func (l *daemonLink) session(conn net.Conn) (registered bool, err error) {
 		case wire.MethodHolderPromptWatch:
 			var p wire.HolderPromptWatchParams
 			if rpc.Decode(m, &p) == nil && p.ID == l.h.id {
-				l.h.prompt.set(p.Gen, p.On)
+				l.h.prompt.set(p.Gen, p.On, p.Harness)
 			}
 		}
 	})

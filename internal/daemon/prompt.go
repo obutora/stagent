@@ -9,12 +9,14 @@ import "github.com/obutora/stagent/internal/wire"
 // Codex's hook returns before its prompt shows, and nothing tells when the
 // prompt is answered: an Esc ends the turn without Stop, and Codex blinks
 // its terminal title while the prompt is up, so the output never goes quiet
-// before the answer either. The session's holder keeps the screen: while a
-// claude or Codex approval of the session is pending the daemon asks it to
-// watch for the permission menu (holder.prompt_watch), and the holder
-// reports when the menu it saw left the screen (holder.prompt_gone).
-// Holders that cannot watch (before 0.4.0, which ignore the notification;
-// 0.5.0 and earlier know only claude's menu) or never saw the menu send
+// before the answer either. Copilot CLI's hook returns before its menu
+// shows too. The session's holder keeps the screen: while a claude, Codex or
+// Copilot CLI approval of the session is pending the daemon asks it to
+// watch for the permission menu of that harness (holder.prompt_watch), and
+// the holder reports when the menu it saw left the screen
+// (holder.prompt_gone). Holders that cannot watch (before 0.4.0, which
+// ignore the notification; 0.5.0 and earlier know only claude's menu;
+// 0.15.0 and earlier know no Copilot CLI menu) or never saw the menu send
 // nothing; Stop remains the fallback for those.
 
 // startPromptWatchLocked starts a new watch for ap, a pending approval of
@@ -22,7 +24,7 @@ import "github.com/obutora/stagent/internal/wire"
 // never closes an approval registered after it (the next prompt).
 func (d *Daemon) startPromptWatchLocked(s *session, ap *approval) {
 	d.promptGens++
-	ap.gen, s.promptGen = d.promptGens, d.promptGens
+	ap.gen, s.promptGen, s.promptHarness = d.promptGens, d.promptGens, ap.a.Harness
 	d.sendPromptWatchLocked(s, true)
 }
 
@@ -41,16 +43,19 @@ func (d *Daemon) endPromptWatchLocked(s *session) {
 	s.promptGen = 0
 }
 
-// sendPromptWatchLocked tells s's holder, if connected, to watch (on) or
-// stop watching for the prompt of watch s.promptGen. It goes through the
-// connection's outbox: a stuck holder never blocks the daemon.
+// sendPromptWatchLocked tells s's holder, if connected, to watch (on) for
+// the menu of s.promptHarness or stop watching for the prompt of watch
+// s.promptGen. It goes through the connection's outbox: a stuck holder
+// never blocks the daemon.
 func (d *Daemon) sendPromptWatchLocked(s *session, on bool) {
 	if s.holder == nil || s.holder.c == nil {
 		return
 	}
-	s.holder.outLocked().push(notification(wire.MethodHolderPromptWatch, wire.HolderPromptWatchParams{
-		ID: s.s.ID, Gen: s.promptGen, On: on,
-	}))
+	p := wire.HolderPromptWatchParams{ID: s.s.ID, Gen: s.promptGen, On: on}
+	if on {
+		p.Harness = s.promptHarness
+	}
+	s.holder.outLocked().push(notification(wire.MethodHolderPromptWatch, p))
 }
 
 // holderPromptGone closes the watched approvals of the session that existed

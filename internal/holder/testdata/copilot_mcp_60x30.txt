@@ -1,0 +1,31 @@
+|
+|
+|
+|
+|
+|
+|
+|● Open an issue about the build.
+|
+|╭──────────────────────────────────────────────────────────╮
+|│ Create issue                                             │
+|│ ──────────────────────────────────────────────────────── │
+|│ ╭──────────────────────────────────────────────────────╮ │
+|│ │ {                                                    │ │
+|│ │ "title": "Fix build"                                 │ │
+|│ │ }                                                    │ │
+|│ ╰──────────────────────────────────────────────────────╯ │
+|│                                                          │
+|│ Do you want to use this tool?                            │
+|│                                                          │
+|│ ❯ 1. Yes                                                 │
+|│   2. Yes, and approve tool "Create issue" from server    │
+|│   "github" for the rest of the running session           │
+|│   3. Yes, and approve all tools from server "github" for │
+|│   the rest of the running session                        │
+|│   4. No, and tell Copilot what to do differently (Esc to │
+|│   stop)                                                  │
+|│                                                          │
+|│ ↑/↓ to navigate · enter to select · esc to cancel        │
+|╰──────────────────────────────────────────────────────────╯
+cursor=0,29 alt=false appCursor=false bracketed=true

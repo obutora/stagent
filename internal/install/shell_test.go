@@ -189,11 +189,25 @@ var wrapperCalls = []struct{ call, want string }{
 	{`omp --mode=rpc hi`, "real omp --mode=rpc hi"},
 	{`omp --mode text`, "stagent run --handoff=auto -- omp --mode text"},
 	{`omp --mode=text hi`, "stagent run --handoff=auto -- omp --mode=text hi"},
+	{`pi fix it`, "stagent run --handoff=auto -- pi fix it"},
+	{`pi --session 0193`, "stagent run --handoff=auto -- pi --session 0193"},
+	{`pi -p hi`, "real pi -p hi"},
+	{`pi --mode json hi`, "real pi --mode json hi"},
+	{`pi --no-session`, "real pi --no-session"},
+	{`pi install npm:x`, "real pi install npm:x"},
+	{`copilot`, "stagent run --handoff=auto -- copilot"},
+	{`copilot --resume=0193`, "stagent run --handoff=auto -- copilot --resume=0193"},
+	{`copilot -i hi`, "stagent run --handoff=auto -- copilot -i hi"},
+	{`copilot -p hi`, "real copilot -p hi"},
+	{`copilot --prompt hi`, "real copilot --prompt hi"},
+	{`copilot --model x --prompt=hi`, "real copilot --model x --prompt=hi"},
+	{`copilot --acp`, "real copilot --acp"},
+	{`copilot login`, "real copilot login"},
 	{`sh -c 'echo marker=$STAGENT_SHELL_WRAPPER'`, "marker=1"},
 }
 
-// fakePrograms puts a fake stagent and fake claude / codex / omp, which
-// print how they were run, in a new directory.
+// fakePrograms puts a fake stagent and a fake of every wrapped command,
+// which print how they were run, in a new directory.
 func fakePrograms(t *testing.T) (dir, stagent string) {
 	t.Helper()
 	dir = t.TempDir()

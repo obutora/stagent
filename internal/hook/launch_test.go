@@ -76,3 +76,28 @@ func TestCodexOrigin(t *testing.T) {
 	}
 }
 
+// Pi's process title hides its arguments from the process table, so its
+// extension passes its command line: a batch run there counts as one.
+func TestPiLaunchArgv(t *testing.T) {
+	for _, c := range []struct {
+		payload string
+		want    bool
+	}{
+		{`{"session_id":"s","argv":["-p","hi"]}`, true},
+		{`{"session_id":"s","argv":["--mode","rpc"]}`, true},
+		{`{"session_id":"s","argv":["--session","0193"]}`, false},
+		{`{"session_id":"s"}`, false},
+		{`not json`, false},
+	} {
+		var li launchInfo
+		piHook.launch(&li, []byte(c.payload))
+		if li.parentBatch != c.want {
+			t.Errorf("%s: parentBatch %v, want %v", c.payload, li.parentBatch, c.want)
+		}
+	}
+	li := launchInfo{parentBatch: true}
+	piHook.launch(&li, []byte(`{"argv":[]}`))
+	if !li.parentBatch {
+		t.Error("the batch run the process table told was forgotten")
+	}
+}

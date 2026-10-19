@@ -11,15 +11,33 @@ import (
 
 // omp: ~/.omp/agent/sessions/<project>/<timestamp>_<id>.jsonl
 
-var ompFormat = format{
-	dir: func(root string) string { return root },
-	enumerate: func(dir string) ([]fileStat, error) {
-		return listTwoLevels(dir, func(name string) bool { return strings.HasSuffix(name, ".jsonl") })
-	},
-	named:  func(base, id string) bool { return strings.HasSuffix(base, "_"+id+".jsonl") },
-	scan:   scanOmp,
-	titler: func(*Index) func(*entry) string { return ompEntryTitle },
-	parse:  parseOmp,
+var ompFormat = ompSessionFormat(scanOmp, ompEntryTitle)
+
+// ompSessionFormat is the format of omp's session files, which Pi (omp is
+// a fork of Pi) shares: <sessions>/<project>/<timestamp>_<id>.jsonl, with
+// omp's message entries. The harnesses differ in their metadata (scan) and
+// titles.
+func ompSessionFormat(scan func(path string, e *entry), title func(*entry) string) format {
+	return format{
+		dir: func(root string) string { return root },
+		enumerate: func(dir string) ([]fileStat, error) {
+			return listTwoLevels(dir, func(name string) bool { return strings.HasSuffix(name, ".jsonl") })
+		},
+		named:  func(path, id string) bool { return strings.HasSuffix(filepath.Base(path), "_"+id+".jsonl") },
+		scan:   scan,
+		titler: func(*Index) func(*entry) string { return title },
+		parse:  parseOmp,
+	}
+}
+
+// ompFileID is the session id in the name of a session file of omp's
+// format ("" when the name has none).
+func ompFileID(path string) string {
+	base := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	if i := strings.IndexByte(base, '_'); i >= 0 {
+		return base[i+1:]
+	}
+	return ""
 }
 
 // scanOmp reads the title record (line 1, rewritten in place) and the
@@ -53,10 +71,7 @@ func scanOmp(path string, e *entry) {
 		return true
 	}, nil)
 	if e.ID == "" {
-		base := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-		if i := strings.IndexByte(base, '_'); i >= 0 {
-			e.ID = base[i+1:]
-		}
+		e.ID = ompFileID(path)
 	}
 	// Line 1 changes in place; never scan incrementally.
 	e.Scanned = 0
@@ -68,17 +83,32 @@ type ompRecord struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
 	Message   struct {
-		Role    string `json:"role"`
-		Content []struct {
-			Type      string          `json:"type"`
-			Text      string          `json:"text"`
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-			Intent    string          `json:"intent"`
-		} `json:"content"`
-		Attribution string `json:"attribution"`
-		Timestamp   int64  `json:"timestamp"`
+		Role        string      `json:"role"`
+		Content     ompContents `json:"content"`
+		Attribution string      `json:"attribution"`
+		Timestamp   int64       `json:"timestamp"`
 	} `json:"message"`
+}
+
+type ompContent struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+	Intent    string          `json:"intent"`
+}
+
+// ompContents are a message's content blocks. A user message may hold a
+// plain string instead (Pi), read as one text block.
+type ompContents []ompContent
+
+func (c *ompContents) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*c = ompContents{{Type: "text", Text: s}}
+		return nil
+	}
+	return json.Unmarshal(b, (*[]ompContent)(c))
 }
 
 func parseOmp(line []byte) []wire.Message {

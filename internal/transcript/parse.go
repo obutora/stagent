@@ -1,5 +1,5 @@
-// Package transcript reads the conversation files coding agents write —
-// Claude Code, Codex and omp JSONL — and normalizes them to wire.Message.
+// Package transcript reads the conversation files coding agents write — a
+// JSONL format per harness — and normalizes them to wire.Message.
 // Files are only ever read: backwards from the end for paging, forwards from
 // a remembered offset for tailing, never whole unless a cache entry is new.
 package transcript

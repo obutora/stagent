@@ -119,6 +119,21 @@ type addResult struct {
 	summary    string
 }
 
+// withRecorded is t followed by at(path) for every other path the manifest
+// records for t's harness. A harness whose directory comes from the
+// environment (PI_CODING_AGENT_DIR, COPILOT_HOME) may have been integrated
+// under another value than the current one: removal and doctor reach the
+// file where it was written.
+func (e *env) withRecorded(t *target, at func(path string) *target) []*target {
+	ts := []*target{t}
+	for _, rec := range e.m.Configs {
+		if rec.ID == t.id && rec.Path != t.path {
+			ts = append(ts, at(rec.Path))
+		}
+	}
+	return ts
+}
+
 // addChange plans adding t's elements. nil when the file already has them.
 func (e *env) addChange(t *target) (*Change, error) {
 	cur, err := readOptional(t.path)

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -45,8 +46,16 @@ type session struct {
 	missed    int
 
 	// promptGen is the session holder's current prompt watch (0: none),
-	// kept while a claude approval of the session holds its hook.
-	promptGen int64
+	// kept while a claude approval of the session holds its hook;
+	// promptHarness is the harness whose menu it watches for.
+	promptGen     int64
+	promptHarness string
+
+	// checkTool and checkInput are the tool the latest permission check
+	// of a harness that asks before its menu (daemonHarness.checksFirst:
+	// Copilot CLI) named, for the approval its menu brings.
+	checkTool  string
+	checkInput json.RawMessage
 
 	// Pushes (push.go). remoteControl: the session's latest hook ran
 	// connected to Claude's Remote Control. graceTimers hold pushes back

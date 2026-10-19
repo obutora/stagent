@@ -14,7 +14,7 @@ import (
 
 // harnessIntegration is how stagent integrates with one harness of the
 // registry (harness.All), the id accepted by --harness / --remove. Each
-// lives in the harness's own file (claude.go, codex.go, omp.go).
+// lives in the harness's own file (<id>.go).
 type harnessIntegration interface {
 	// plan plans adding the integration, noting what the user should know.
 	plan(e *env) ([]*Change, error)
@@ -28,9 +28,11 @@ type harnessIntegration interface {
 // integrations holds the integration of every harness of the registry, by
 // harness id.
 var integrations = map[string]harnessIntegration{
-	wire.HarnessClaude: claudeIntegration{},
-	wire.HarnessCodex:  codexIntegration{},
-	wire.HarnessOmp:    ompIntegration{},
+	wire.HarnessClaude:  claudeIntegration{},
+	wire.HarnessCodex:   codexIntegration{},
+	wire.HarnessOmp:     ompIntegration{},
+	wire.HarnessPi:      piIntegration{},
+	wire.HarnessCopilot: copilotIntegration{},
 }
 
 // hookFile is how a harness reads our hooks from its JSON hooks file.
