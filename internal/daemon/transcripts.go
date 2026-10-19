@@ -6,19 +6,16 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/transcript"
 	"github.com/obutora/stagent/internal/wire"
 )
-
-func knownHarness(h string) bool {
-	return h == wire.HarnessClaude || h == wire.HarnessCodex || h == wire.HarnessOmp
-}
 
 // conversations lists stored conversations, marking those a live session
 // is running.
 func (d *Daemon) conversations(p wire.ConversationsListParams) (wire.ConversationsListResult, error) {
 	for _, h := range p.Harness {
-		if !knownHarness(h) {
+		if !harness.Known(h) {
 			return wire.ConversationsListResult{}, wire.Errorf(wire.ErrBadRequest, "unknown harness %q", h)
 		}
 	}
@@ -46,7 +43,7 @@ func (d *Daemon) conversations(p wire.ConversationsListParams) (wire.Conversatio
 // resolveTranscript finds the file and harness a transcript request names:
 // a live session, a harness conversation id, or a path under a harness
 // transcript directory.
-func (d *Daemon) resolveTranscript(sessionID, harness, conversationID, path string) (string, string, error) {
+func (d *Daemon) resolveTranscript(sessionID, harnessID, conversationID, path string) (string, string, error) {
 	switch {
 	case sessionID != "":
 		d.mu.Lock()
@@ -59,13 +56,13 @@ func (d *Daemon) resolveTranscript(sessionID, harness, conversationID, path stri
 		if s == nil {
 			return "", "", wire.Errorf(wire.ErrNotFound, "session %s", sessionID)
 		}
-		if p == "" && conv != "" && knownHarness(h) {
+		if p == "" && conv != "" && harness.Known(h) {
 			p, _ = d.index.Find(h, conv)
 		}
 		if p == "" {
 			return "", "", wire.Errorf(wire.ErrNotFound, "session %s has no transcript yet", sessionID)
 		}
-		if !knownHarness(h) {
+		if !harness.Known(h) {
 			if rh, ok := d.roots.HarnessOf(p); ok {
 				h = rh
 			} else {
@@ -73,15 +70,15 @@ func (d *Daemon) resolveTranscript(sessionID, harness, conversationID, path stri
 			}
 		}
 		return p, h, nil
-	case harness != "" && conversationID != "":
-		if !knownHarness(harness) {
-			return "", "", wire.Errorf(wire.ErrBadRequest, "unknown harness %q", harness)
+	case harnessID != "" && conversationID != "":
+		if !harness.Known(harnessID) {
+			return "", "", wire.Errorf(wire.ErrBadRequest, "unknown harness %q", harnessID)
 		}
-		p, ok := d.index.Find(harness, conversationID)
+		p, ok := d.index.Find(harnessID, conversationID)
 		if !ok {
-			return "", "", wire.Errorf(wire.ErrNotFound, "%s conversation %s", harness, conversationID)
+			return "", "", wire.Errorf(wire.ErrNotFound, "%s conversation %s", harnessID, conversationID)
 		}
-		return p, harness, nil
+		return p, harnessID, nil
 	case path != "":
 		h, ok := d.roots.HarnessOf(path)
 		if !ok {
@@ -220,12 +217,12 @@ func (d *Daemon) tailLoop() {
 				if s := d.sessions[sub.sessionID]; s != nil && s.s.TranscriptPath != sub.path {
 					// A new conversation file in the session: read it whole.
 					sub.path, sub.harness, sub.offset = s.s.TranscriptPath, s.s.Harness, 0
-					if !knownHarness(sub.harness) {
+					if !harness.Known(sub.harness) {
 						sub.harness, _ = d.roots.HarnessOf(sub.path)
 					}
 				}
 			}
-			if sub.path != "" && knownHarness(sub.harness) {
+			if sub.path != "" && harness.Known(sub.harness) {
 				jobs = append(jobs, job{sub, sub.path, sub.harness, sub.offset})
 			}
 		}

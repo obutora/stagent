@@ -233,8 +233,9 @@ func Run(ctx context.Context, o Options) (int, error) {
 		mode = wire.ModeDetached
 	}
 	presenceFile, _ := lookupEnv(env, wire.EnvClaudePresenceFile)
+	ch := harness.Command(o.Command)
 	h.sess = wire.Session{
-		ID: id, Harness: wire.DetectHarness(o.Command), Command: o.Command, Cwd: dir,
+		ID: id, Harness: ch, CommandHarness: ch, Command: o.Command, Cwd: dir,
 		PID: p.Pid(), HolderPID: os.Getpid(), Mode: mode,
 		State: wire.StateWorking, StateSource: wire.SourceActivity,
 		Cols: cols, Rows: rows, StartedAt: now, LastActivityAt: now,

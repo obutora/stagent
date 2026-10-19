@@ -9,41 +9,28 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/wire"
 )
 
-// Roots are the directories each harness keeps its conversations in.
-type Roots struct {
-	Claude string // <claude config dir>/projects
-	Codex  string // codex home; rollouts under Codex/sessions
-	Omp    string // ~/.omp/agent/sessions
-}
+// Roots are the directories each harness keeps its conversations in, by
+// harness id (harness.Harness.TranscriptRoot).
+type Roots map[string]string
 
-// DefaultRoots resolves the roots for a home directory, honoring
-// CLAUDE_CONFIG_DIR and CODEX_HOME like the harnesses do. getenv is the
-// environment the harness runs with (os.Getenv for stagent's own).
+// DefaultRoots resolves the roots for a home directory as the harnesses
+// do (CLAUDE_CONFIG_DIR, CODEX_HOME). getenv is the environment the
+// harness runs with (os.Getenv for stagent's own).
 func DefaultRoots(home string, getenv func(string) string) Roots {
-	claude := getenv("CLAUDE_CONFIG_DIR")
-	if claude == "" {
-		claude = filepath.Join(home, ".claude")
+	r := make(Roots, len(harness.All))
+	for _, h := range harness.All {
+		r[h.ID] = h.TranscriptRoot(home, getenv)
 	}
-	codex := getenv("CODEX_HOME")
-	if codex == "" {
-		codex = filepath.Join(home, ".codex")
-	}
-	return Roots{
-		Claude: filepath.Join(claude, "projects"),
-		Codex:  codex,
-		Omp:    filepath.Join(home, ".omp", "agent", "sessions"),
-	}
+	return r
 }
-
-func (r Roots) codexSessions() string { return filepath.Join(r.Codex, "sessions") }
 
 // HarnessOf reports which harness's transcript directory holds path. Only
 // .jsonl files under a known root qualify, so transcript requests cannot be
@@ -53,20 +40,43 @@ func (r Roots) HarnessOf(path string) (string, bool) {
 		return "", false
 	}
 	path = filepath.Clean(path)
-	for _, c := range []struct{ harness, root string }{
-		{wire.HarnessClaude, r.Claude},
-		{wire.HarnessCodex, r.codexSessions()},
-		{wire.HarnessOmp, r.Omp},
-	} {
-		if c.root == "" {
+	for _, h := range harness.All {
+		root := r[h.ID]
+		if root == "" {
 			continue
 		}
-		rel, err := filepath.Rel(filepath.Clean(c.root), path)
+		rel, err := filepath.Rel(filepath.Clean(formats[h.ID].dir(root)), path)
 		if err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
-			return c.harness, true
+			return h.ID, true
 		}
 	}
 	return "", false
+}
+
+// format is how the conversation files of one harness are laid out and
+// read. Each harness of harness.All has one in formats, in its own file.
+type format struct {
+	// dir is the directory below the harness's root that holds its
+	// transcripts.
+	dir func(root string) string
+	// enumerate lists the top-level conversation files in dir. Sub-agent
+	// transcripts are not matched.
+	enumerate func(dir string) ([]fileStat, error)
+	// named reports whether base is the file name of conversation id.
+	named func(base, id string) bool
+	// scan reads the metadata of path into e, from e.Scanned where the
+	// harness's files are append-only.
+	scan func(path string, e *entry)
+	// titler returns how entries are titled, read once per listing.
+	titler func(x *Index) func(*entry) string
+	// parse normalizes one record (see ParseLine).
+	parse func(line []byte) []wire.Message
+}
+
+var formats = map[string]format{
+	wire.HarnessClaude: claudeFormat,
+	wire.HarnessCodex:  codexFormat,
+	wire.HarnessOmp:    ompFormat,
 }
 
 // entry is the cached metadata of one transcript file.
@@ -140,22 +150,23 @@ func (x *Index) List(harnesses []string, limit int) ([]wire.Conversation, error)
 		limit = DefaultLimit
 	}
 	if len(harnesses) == 0 {
-		harnesses = []string{wire.HarnessClaude, wire.HarnessCodex, wire.HarnessOmp}
+		harnesses = harness.IDs()
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	var out []wire.Conversation
 	for _, h := range harnesses {
+		hf, ok := formats[h]
+		if !ok {
+			continue
+		}
 		files, err := x.enumerate(h)
 		if err != nil {
 			return nil, err
 		}
 		x.prune(h, files)
 		sort.Slice(files, func(i, j int) bool { return files[i].mtime > files[j].mtime })
-		var names map[string]string
-		if h == wire.HarnessCodex {
-			names = x.codexThreadNames()
-		}
+		title := hf.titler(x)
 		n := 0
 		for _, f := range files {
 			if n >= limit {
@@ -174,7 +185,7 @@ func (x *Index) List(harnesses []string, limit int) ([]wire.Conversation, error)
 				Harness:   h,
 				ID:        e.ID,
 				Cwd:       e.Cwd,
-				Title:     e.title(names),
+				Title:     title(e),
 				UpdatedAt: f.mtime / 1e6,
 				Path:      f.path,
 			})
@@ -188,7 +199,8 @@ func (x *Index) List(harnesses []string, limit int) ([]wire.Conversation, error)
 
 // Find returns the transcript path of a harness's conversation id.
 func (x *Index) Find(harness, id string) (string, bool) {
-	if id == "" {
+	hf, ok := formats[harness]
+	if !ok || id == "" {
 		return "", false
 	}
 	x.mu.Lock()
@@ -205,20 +217,8 @@ func (x *Index) Find(harness, id string) (string, bool) {
 		return "", false
 	}
 	for _, f := range files {
-		base := filepath.Base(f.path)
-		switch harness {
-		case wire.HarnessClaude:
-			if base == id+".jsonl" {
-				return f.path, true
-			}
-		case wire.HarnessCodex:
-			if strings.HasSuffix(base, "-"+id+".jsonl") {
-				return f.path, true
-			}
-		case wire.HarnessOmp:
-			if strings.HasSuffix(base, "_"+id+".jsonl") {
-				return f.path, true
-			}
+		if hf.named(filepath.Base(f.path), id) {
+			return f.path, true
 		}
 	}
 	return "", false
@@ -229,8 +229,9 @@ func (x *Index) Find(harness, id string) (string, bool) {
 // unreadable or is one List would skip (automation or sub-agent run, no id
 // yet).
 func (x *Index) Conversation(harness, path string) (c wire.Conversation, ok bool) {
+	hf, known := formats[harness]
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+	if !known || err != nil || info.IsDir() {
 		return wire.Conversation{}, false
 	}
 	f := fileStat{path, info.ModTime().UnixNano(), info.Size()}
@@ -246,37 +247,14 @@ func (x *Index) Conversation(harness, path string) (c wire.Conversation, ok bool
 	if e.Skip || e.ID == "" {
 		return wire.Conversation{}, false
 	}
-	var names map[string]string
-	if harness == wire.HarnessCodex {
-		names = x.codexThreadNames()
-	}
 	return wire.Conversation{
 		Harness:   harness,
 		ID:        e.ID,
 		Cwd:       e.Cwd,
-		Title:     e.title(names),
+		Title:     hf.titler(x)(e),
 		UpdatedAt: f.mtime / 1e6,
 		Path:      path,
 	}, true
-}
-
-func (e *entry) title(codexNames map[string]string) string {
-	switch e.Harness {
-	case wire.HarnessClaude:
-		for _, k := range []string{"custom-title", "ai-title", "summary", "last-prompt"} {
-			if t := oneLine(e.Titles[k], maxSummary); t != "" {
-				return t
-			}
-		}
-	case wire.HarnessCodex:
-		if t := oneLine(codexNames[e.ID], maxSummary); t != "" {
-			return t
-		}
-		return oneLine(e.Prompt, maxSummary)
-	case wire.HarnessOmp:
-		return oneLine(e.Title, maxSummary)
-	}
-	return ""
 }
 
 func (x *Index) prune(harness string, files []fileStat) {
@@ -331,44 +309,13 @@ func writeFileAtomic(path string, b []byte) error {
 // ---------------------------------------------------------------------------
 // Enumeration
 
-var claudeIDName = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.jsonl$`)
-
-// enumerate lists a harness's top-level conversation files. Sub-agent
-// transcripts live one directory deeper and are not matched.
+// enumerate lists a harness's top-level conversation files.
 func (x *Index) enumerate(harness string) ([]fileStat, error) {
-	switch harness {
-	case wire.HarnessClaude:
-		return listTwoLevels(x.roots.Claude, func(name string) bool { return claudeIDName.MatchString(name) })
-	case wire.HarnessOmp:
-		return listTwoLevels(x.roots.Omp, func(name string) bool { return strings.HasSuffix(name, ".jsonl") })
-	case wire.HarnessCodex:
-		var out []fileStat
-		root := x.roots.codexSessions()
-		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				if p == root {
-					return fs.SkipAll
-				}
-				return nil
-			}
-			if d.IsDir() {
-				if p != root && strings.Count(strings.TrimPrefix(p, root), string(filepath.Separator)) > 3 {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			name := d.Name()
-			if !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, ".jsonl") {
-				return nil
-			}
-			if info, err := d.Info(); err == nil {
-				out = append(out, fileStat{p, info.ModTime().UnixNano(), info.Size()})
-			}
-			return nil
-		})
-		return out, err
+	hf, ok := formats[harness]
+	if !ok {
+		return nil, nil
 	}
-	return nil, nil
+	return hf.enumerate(hf.dir(x.roots[harness]))
 }
 
 // listTwoLevels lists <root>/<dir>/<file> entries whose name matches.
@@ -418,188 +365,10 @@ func (x *Index) refresh(harness string, f fileStat, prev *entry) *entry {
 		e = &entry{Harness: harness}
 	}
 	e.Mtime, e.Size = f.mtime, f.size
-	switch harness {
-	case wire.HarnessClaude:
-		e.ID = strings.TrimSuffix(filepath.Base(f.path), ".jsonl")
-		scanClaude(f.path, e)
-	case wire.HarnessCodex:
-		scanCodex(f.path, e)
-	case wire.HarnessOmp:
-		scanOmp(f.path, e)
+	if hf, ok := formats[harness]; ok {
+		hf.scan(f.path, e)
 	}
 	return e
-}
-
-var (
-	cwdKey        = []byte(`"cwd":"`)
-	entrypointKey = []byte(`"entrypoint":"`)
-	claudeTitle   = map[string]string{
-		"custom-title": "customTitle", "ai-title": "aiTitle",
-		"summary": "summary", "last-prompt": "lastPrompt",
-	}
-)
-
-// scanClaude reads from e.Scanned: the first cwd, the first entrypoint
-// (sdk-* runs are automation and skipped) and the latest title records.
-func scanClaude(path string, e *entry) {
-	forLines(path, e.Scanned, 0, func(line []byte, complete bool) bool {
-		if e.Cwd == "" {
-			if s, ok := stringAfter(line, cwdKey); ok {
-				e.Cwd = s
-			}
-		}
-		if !e.Checked {
-			if s, ok := stringAfter(line, entrypointKey); ok {
-				e.Checked = true
-				if strings.HasPrefix(s, "sdk") {
-					e.Skip = true
-					return false
-				}
-			}
-		}
-		if complete && bytes.HasPrefix(line, []byte(`{"type":"`)) {
-			var r map[string]json.RawMessage
-			if t, ok := stringAfter(line, []byte(`{"type":"`)); ok {
-				if field, want := claudeTitle[t]; want && json.Unmarshal(line, &r) == nil {
-					if v, ok := jsonString(r[field]); ok && strings.TrimSpace(v) != "" {
-						if e.Titles == nil {
-							e.Titles = map[string]string{}
-						}
-						e.Titles[t] = clip(v, 1024)
-					}
-				}
-			}
-		}
-		return true
-	}, &e.Scanned)
-}
-
-type codexMeta struct {
-	Type    string `json:"type"`
-	Payload struct {
-		ID         string          `json:"id"`
-		Cwd        string          `json:"cwd"`
-		Originator string          `json:"originator"`
-		Source     json.RawMessage `json:"source"`
-	} `json:"payload"`
-}
-
-// The first prompt is looked for within codexPromptScan bytes /
-// codexPromptLines records of a rollout (developer instructions come first).
-const (
-	codexPromptScan  = 4 << 20
-	codexPromptLines = 2000
-)
-
-// scanCodex reads the session_meta header (id, cwd; exec and sub-agent
-// rollouts are skipped) and the first user prompt.
-func scanCodex(path string, e *entry) {
-	if e.Scanned == 0 {
-		forLines(path, 0, 1, func(line []byte, complete bool) bool {
-			var m codexMeta
-			if !complete || json.Unmarshal(line, &m) != nil || m.Type != "session_meta" {
-				return false
-			}
-			e.ID, e.Cwd = m.Payload.ID, m.Payload.Cwd
-			src := bytes.TrimSpace(m.Payload.Source)
-			if m.Payload.Originator == "codex_exec" || string(src) == `"exec"` || (len(src) > 0 && src[0] == '{') {
-				e.Skip = true
-			}
-			return false
-		}, nil)
-		if e.ID == "" {
-			// rollout-YYYY-MM-DDThh-mm-ss-<id>.jsonl
-			base := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-			if len(base) > len("rollout-2006-01-02T15-04-05-") {
-				e.ID = base[len("rollout-2006-01-02T15-04-05-"):]
-			}
-		}
-	}
-	if e.Skip || e.Prompt != "" || e.Scanned >= codexPromptScan {
-		return
-	}
-	forLines(path, e.Scanned, codexPromptLines, func(line []byte, complete bool) bool {
-		if !complete {
-			return true
-		}
-		for _, m := range parseCodex(line) {
-			if m.Role == RoleUser {
-				e.Prompt = clip(m.Text, 1024)
-				return false
-			}
-		}
-		return true
-	}, &e.Scanned)
-	if e.Scanned == 0 {
-		e.Scanned = 1 // header read; keep the entry incremental
-	}
-}
-
-// scanOmp reads the title record (line 1, rewritten in place) and the
-// session header (line 2).
-func scanOmp(path string, e *entry) {
-	e.Title = ""
-	forLines(path, 0, 2, func(line []byte, complete bool) bool {
-		if !complete {
-			return true
-		}
-		var r struct {
-			Type  string `json:"type"`
-			ID    string `json:"id"`
-			Cwd   string `json:"cwd"`
-			Title string `json:"title"`
-		}
-		if json.Unmarshal(line, &r) != nil {
-			return true
-		}
-		switch r.Type {
-		case "title":
-			if r.Title != "" {
-				e.Title = r.Title
-			}
-		case "session":
-			e.ID, e.Cwd = r.ID, r.Cwd
-			if e.Title == "" {
-				e.Title = r.Title
-			}
-		}
-		return true
-	}, nil)
-	if e.ID == "" {
-		base := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-		if i := strings.IndexByte(base, '_'); i >= 0 {
-			e.ID = base[i+1:]
-		}
-	}
-	// Line 1 changes in place; never scan incrementally.
-	e.Scanned = 0
-}
-
-// codexThreadNames maps Codex thread ids to their names from
-// session_index.jsonl (last record wins), re-read when the file changes.
-func (x *Index) codexThreadNames() map[string]string {
-	p := filepath.Join(x.roots.Codex, "session_index.jsonl")
-	st, err := os.Stat(p)
-	if err != nil {
-		return nil
-	}
-	key := [2]int64{st.ModTime().UnixNano(), st.Size()}
-	if x.threadNames != nil && key == x.threadNamesStat {
-		return x.threadNames
-	}
-	names := map[string]string{}
-	forLines(p, 0, 0, func(line []byte, complete bool) bool {
-		var r struct {
-			ID         string `json:"id"`
-			ThreadName string `json:"thread_name"`
-		}
-		if complete && json.Unmarshal(line, &r) == nil && r.ID != "" && r.ThreadName != "" {
-			names[r.ID] = r.ThreadName
-		}
-		return true
-	}, nil)
-	x.threadNames, x.threadNamesStat = names, key
-	return names
 }
 
 // forLines calls fn for each line of path from offset (at most maxLines

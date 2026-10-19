@@ -7,60 +7,202 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/pscwd"
 )
 
-// Opt-in shell wrappers: functions named claude / codex / omp that start the
-// real command under `stagent run --handoff=auto --` when the shell is
-// interactive with a terminal on stdin and stdout (the passthrough holder
-// requires one), not already inside a stagent session, the binary exists
-// and the arguments do not ask for a non-interactive run (claude -p /
-// --print; codex exec / e; omp -p / --print or --mode other than text).
-// --handoff=auto keeps the program running as a detached session when the
-// terminal goes away unless STAGENT_HANDOFF or config.json's
-// disable_handoff say otherwise (decided by `stagent run` at every start).
-// The block exports STAGENT_SHELL_WRAPPER=1 so hooks can tell a shell that
-// has the wrapper.
+// Opt-in shell wrappers: functions named after the command of each harness
+// of the registry that start the real command under `stagent run
+// --handoff=auto --` when the shell is interactive with a terminal on stdin
+// and stdout (the passthrough holder requires one), not already inside a
+// stagent session, the binary exists and the arguments do not ask for a
+// non-interactive run (the harness's harness.Batch, the rule of
+// harness.BatchArgs). --handoff=auto keeps the program running as a
+// detached session when the terminal goes away unless STAGENT_HANDOFF or
+// config.json's disable_handoff say otherwise (decided by `stagent run` at
+// every start). The block exports STAGENT_SHELL_WRAPPER=1 so hooks can tell
+// a shell that has the wrapper.
 
 const (
 	blockBegin = "# >>> ssh-term stagent >>>"
 	blockEnd   = "# <<< ssh-term stagent <<<"
 )
 
-const blockAbout = `# Added by SSH Term (stagent integrate --shell-wrapper): runs claude, codex
-# and omp under a stagent PTY holder so SSH Term's Agent Mode can see them.
+const blockAbout = `# Added by SSH Term (stagent integrate --shell-wrapper): runs the coding
+# agents wrapped below under a stagent PTY holder so SSH Term's Agent Mode
+# can see them.
 # Remove with: stagent integrate --apply --remove shell-wrapper`
 
-var wrappedCommands = []string{"claude", "codex", "omp"}
+// batchAbout introduces the batch function of every script.
+const batchAbout = `# Non-interactive runs, asked for by the arguments the batch function
+# matches for each command, are left alone.
+`
+
+// wrappedCommands are the commands of the registry's harnesses, in its
+// order.
+var wrappedCommands = func() []string {
+	cs := make([]string, len(harness.All))
+	for i, h := range harness.All {
+		cs[i] = h.Command
+	}
+	return cs
+}()
+
+// The batch functions of the scripts tell whether the arguments of a
+// wrapped command ask for a non-interactive run, by its harness.Batch:
+// the first argument is one of Subcommands, any argument is one of Flags,
+// or Mode is given (`Mode value` or `Mode=value`) with a value other than
+// ModeInteractive. A harness with no Batch has no branch.
+
+func hasBatch(b harness.Batch) bool {
+	return len(b.Subcommands) > 0 || len(b.Flags) > 0 || b.Mode != ""
+}
+
+// quoteAll quotes each of ss with quote and joins them with sep.
+func quoteAll(ss []string, quote func(string) string, sep string) string {
+	q := make([]string, len(ss))
+	for i, s := range ss {
+		q[i] = quote(s)
+	}
+	return strings.Join(q, sep)
+}
+
+// posixBatch is __stagent_batch for bash and zsh.
+func posixBatch() string {
+	var sb strings.Builder
+	sb.WriteString(`__stagent_batch() {
+  local __stagent_c="$1" __stagent_a __stagent_mode=
+  shift
+  case $__stagent_c in
+`)
+	for _, h := range harness.All {
+		b := h.Batch
+		if !hasBatch(b) {
+			continue
+		}
+		sb.WriteString("    " + shellQuote(h.Command) + ")\n")
+		if len(b.Subcommands) > 0 {
+			sb.WriteString("      case ${1-} in " + quoteAll(b.Subcommands, shellQuote, "|") + ") return 0 ;; esac\n")
+		}
+		if len(b.Flags) > 0 || b.Mode != "" {
+			sb.WriteString(`      for __stagent_a in "$@"; do` + "\n")
+			if b.Mode != "" {
+				sb.WriteString(`        if [ -n "$__stagent_mode" ]; then
+          [ "$__stagent_a" != ` + shellQuote(b.ModeInteractive) + ` ] && return 0
+          __stagent_mode=
+          continue
+        fi
+`)
+			}
+			sb.WriteString("        case $__stagent_a in\n")
+			if len(b.Flags) > 0 {
+				sb.WriteString("          " + quoteAll(b.Flags, shellQuote, "|") + ") return 0 ;;\n")
+			}
+			if b.Mode != "" {
+				sb.WriteString("          " + shellQuote(b.Mode) + ") __stagent_mode=1 ;;\n")
+				sb.WriteString("          " + shellQuote(b.Mode+"=") + `*) [ "$__stagent_a" != ` + shellQuote(b.Mode+"="+b.ModeInteractive) + " ] && return 0 ;;\n")
+			}
+			sb.WriteString("        esac\n      done\n")
+		}
+		sb.WriteString("      ;;\n")
+	}
+	sb.WriteString("  esac\n  return 1\n}\n")
+	return sb.String()
+}
+
+// fishBatch is __stagent_batch for fish. A quoted case pattern still
+// matches with wildcards (quoting keeps fish from globbing it).
+func fishBatch() string {
+	var sb strings.Builder
+	sb.WriteString(`function __stagent_batch
+    set -l c $argv[1]
+    set -e argv[1]
+    switch "$c"
+`)
+	for _, h := range harness.All {
+		b := h.Batch
+		if !hasBatch(b) {
+			continue
+		}
+		sb.WriteString("        case " + fishQuote(h.Command) + "\n")
+		if len(b.Subcommands) > 0 {
+			sb.WriteString("            if test (count $argv) -gt 0; and contains -- $argv[1] " + quoteAll(b.Subcommands, fishQuote, " ") + "\n" +
+				"                return 0\n" +
+				"            end\n")
+		}
+		if len(b.Flags) > 0 || b.Mode != "" {
+			if b.Mode != "" {
+				sb.WriteString("            set -l mode 0\n")
+			}
+			sb.WriteString("            for a in $argv\n")
+			if b.Mode != "" {
+				sb.WriteString("                if test $mode = 1\n" +
+					"                    test \"$a\" != " + fishQuote(b.ModeInteractive) + "; and return 0\n" +
+					"                    set mode 0\n" +
+					"                    continue\n" +
+					"                end\n")
+			}
+			sb.WriteString("                switch \"$a\"\n")
+			if len(b.Flags) > 0 {
+				sb.WriteString("                    case " + quoteAll(b.Flags, fishQuote, " ") + "\n" +
+					"                        return 0\n")
+			}
+			if b.Mode != "" {
+				sb.WriteString("                    case " + fishQuote(b.Mode) + "\n" +
+					"                        set mode 1\n" +
+					"                    case " + fishQuote(b.Mode+"=*") + "\n" +
+					"                        test \"$a\" != " + fishQuote(b.Mode+"="+b.ModeInteractive) + "; and return 0\n")
+			}
+			sb.WriteString("                end\n" +
+				"            end\n")
+		}
+	}
+	sb.WriteString("    end\n    return 1\nend\n")
+	return sb.String()
+}
+
+// powershellBatch is __StagentBatch for PowerShell; arguments compare case
+// sensitively, as the other shells do.
+func powershellBatch() string {
+	var sb strings.Builder
+	sb.WriteString(`function __StagentBatch {
+  param([string]$Name, [object[]]$Rest)
+  $a = @(foreach ($x in $Rest) { "$x" })
+`)
+	is := func(x string) func(string) string {
+		return func(s string) string { return x + " -ceq " + psQuote(s) }
+	}
+	for _, h := range harness.All {
+		b := h.Batch
+		if !hasBatch(b) {
+			continue
+		}
+		sb.WriteString("  if ($Name -eq " + psQuote(h.Command) + ") {\n")
+		if len(b.Subcommands) > 0 {
+			sb.WriteString("    if ($a.Count -gt 0 -and (" + quoteAll(b.Subcommands, is("$a[0]"), " -or ") + ")) { return $true }\n")
+		}
+		if len(b.Flags) > 0 || b.Mode != "" {
+			sb.WriteString("    for ($i = 0; $i -lt $a.Count; $i++) {\n")
+			if len(b.Flags) > 0 {
+				sb.WriteString("      if (" + quoteAll(b.Flags, is("$a[$i]"), " -or ") + ") { return $true }\n")
+			}
+			if b.Mode != "" {
+				sb.WriteString("      if (($a[$i] -ceq " + psQuote(b.Mode) + " -and $i + 1 -lt $a.Count -and $a[$i + 1] -cne " + psQuote(b.ModeInteractive) + ") -or " +
+					"($a[$i].StartsWith(" + psQuote(b.Mode+"=") + ", [StringComparison]::Ordinal) -and $a[$i] -cne " + psQuote(b.Mode+"="+b.ModeInteractive) + ")) { return $true }\n")
+			}
+			sb.WriteString("    }\n")
+		}
+		sb.WriteString("  }\n")
+	}
+	sb.WriteString("  return $false\n}\n")
+	return sb.String()
+}
 
 func posixBlock(bin string) string {
 	var sb strings.Builder
 	sb.WriteString(blockBegin + "\n" + blockAbout + "\n")
-	sb.WriteString(`export STAGENT_SHELL_WRAPPER=1
-# Non-interactive runs (claude -p, codex exec, omp -p / --mode json) are
-# left alone.
-__stagent_batch() {
-  local __stagent_c="$1" __stagent_a __stagent_mode=
-  shift
-  if [ "$__stagent_c" = codex ]; then
-    case ${1-} in exec|e) return 0 ;; esac
-    return 1
-  fi
-  for __stagent_a in "$@"; do
-    if [ -n "$__stagent_mode" ]; then
-      [ "$__stagent_a" != text ] && return 0
-      __stagent_mode=
-      continue
-    fi
-    case $__stagent_a in
-      -p|--print) return 0 ;;
-      --mode) [ "$__stagent_c" = omp ] && __stagent_mode=1 ;;
-      --mode=*) [ "$__stagent_c" = omp ] && [ "$__stagent_a" != --mode=text ] && return 0 ;;
-    esac
-  done
-  return 1
-}
-__stagent_wrap() {
+	sb.WriteString("export STAGENT_SHELL_WRAPPER=1\n" + batchAbout + posixBatch())
+	sb.WriteString(`__stagent_wrap() {
   local __stagent_bin=` + shellQuote(bin) + `
   case $- in
     *i*) ;;
@@ -90,37 +232,8 @@ func fishQuote(s string) string {
 func fishFile(bin string) string {
 	var sb strings.Builder
 	sb.WriteString(blockBegin + "\n" + blockAbout + "\n")
-	sb.WriteString(`set -gx STAGENT_SHELL_WRAPPER 1
-# Non-interactive runs (claude -p, codex exec, omp -p / --mode json) are
-# left alone.
-function __stagent_batch
-    set -l c $argv[1]
-    set -e argv[1]
-    if test "$c" = codex
-        if test (count $argv) -gt 0; and contains -- $argv[1] exec e
-            return 0
-        end
-        return 1
-    end
-    set -l mode 0
-    for a in $argv
-        if test $mode = 1
-            test "$a" != text; and return 0
-            set mode 0
-            continue
-        end
-        switch "$a"
-            case -p --print
-                return 0
-            case --mode
-                test "$c" = omp; and set mode 1
-            case '--mode=*'
-                test "$c" = omp; and test "$a" != --mode=text; and return 0
-        end
-    end
-    return 1
-end
-function __stagent_wrap
+	sb.WriteString("set -gx STAGENT_SHELL_WRAPPER 1\n" + batchAbout + fishBatch())
+	sb.WriteString(`function __stagent_wrap
     set -l bin ` + fishQuote(bin) + `
     if status is-interactive; and isatty stdin; and isatty stdout; and not set -q STAGENT_SESSION_ID; and test -x $bin; and not __stagent_batch $argv
         $bin run --handoff=auto -- $argv
@@ -155,20 +268,8 @@ func psBinExpr(bin, userProfile string) string {
 func powershellBlock(binExpr string) string {
 	var sb strings.Builder
 	sb.WriteString(blockBegin + "\n" + blockAbout + "\n")
-	sb.WriteString(`$env:STAGENT_SHELL_WRAPPER = '1'
-# Non-interactive runs (claude -p, codex exec, omp -p / --mode json) are
-# left alone.
-function __StagentBatch {
-  param([string]$Name, [object[]]$Rest)
-  $a = @(foreach ($x in $Rest) { "$x" })
-  if ($Name -eq 'codex') { return ($a.Count -gt 0 -and ($a[0] -ceq 'exec' -or $a[0] -ceq 'e')) }
-  for ($i = 0; $i -lt $a.Count; $i++) {
-    if ($a[$i] -ceq '-p' -or $a[$i] -ceq '--print') { return $true }
-    if ($Name -eq 'omp' -and (($a[$i] -ceq '--mode' -and $i + 1 -lt $a.Count -and $a[$i + 1] -cne 'text') -or ($a[$i] -clike '--mode=*' -and $a[$i] -cne '--mode=text'))) { return $true }
-  }
-  return $false
-}
-function __StagentWrap {
+	sb.WriteString("$env:STAGENT_SHELL_WRAPPER = '1'\n" + batchAbout + powershellBatch())
+	sb.WriteString(`function __StagentWrap {
   param([string]$Name, [object[]]$Rest)
   $bin = ` + binExpr + `
   $interactive = [Environment]::UserInteractive -and -not ([Environment]::GetCommandLineArgs() | Where-Object { $_ -like '-NonI*' }) -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
@@ -308,7 +409,7 @@ func (e *env) blockTarget(id, path, block, defEOL string, psProfile bool) *targe
 			} else {
 				after = setBlock(cur, block, defEOL)
 			}
-			return addResult{after: after, summary: "add shell functions claude/codex/omp that run under `stagent run`"}, nil
+			return addResult{after: after, summary: "add shell functions " + strings.Join(wrappedCommands, "/") + " that run under `stagent run`"}, nil
 		},
 		remove: func(cur []byte, _ *ConfigEntry) ([]byte, error) { return removeBlock(cur), nil },
 		present: func(cur []byte) string {
@@ -329,7 +430,7 @@ func (e *env) fishTarget() *target {
 			if cur != nil && !hasBlock(cur) {
 				return addResult{}, unmanagedFile(path + " exists and is not managed by stagent; left unchanged")
 			}
-			return addResult{after: []byte(fishFile(e.l.Bin)), summary: "add fish functions claude/codex/omp that run under `stagent run`"}, nil
+			return addResult{after: []byte(fishFile(e.l.Bin)), summary: "add fish functions " + strings.Join(wrappedCommands, "/") + " that run under `stagent run`"}, nil
 		},
 		remove: func(cur []byte, _ *ConfigEntry) ([]byte, error) {
 			if !hasBlock(cur) {

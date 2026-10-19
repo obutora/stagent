@@ -8,6 +8,9 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/obutora/stagent/internal/harness"
+	"github.com/obutora/stagent/internal/wire"
 )
 
 // Prompt watch (holder.prompt_watch): while the daemon has a claude or
@@ -205,12 +208,12 @@ func awaited(tracks []*promptTrack, sig string) bool {
 	return false
 }
 
-// menuShown reports whether a menu of claude or Codex is on the screen,
-// whatever it asks: a chat message must land on none of them. Codex's
-// update notice (`1. Update now`) and folder trust prompt (`1. Trust and
-// continue`) and claude's workspace trust prompt (`❯ No, exit`) at startup
-// would take its Enter as their highlighted option just as an approval menu
-// would; for claude's that is No, which ends claude.
+// menuShown reports whether a menu of a harness is on the screen, whatever
+// it asks: a chat message must land on none of them. Codex's update notice
+// (`1. Update now`) and folder trust prompt (`1. Trust and continue`) and
+// claude's workspace trust prompt (`❯ No, exit`) at startup would take its
+// Enter as their highlighted option just as an approval menu would; for
+// claude's that is No, which ends claude.
 func (h *Holder) menuShown() bool {
 	_, ok := liveMenu(h.scr.Lines())
 	return ok
@@ -219,20 +222,58 @@ func (h *Holder) menuShown() bool {
 // ---------------------------------------------------------------------------
 // Menu recognition, after the app's screen reader
 // (lib/services/terminal_chat/agent_activity.dart): numbered options with
-// one under the cursor (claude's ❯, Codex's ›) and a key hint below them.
-// Of those menus, the permission dialogs are the ones whose first option is
-// "1. Yes…": claude's permission prompt ("Do you want to …?" → "1. Yes")
-// and plan approval ("Would you like to proceed?" → "1. Yes, and …"),
-// Codex's approval ("Would you like to run the following command?" → "1.
-// Yes, proceed (y)"). claude's workspace trust prompt has options without
-// numbers and is recognized by its title (trustMenu).
+// one under a harness's cursor (menuStyle.cursor: claude's ❯, Codex's ›)
+// and a key hint below them. Of those menus, the permission dialogs are the
+// ones whose first option is "1. Yes…": claude's permission prompt ("Do you
+// want to …?" → "1. Yes") and plan approval ("Would you like to proceed?" →
+// "1. Yes, and …"), Codex's approval ("Would you like to run the following
+// command?" → "1. Yes, proceed (y)"). A harness may have a menu without
+// numbers too, recognized its own way (menuStyle.unnumbered: claude's
+// workspace trust prompt).
+
+// menuStyle is how one harness draws its menus (prompt_claude.go,
+// prompt_codex.go, prompt_omp.go). The holder does not know which harness
+// draws the screen: every style is tried.
+type menuStyle struct {
+	// cursor marks the highlighted option of the harness's numbered
+	// menus; "" when it has none.
+	cursor string
+	// dialogEdge reports whether a line above the options is the top edge
+	// of the harness's dialog (menuSignature).
+	dialogEdge func(line string) bool
+	// unnumbered returns the options of a menu without numbers the lines
+	// show, if any.
+	unnumbered func(lines []string) ([]promptItem, bool)
+}
+
+// menuStyles has an entry for every harness of the registry.
+var menuStyles = map[string]menuStyle{
+	wire.HarnessClaude: claudeMenus,
+	wire.HarnessCodex:  codexMenus,
+	wire.HarnessOmp:    ompMenus,
+}
+
+// menuStyleOf returns the style whose cursor is cursor.
+func menuStyleOf(cursor string) (menuStyle, bool) {
+	for _, h := range harness.All {
+		if s := menuStyles[h.ID]; s.cursor != "" && s.cursor == cursor {
+			return s, true
+		}
+	}
+	return menuStyle{}, false
+}
 
 // promptOption: `❯ 1. Yes` (claude), `› 1. Yes, proceed (y)` (Codex),
-// `  2. No`.
-var promptOption = regexp.MustCompile(`^(\s*)(?:([❯›])\s*)?(\d{1,2})\.\s+(\S.*)$`)
-
-// codexCursor is the cursor of Codex's menus.
-const codexCursor = "›"
+// `  2. No`; the cursors are those of menuStyles.
+var promptOption = func() *regexp.Regexp {
+	var cursors []string
+	for _, h := range harness.All {
+		if c := menuStyles[h.ID].cursor; c != "" {
+			cursors = append(cursors, regexp.QuoteMeta(c))
+		}
+	}
+	return regexp.MustCompile(`^(\s*)(?:(` + strings.Join(cursors, "|") + `)\s*)?(\d{1,2})\.\s+(\S.*)$`)
+}()
 
 // promptHint: key hints every captured menu shows under its options (`Esc
 // to cancel · Tab to amend`, `ctrl+g to edit in Vim` under plan approval).
@@ -252,7 +293,7 @@ const promptEdgeChars = "─━═▔"
 
 type promptItem struct {
 	indent     int
-	cursor     string // "❯" or "›" on the highlighted option, else ""
+	cursor     string // a menuStyle's cursor on the highlighted option, else ""
 	number     int
 	label      string
 	start, end int // screen lines of the option (end: its last wrapped line)
@@ -260,8 +301,8 @@ type promptItem struct {
 
 // liveMenu returns the options of the menu lines (a screen, top to bottom)
 // show, if any: the lowest numbered list with one option under the cursor
-// and a key hint below it, or else claude's workspace trust prompt
-// (trustMenu).
+// and a key hint below it, or else a harness's menu without numbers
+// (menuStyle.unnumbered).
 func liveMenu(lines []string) (options []promptItem, ok bool) {
 	var groups [][]promptItem
 	cur := -1 // index in groups of the menu being read
@@ -322,77 +363,19 @@ func liveMenu(lines []string) (options []promptItem, ok bool) {
 		}
 		return group, true
 	}
-	return trustMenu(lines)
-}
-
-// trustTitle is the title of claude's workspace trust prompt (#491), shown
-// at startup in a folder not trusted yet, before the initial prompt is sent.
-const trustTitle = "Accessing workspace:"
-
-// trustCursor: the highlighted option of claude's trust prompt, which has
-// no numbers: `❯ No, exit` over `  Yes, I trust this folder`.
-var trustCursor = regexp.MustCompile(`^(\s*❯\s+)\S`)
-
-// trustMenu returns the options of claude's workspace trust prompt, if
-// lines show it: unnumbered options in one column, one of them under ❯,
-// with a key hint below them, in the dialog (under its top edge, see
-// menuSignature) titled trustTitle. Its options without a number are
-// recognized in that dialog only: anywhere else such a list is no menu.
-func trustMenu(lines []string) (options []promptItem, ok bool) {
-	for i := len(lines) - 1; i >= 0; i-- {
-		m := trustCursor.FindStringSubmatchIndex(lines[i])
-		if m == nil {
-			continue
-		}
-		col := utf8.RuneCountInString(lines[i][:m[3]])
-		option := func(j int) bool {
-			t := strings.TrimSpace(lines[j])
-			return t != "" && indentOf(lines[j]) == col
-		}
-		first, last := i, i
-		for first > 0 && option(first-1) {
-			first--
-		}
-		for last+1 < len(lines) && option(last+1) {
-			last++
-		}
-		if first == last || !trustDialog(lines, first) || !promptHintFollows(lines, last) {
-			return nil, false
-		}
-		for j := first; j <= last; j++ {
-			it := promptItem{indent: col, label: strings.TrimSpace(lines[j]), start: j, end: j}
-			if j == i {
-				it.indent = indentOf(lines[j])
-				it.cursor = "❯"
-				it.label = strings.TrimSpace(lines[j][m[3]:])
+	for _, h := range harness.All {
+		if find := menuStyles[h.ID].unnumbered; find != nil {
+			if options, ok := find(lines); ok {
+				return options, true
 			}
-			options = append(options, it)
 		}
-		return options, true
 	}
 	return nil, false
 }
 
-// trustDialog reports whether the dialog the options from line first on
-// are in is titled trustTitle: its first line under the top edge.
-func trustDialog(lines []string, first int) bool {
-	for j := first - 1; j >= 0; j-- {
-		if !isDialogEdge(lines[j]) {
-			continue
-		}
-		for _, line := range lines[j+1 : first] {
-			if t := strings.TrimSpace(line); t != "" {
-				return t == trustTitle
-			}
-		}
-		return false
-	}
-	return false
-}
-
-// permissionMenu reports whether lines (a screen, top to bottom) show
-// claude's permission or plan approval menu or Codex's approval menu, and
-// its signature.
+// permissionMenu reports whether lines (a screen, top to bottom) show a
+// harness's permission menu (claude's permission or plan approval menu,
+// Codex's approval menu), and its signature.
 func permissionMenu(lines []string) (sig string, ok bool) {
 	group, ok := liveMenu(lines)
 	if !ok || group[0].number != 1 || !strings.HasPrefix(group[0].label, "Yes") {
@@ -404,29 +387,25 @@ func permissionMenu(lines []string) (sig string, ok bool) {
 			cursor = it.cursor
 		}
 	}
-	return menuSignature(lines, group[0].start, cursor == codexCursor), true
+	return menuSignature(lines, group[0].start, cursor), true
 }
 
 // menuSignature identifies the dialog whose first option is on line first:
-// the text above the options, from the dialog's top edge, or from the top
-// of the screen when that edge scrolled away. claude draws its dialogs
-// under a full-width `───` or, for plan approval, `▔▔▔` (rules inside the
-// dialog are indented or dashed): the edge is the nearest rule above the
-// options that starts in the first column. Codex indents every line of its
-// dialog: the edge is the nearest line above the options that starts in
-// the first column (the transcript entry above, e.g. `• Running …`). That
-// is the dialog's title, the command or file it asks about with its
-// preview, and the question: it differs between the prompts of two tool
-// calls, and stays the same while the dialog is up, whatever happens below
-// it (the cursor moving between the options, Tab to amend) or above it (the
-// blinking ● of the tool line, the transcript). Blanks, rule characters
-// and the ●/⏺ marks are left out, so the same dialog wrapped at another
-// width has the same signature. Two prompts for the very same tool call
-// text share a signature: the second is not told apart from the first.
-func menuSignature(lines []string, first int, codex bool) string {
+// the text above the options, from the dialog's top edge (the dialogEdge of
+// the style whose cursor the menu has, isDialogEdge for others), or from
+// the top of the screen when that edge scrolled away. That is the dialog's
+// title, the command or file it asks about with its preview, and the
+// question: it differs between the prompts of two tool calls, and stays the
+// same while the dialog is up, whatever happens below it (the cursor moving
+// between the options, Tab to amend) or above it (the blinking ● of the
+// tool line, the transcript). Blanks, rule characters and the ●/⏺ marks are
+// left out, so the same dialog wrapped at another width has the same
+// signature. Two prompts for the very same tool call text share a
+// signature: the second is not told apart from the first.
+func menuSignature(lines []string, first int, cursor string) string {
 	edge := isDialogEdge
-	if codex {
-		edge = startsInFirstColumn
+	if s, ok := menuStyleOf(cursor); ok && s.dialogEdge != nil {
+		edge = s.dialogEdge
 	}
 	top := 0
 	for j := first - 1; j >= 0; j-- {

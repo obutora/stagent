@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/notify"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/transcript"
@@ -143,20 +144,37 @@ func (d *Daemon) hookSessionLocked(p wire.HookEventParams, pl hookPayload) *sess
 	return nil
 }
 
+// daemonHarness is what the daemon does its own way for one harness's hooks
+// (claude.go, codex.go, omp.go).
+type daemonHarness struct {
+	// watchPrompt: while an approval of the harness is pending, the
+	// session's holder watches the screen for its permission menu
+	// (prompt.go).
+	watchPrompt bool
+	// launch tells how the agent of a sessionless hook was started, from
+	// what the harness reports about itself (unwrapped.go); nil when it
+	// reports nothing.
+	launch func(p wire.HookEventParams) launchKind
+}
+
+// daemonHarnesses has an entry for every harness of the registry.
+var daemonHarnesses = map[string]daemonHarness{
+	wire.HarnessClaude: claudeDaemon,
+	wire.HarnessCodex:  codexDaemon,
+	wire.HarnessOmp:    ompDaemon,
+}
+
 // hookMetaLocked records what a hook tells about the session: harness,
 // conversation id and transcript path. It reports a change. A session that
 // registered as another program (a shell) is promoted to the hook's agent;
 // the probe returns it to its base harness once that agent is gone.
-func (d *Daemon) hookMetaLocked(s *session, harness string, pl hookPayload) bool {
+func (d *Daemon) hookMetaLocked(s *session, harnessID string, pl hookPayload) bool {
 	changed := false
-	switch harness {
-	case wire.HarnessClaude, wire.HarnessCodex, wire.HarnessOmp:
-		if s.s.Harness != harness {
-			s.s.Harness, changed = harness, true
-			if s.base == wire.HarnessOther {
-				s.agentSeen, s.missed = false, 0
-				d.startProbeLocked()
-			}
+	if harness.Known(harnessID) && s.s.Harness != harnessID {
+		s.s.Harness, changed = harnessID, true
+		if s.base == wire.HarnessOther {
+			s.agentSeen, s.missed = false, 0
+			d.startProbeLocked()
 		}
 	}
 	if pl.SessionID != "" && pl.SessionID != s.s.ConversationID {
@@ -168,17 +186,18 @@ func (d *Daemon) hookMetaLocked(s *session, harness string, pl hookPayload) bool
 	return changed
 }
 
-// newApprovalLocked registers a pending approval of s. A claude hook waits
-// on it; Codex shows its prompt only once the hook returned, so its hook is
-// answered at once. For both, s's holder watches for the permission menu
-// meanwhile (prompt.go); a Codex approval also closes on output activity or
-// Stop.
-func (d *Daemon) newApprovalLocked(s *session, harness string, pl hookPayload, now int64) *approval {
+// newApprovalLocked registers a pending approval of s. A harness that shows
+// its prompt while its hook runs (claude) has the hook wait on it; Codex
+// shows its prompt only once the hook returned, so its hook is answered at
+// once. For the harnesses with watchPrompt, s's holder watches for the
+// permission menu meanwhile (prompt.go); a Codex approval also closes on
+// output activity or Stop.
+func (d *Daemon) newApprovalLocked(s *session, harnessID string, pl hookPayload, now int64) *approval {
 	ap := &approval{
 		a: wire.Approval{
 			RequestID: wire.NewSessionID(),
 			SessionID: s.s.ID,
-			Harness:   harness,
+			Harness:   harnessID,
 			ToolName:  pl.ToolName,
 			Summary:   approvalSummary(pl.ToolName, pl.ToolInput),
 			CreatedAt: now,
@@ -186,11 +205,10 @@ func (d *Daemon) newApprovalLocked(s *session, harness string, pl hookPayload, n
 	}
 	d.approvals[ap.a.RequestID] = ap
 	d.emitLocked(s.s.ID, wire.EventApprovalRequested, ap.a)
-	switch harness {
-	case wire.HarnessClaude:
+	if h, _ := harness.Lookup(harnessID); h.HookHeldForPrompt {
 		ap.hold = make(chan struct{})
-		d.startPromptWatchLocked(s, ap)
-	case wire.HarnessCodex:
+	}
+	if daemonHarnesses[harnessID].watchPrompt {
 		d.startPromptWatchLocked(s, ap)
 	}
 	return ap

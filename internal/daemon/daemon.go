@@ -37,8 +37,8 @@ import (
 // Options configures a Daemon. Zero fields take defaults.
 type Options struct {
 	Layout *paths.Layout
-	// Roots of the harness transcripts (default: transcript.DefaultRoots).
-	Roots *transcript.Roots
+	// Roots of the harness transcripts (nil: transcript.DefaultRoots).
+	Roots transcript.Roots
 	// GoneGrace: a holder connection that drops without holder.ended counts
 	// as a lost session unless the holder re-registers within this time.
 	GoneGrace time.Duration
@@ -190,9 +190,9 @@ func New(opts Options) (*Daemon, error) {
 	if err != nil {
 		opts.Logf("daemon: tasks: %v (starting without tasks)", err)
 	}
-	roots := transcript.DefaultRoots(l.Home, os.Getenv)
-	if opts.Roots != nil {
-		roots = *opts.Roots
+	roots := opts.Roots
+	if roots == nil {
+		roots = transcript.DefaultRoots(l.Home, os.Getenv)
 	}
 	d := &Daemon{
 		opts:      opts,

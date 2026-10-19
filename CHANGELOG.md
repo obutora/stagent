@@ -3,6 +3,32 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.15.0
+
+### Added
+
+- `Session` gains `command_harness` (always present): the harness the
+  session's command runs by itself (`claude`, `codex`, `omp` or `other`),
+  judged from `command` as `harness` starts out. It stays `other` for a
+  kept shell while hooks set `harness` to an agent running inside it, so
+  the app tells "an agent inside a shell" without judging the command
+  itself (#1109).
+
+### Changed
+
+- The harnesses stagent knows are listed in one place, the harness
+  registry, and every list and judgement of them (`stagent integrate
+  --harness` / `--remove`, doctor, the shell wrapper's functions and its
+  rule for non-interactive runs, transcript roots, process recognition)
+  is built from it. One judgement tells a program's harness for a
+  session's command and for a process alike, so a session whose command
+  is Codex's native binary (`codex-x86_64-…`, `codex-aarch64-…`) is now
+  `codex`, as its process already was. The shell wrapper's scripts are
+  generated from the registry: their text changes (the batch functions
+  get one branch per command, the comments name no harness) but they
+  wrap and leave alone the same runs; `stagent integrate
+  --shell-wrapper` offers to rewrite an installed block (#1109).
+
 ## 0.14.0
 
 ### Added

@@ -1623,7 +1623,8 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 
 ## Objects
 
-`Session`: `id, harness (claude|codex|omp|other), command[], cwd, pid,
+`Session`: `id, harness (claude|codex|omp|other), command_harness
+(claude|codex|omp|other), command[], cwd, pid,
 holder_pid, mode (passthrough|detached), attached, state (working|idle|
 waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
 process), title?, conversation_id?, transcript_path?, last_message?, cols,
@@ -1679,6 +1680,14 @@ hook-derived state (the terminal/activity state remains), cancels the
 session's pending approvals (`approval_resolved` `by: cancelled`) and sends
 `session.updated`. An agent the daemon never recognizes is given up after
 five checks. The agent's next hook sets the harness again.
+
+`command_harness` (always present; 0.15.0) is the harness the session's
+command runs by itself, judged from `command` alone: its program's name
+(for a task's prepared session, `stagent task run … -- <command>`, the
+command after `--`), `other` for any other program. Hooks never change it.
+It differs from `harness` while an agent runs inside a session that
+started as another program (a kept shell): `harness` is that agent,
+`command_harness` is `other`.
 
 `Event`: `seq, time, session_id?, kind, data`. Kinds and `data`:
 

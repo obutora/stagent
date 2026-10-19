@@ -3,6 +3,8 @@ package install
 import (
 	"strings"
 	"testing"
+
+	"github.com/obutora/stagent/internal/wire"
 )
 
 // installed sets up a full installation: binary, manifest, Claude hooks,
@@ -19,7 +21,7 @@ func installed(t *testing.T) (*testEnv, string) {
 		t.Fatal(err)
 	}
 	writeFile(t, te.l.Bin, "binary")
-	te.integrate(t, integrateOpts{apply: true, harness: []string{hClaude}, shellWrapper: true, service: true})
+	te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessClaude}, shellWrapper: true, service: true})
 	if !exists(te.systemdUnitPath()) || !te.run.ran("systemctl --user enable stagent.service") {
 		t.Fatalf("service not installed; calls %v", te.run.calls)
 	}

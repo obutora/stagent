@@ -28,7 +28,8 @@ const (
 	SourceProcess  = "process"  // child process exit
 )
 
-// Harness ids.
+// Harness ids. The harnesses stagent knows are listed by the harness
+// registry (internal/harness); HarnessOther is any other program.
 const (
 	HarnessClaude = "claude"
 	HarnessCodex  = "codex"
@@ -44,8 +45,14 @@ const (
 
 // Session is one PTY session held by a `stagent run` process.
 type Session struct {
-	ID             string   `json:"id"`
-	Harness        string   `json:"harness"`
+	ID      string `json:"id"`
+	Harness string `json:"harness"`
+	// CommandHarness is the harness the session's command runs by itself
+	// (harness.Command: for `stagent task run … -- <command>` the command
+	// after "--"), HarnessOther for any other program. It differs from
+	// Harness when hooks reassigned the session, e.g. an agent started
+	// inside a kept shell.
+	CommandHarness string   `json:"command_harness"`
 	Command        []string `json:"command"`
 	Cwd            string   `json:"cwd"`
 	PID            int      `json:"pid"` // child (agent) pid
@@ -93,26 +100,11 @@ func NewSessionID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// DetectHarness maps a command's executable to a harness id. For a task's
-// prepared session it is the command `stagent task run` ends in
-// (AgentArgv).
-func DetectHarness(argv []string) string {
-	argv = AgentArgv(argv)
-	if len(argv) == 0 {
-		return HarnessOther
-	}
-	switch base := programName(argv[0]); base {
-	case HarnessClaude, HarnessCodex, HarnessOmp:
-		return base
-	}
-	return HarnessOther
-}
-
 // AgentArgv is the program a command runs in the end: for `stagent task
 // run [flags] <id> -- <command…>` (a task's prepared session) the command
 // after "--", which that one becomes; argv itself otherwise.
 func AgentArgv(argv []string) []string {
-	if len(argv) < 4 || programName(argv[0]) != "stagent" || argv[1] != "task" || argv[2] != "run" {
+	if len(argv) < 4 || ProgramName(argv[0]) != "stagent" || argv[1] != "task" || argv[2] != "run" {
 		return argv
 	}
 	for i := 3; i < len(argv); i++ {
@@ -123,9 +115,9 @@ func AgentArgv(argv []string) []string {
 	return argv
 }
 
-// programName is the lower-case base name of argv0 without a Windows
+// ProgramName is the lower-case base name of argv0 without a Windows
 // program extension.
-func programName(argv0 string) string {
+func ProgramName(argv0 string) string {
 	base := strings.ToLower(filepath.Base(strings.ReplaceAll(argv0, `\`, "/")))
 	for _, ext := range []string{".exe", ".cmd", ".bat", ".ps1"} {
 		base = strings.TrimSuffix(base, ext)

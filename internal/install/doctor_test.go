@@ -12,6 +12,7 @@ import (
 
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/wire"
 )
 
 func orphanTargets(r *DoctorReport) string {
@@ -28,7 +29,7 @@ func TestDoctorReportsOrphans(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, te.l.Bin, "binary")
-	te.integrate(t, integrateOpts{apply: true, harness: []string{hClaude}})
+	te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessClaude}})
 
 	// A hook entry written by hand (or by an older install) is ours but not
 	// in the manifest; a tracked one is not an orphan.
@@ -46,9 +47,9 @@ func TestDoctorReportsOrphans(t *testing.T) {
 	var claude, codex HarnessReport
 	for _, h := range r.Harnesses {
 		switch h.ID {
-		case hClaude:
+		case wire.HarnessClaude:
 			claude = h
-		case hCodex:
+		case wire.HarnessCodex:
 			codex = h
 		}
 	}
@@ -95,7 +96,7 @@ func TestDoctorHarnessDiscoveryAndVersion(t *testing.T) {
 	}
 	r := te.doctor()
 	for _, h := range r.Harnesses {
-		if h.ID == hOmp && (!h.Found || h.Path != bin || h.Version != "18.3.0") {
+		if h.ID == wire.HarnessOmp && (!h.Found || h.Path != bin || h.Version != "18.3.0") {
 			t.Fatalf("omp report = %+v", h)
 		}
 	}

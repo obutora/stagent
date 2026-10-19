@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -30,7 +31,7 @@ const (
 // the way pty.Start runs the program: same lookup, dir and env.
 func codexCommand(argv []string, dir string, env []string) []string {
 	agent := wire.AgentArgv(argv)
-	if wire.DetectHarness(agent) != wire.HarnessCodex {
+	if harness.Command(agent) != wire.HarnessCodex {
 		return argv
 	}
 	for _, a := range agent[1:] {

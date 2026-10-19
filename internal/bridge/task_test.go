@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -109,7 +110,7 @@ func startTaskBridge(t *testing.T, d *taskDaemon, opts ...func(*Bridge)) (*app, 
 			starts = append(starts, spawned{args: append([]string{exe}, args...), dir: dir})
 			mu.Unlock()
 			serveFake(t, l.HolderAddr(id), func(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any, error) {
-				return wire.Session{ID: id, Cwd: cwd, Command: command, Harness: wire.DetectHarness(command)}, nil
+				return wire.Session{ID: id, Cwd: cwd, Command: command, Harness: harness.Command(command)}, nil
 			})
 			return 0, nil
 		}

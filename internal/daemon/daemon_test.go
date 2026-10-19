@@ -710,9 +710,9 @@ func TestRestartKeepsSeqAndRecognizesReregistration(t *testing.T) {
 func TestTranscriptGetSubscribeAndConversations(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(paths.EnvHome, home)
-	roots := transcript.Roots{Claude: filepath.Join(home, "claude", "projects"), Codex: filepath.Join(home, "codex"), Omp: filepath.Join(home, "omp")}
+	roots := transcript.Roots{wire.HarnessClaude: filepath.Join(home, "claude", "projects"), wire.HarnessCodex: filepath.Join(home, "codex"), wire.HarnessOmp: filepath.Join(home, "omp")}
 	conv := "2a425a50-3f53-4e94-8acb-f2d54d242f33"
-	tpath := filepath.Join(roots.Claude, "-home-u-proj", conv+".jsonl")
+	tpath := filepath.Join(roots[wire.HarnessClaude], "-home-u-proj", conv+".jsonl")
 	os.MkdirAll(filepath.Dir(tpath), 0o700)
 	line := func(role, text string) string {
 		if role == "user" {
@@ -722,7 +722,7 @@ func TestTranscriptGetSubscribeAndConversations(t *testing.T) {
 	}
 	os.WriteFile(tpath, []byte(line("user", "hello")+line("assistant", "hi")), 0o600)
 
-	e := startDaemonAt(t, fastConfig(), Options{Roots: &roots, TranscriptPoll: 50 * time.Millisecond})
+	e := startDaemonAt(t, fastConfig(), Options{Roots: roots, TranscriptPoll: 50 * time.Millisecond})
 	c, notes := e.client()
 	h, _ := e.client()
 	call(t, h, wire.MethodHolderRegister, testSession(sid), nil)
@@ -1364,7 +1364,8 @@ func (p *fakeProbe) waitAsked(t *testing.T, pid, n int) {
 
 // A shell session that hooks promoted to claude returns to other once the
 // probe no longer finds claude running in it, dropping everything the
-// agent's hooks set; a session started as claude is never probed.
+// agent's hooks set; a session started as claude is never probed. Its
+// command_harness, judged from the command, stays other throughout.
 func TestShellSessionRevertsWhenAgentLeaves(t *testing.T) {
 	fp := &fakeProbe{running: map[int]bool{}, asked: map[int]int{}}
 	e := startDaemon(t, fastConfig(), Options{AgentProbe: fp.probe, ProbeInterval: 20 * time.Millisecond})
@@ -1376,7 +1377,9 @@ func TestShellSessionRevertsWhenAgentLeaves(t *testing.T) {
 	shell := testSession(sid)
 	shell.Harness, shell.Command = "", []string{"bash", "-l"}
 	call(t, h, wire.MethodHolderRegister, shell, nil)
-	sessionUpdate(t, events, "shell registered", sid, func(s wire.Session) bool { return s.Harness == wire.HarnessOther })
+	sessionUpdate(t, events, "shell registered", sid, func(s wire.Session) bool {
+		return s.Harness == wire.HarnessOther && s.CommandHarness == wire.HarnessOther
+	})
 	h2, _ := e.client()
 	agent := testSession(agentSID)
 	agent.PID = 20
@@ -1390,7 +1393,8 @@ func TestShellSessionRevertsWhenAgentLeaves(t *testing.T) {
 	<-hook(agentSID, "UserPromptSubmit", `{"session_id":"conv-a","prompt":"other"}`)
 	<-hook(sid, "SessionStart", `{"session_id":"conv-1","transcript_path":"/t/conv-1.jsonl"}`)
 	sessionUpdate(t, events, "promoted to claude", sid, func(s wire.Session) bool {
-		return s.Harness == wire.HarnessClaude && s.ConversationID == "conv-1" && s.TranscriptPath == "/t/conv-1.jsonl"
+		return s.Harness == wire.HarnessClaude && s.CommandHarness == wire.HarnessOther &&
+			s.ConversationID == "conv-1" && s.TranscriptPath == "/t/conv-1.jsonl"
 	})
 	<-hook(sid, "UserPromptSubmit", `{"session_id":"conv-1","prompt":"fix the build"}`)
 	sessionUpdate(t, events, "working on a prompt", sid, func(s wire.Session) bool {
@@ -1444,7 +1448,7 @@ func TestShellSessionRevertsWhenAgentLeaves(t *testing.T) {
 	var sl wire.SessionsListResult
 	call(t, watcher, wire.MethodSessionsList, nil, &sl)
 	for _, ls := range sl.Sessions {
-		if ls.ID == agentSID && ls.Harness != wire.HarnessClaude {
+		if ls.ID == agentSID && (ls.Harness != wire.HarnessClaude || ls.CommandHarness != wire.HarnessClaude) {
 			t.Fatalf("agent session %+v", ls)
 		}
 	}

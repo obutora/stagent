@@ -1,6 +1,59 @@
 package install
 
-import "bytes"
+import (
+	"bytes"
+
+	"github.com/obutora/stagent/internal/wire"
+)
+
+// omp: an extension of stagent's in ~/.omp/agent/extensions that runs
+// `stagent hook omp` itself.
+
+type ompIntegration struct{}
+
+func (ompIntegration) plan(e *env) ([]*Change, error) {
+	c, err := e.addChange(e.ompTarget())
+	if e.findHarness(wire.HarnessOmp) != "" {
+		e.note(noteOmpRestart, "omp loads extensions at startup; restart running omp sessions to activate the extension.")
+	}
+	return []*Change{c}, err
+}
+
+func (ompIntegration) targets(e *env) []*target { return []*target{e.ompTarget()} }
+
+func (ompIntegration) report(e *env) HarnessReport {
+	h, _ := e.harnessReport(wire.HarnessOmp, e.ompTarget())
+	return h
+}
+
+func (e *env) ompExtension() string {
+	return e.home(".omp", "agent", "extensions", "ssh-term-stagent.ts")
+}
+
+func (e *env) ompTarget() *target {
+	return &target{
+		id: wire.HarnessOmp, path: e.ompExtension(), owned: true, mode: 0o644,
+		identify: "whole file (first line " + ompMarker + ")",
+		add: func(cur []byte) (addResult, error) {
+			if cur != nil && !isOmpExtension(cur) {
+				return addResult{}, unmanagedFile(e.ompExtension() + " exists and is not managed by stagent; left unchanged")
+			}
+			return addResult{after: []byte(ompExtensionSource), summary: "install the omp extension that reports session events to stagent"}, nil
+		},
+		remove: func(cur []byte, _ *ConfigEntry) ([]byte, error) {
+			if !isOmpExtension(cur) {
+				return cur, nil
+			}
+			return nil, nil
+		},
+		present: func(cur []byte) string {
+			if isOmpExtension(cur) {
+				return "stagent omp extension"
+			}
+			return ""
+		},
+	}
+}
 
 // ompMarker is the first line of the omp extension; it identifies the file
 // as ours.

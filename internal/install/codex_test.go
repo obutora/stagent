@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/obutora/stagent/internal/wire"
 )
 
 const codexHooksBefore = `{
@@ -64,7 +66,7 @@ func TestCodexHooksAndFeatureFlagRoundTrip(t *testing.T) {
 	writeFile(t, te.codexHooks(), codexHooksBefore)
 	writeFile(t, te.codexConfig(), codexConfigBefore)
 
-	r := te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	r := te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessCodex}})
 	if got := strings.Join(changeIDs(r.Changes), ","); got != "codex-hooks,codex-config" {
 		t.Fatalf("changes = %s", got)
 	}
@@ -97,7 +99,7 @@ func TestCodexHooksAndFeatureFlagRoundTrip(t *testing.T) {
 	trusted := cfg + "[hooks.state." + tomlString(te.codexHooks()+":session_start:1:0") + "]\nenabled = true\ntrusted_hash = \"sha256:bbbb\"\n"
 	writeFile(t, te.codexConfig(), trusted)
 
-	te.integrate(t, integrateOpts{apply: true, remove: []string{hCodex}})
+	te.integrate(t, integrateOpts{apply: true, remove: []string{wire.HarnessCodex}})
 	if got := readFile(t, te.codexConfig()); got != codexConfigBefore {
 		t.Fatalf("config.toml after remove:\n%s\nwant:\n%s", got, codexConfigBefore)
 	}
@@ -111,7 +113,7 @@ func TestCodexHooksAndFeatureFlagRoundTrip(t *testing.T) {
 func TestCodexHooksOnWindows(t *testing.T) {
 	te := newTestEnv(t, "windows")
 	te.l.Bin = `C:\Users\u\.ssh-term\agent\bin\stagent.exe`
-	r := te.integrate(t, integrateOpts{harness: []string{hCodex}})
+	r := te.integrate(t, integrateOpts{harness: []string{wire.HarnessCodex}})
 	if got := strings.Join(changeIDs(r.Changes), ","); got != "codex-hooks,codex-config" || len(notesWith(r.Notes, noteCodexNotifyFallback)) != 0 {
 		t.Fatalf("changes = %s, notes %+v", got, r.Notes)
 	}
@@ -119,7 +121,7 @@ func TestCodexHooksOnWindows(t *testing.T) {
 		t.Fatalf("hooks.json diff:\n%s", r.Changes[0].Diff)
 	}
 	te.l.Bin = `C:\Users\Jo O'Neil\.ssh-term\agent\bin\stagent.exe`
-	if got := te.hookCommand(hCodex); got != `& 'C:/Users/Jo O''Neil/.ssh-term/agent/bin/stagent.exe' hook codex` || !isOurCommand(got) {
+	if got := te.hookCommand(codexHooks); got != `& 'C:/Users/Jo O''Neil/.ssh-term/agent/bin/stagent.exe' hook codex` || !isOurCommand(got) {
 		t.Fatalf("command with a space and a quote: %s", got)
 	}
 }
@@ -189,7 +191,7 @@ func TestCodexInlineFeaturesFallsBackToNotify(t *testing.T) {
 	te := newTestEnv(t, "linux")
 	before := "features = { hooks = false }\n"
 	writeFile(t, te.codexConfig(), before)
-	r := te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	r := te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessCodex}})
 	if got := strings.Join(changeIDs(r.Changes), ","); got != "codex-config" {
 		t.Fatalf("changes = %s", got)
 	}
@@ -207,7 +209,7 @@ func TestCodexNotifyFallbackNeverOverwritesUserNotify(t *testing.T) {
 	noHooksCodex(te)
 	before := "model = \"o3\"\nnotify = [\"python3\", \"/home/u/notify.py\"]\n\n[tui]\nx = 1\n"
 	writeFile(t, te.codexConfig(), before)
-	r := te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	r := te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessCodex}})
 	if len(r.Changes) != 0 {
 		t.Fatalf("changes = %v", changeIDs(r.Changes))
 	}
@@ -221,7 +223,7 @@ func TestCodexNotifyFallbackNeverOverwritesUserNotify(t *testing.T) {
 		t.Errorf("no notify fallback note: %+v", r.Notes)
 	}
 	// Removing Codex must not touch the user's notify either.
-	if r := te.integrate(t, integrateOpts{apply: true, remove: []string{hCodex}}); len(r.Changes) != 0 {
+	if r := te.integrate(t, integrateOpts{apply: true, remove: []string{wire.HarnessCodex}}); len(r.Changes) != 0 {
 		t.Fatalf("remove changed %v", changeIDs(r.Changes))
 	}
 }
@@ -231,14 +233,14 @@ func TestCodexNotifyFallbackAddsAndRemovesOurLine(t *testing.T) {
 	noHooksCodex(te)
 	before := "model = \"o3\"\n\n[tui]\nx = 1\n"
 	writeFile(t, te.codexConfig(), before)
-	te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessCodex}})
 	want := "model = \"o3\"\n" + notifyLine(te.l.Bin) + "\n\n[tui]\nx = 1\n"
 	if got := readFile(t, te.codexConfig()); got != want {
 		t.Fatalf("config.toml = %q want %q", got, want)
 	}
 	// The user appends something, so removal is element-wise, not a restore.
 	writeFile(t, te.codexConfig(), want+"y = 2\n")
-	te.integrate(t, integrateOpts{apply: true, remove: []string{hCodex}})
+	te.integrate(t, integrateOpts{apply: true, remove: []string{wire.HarnessCodex}})
 	if got := readFile(t, te.codexConfig()); got != before+"y = 2\n" {
 		t.Fatalf("after remove = %q", got)
 	}
@@ -247,7 +249,7 @@ func TestCodexNotifyFallbackAddsAndRemovesOurLine(t *testing.T) {
 func codexHarness(t *testing.T, te *testEnv) HarnessReport {
 	t.Helper()
 	for _, h := range te.doctor().Harnesses {
-		if h.ID == hCodex {
+		if h.ID == wire.HarnessCodex {
 			return h
 		}
 	}
@@ -263,7 +265,7 @@ func TestCodexNotifyFallbackSwitchesToHooks(t *testing.T) {
 	noHooksCodex(te)
 	before := "model = \"o3\"\n\n[tui]\nx = 1\n"
 	writeFile(t, te.codexConfig(), before)
-	te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessCodex}})
 	if h := codexHarness(t, te); !h.Integrated {
 		t.Fatalf("notify fallback not integrated: %+v", h)
 	}
@@ -272,7 +274,7 @@ func TestCodexNotifyFallbackSwitchesToHooks(t *testing.T) {
 	if h := codexHarness(t, te); h.Integrated || !h.HooksSupported {
 		t.Fatalf("leftover notify reported as integrated: %+v", h)
 	}
-	r := te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	r := te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessCodex}})
 	if got := strings.Join(changeIDs(r.Changes), ","); got != "codex-hooks,codex-config" {
 		t.Fatalf("changes = %s", got)
 	}
@@ -283,7 +285,7 @@ func TestCodexNotifyFallbackSwitchesToHooks(t *testing.T) {
 		t.Fatalf("hooks not integrated: %+v", h)
 	}
 
-	te.integrate(t, integrateOpts{apply: true, remove: []string{hCodex}})
+	te.integrate(t, integrateOpts{apply: true, remove: []string{wire.HarnessCodex}})
 	if got := readFile(t, te.codexConfig()); got != before {
 		t.Fatalf("after remove = %q want %q", got, before)
 	}
@@ -291,7 +293,7 @@ func TestCodexNotifyFallbackSwitchesToHooks(t *testing.T) {
 	// The user's own notify program stays through hooks integration.
 	user := "notify = [\"python3\", \"/home/u/notify.py\"]\n"
 	writeFile(t, te.codexConfig(), user)
-	te.integrate(t, integrateOpts{apply: true, harness: []string{hCodex}})
+	te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessCodex}})
 	if got := readFile(t, te.codexConfig()); got != user+"\n[features]\nhooks = true\n" {
 		t.Fatalf("user's notify touched: %q", got)
 	}

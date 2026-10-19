@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/version"
 )
@@ -50,19 +51,19 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print compact JSON")
 	var plan, apply, shellWrapper, service, linger, terminal, executionPolicy, wslKeepRunning, uploads *bool
-	var harness, remove, level *string
+	var harnesses, remove, level *string
 	switch cmd {
 	case "integrate":
 		plan = fs.Bool("plan", false, "show the changes without applying them (default)")
 		apply = fs.Bool("apply", false, "apply the changes")
-		harness = fs.String("harness", "", "comma-separated harnesses to integrate: claude,codex,omp")
-		shellWrapper = fs.Bool("shell-wrapper", false, "wrap claude/codex/omp in shell rc files")
+		harnesses = fs.String("harness", "", "comma-separated harnesses to integrate: "+strings.Join(harness.IDs(), ","))
+		shellWrapper = fs.Bool("shell-wrapper", false, "wrap "+strings.Join(wrappedCommands, "/")+" in shell rc files")
 		service = fs.Bool("service", false, "run the daemon as a login service")
 		linger = fs.Bool("linger", false, "turn on lingering (`loginctl enable-linger`, Linux) so agents keep running after logout")
 		terminal = fs.Bool("terminal", false, "add stagent to the processes Terminal.app does not ask about before closing a window (macOS)")
 		executionPolicy = fs.Bool("execution-policy", false, "set the execution policy RemoteSigned for the current user in each PowerShell that would not run its profile (Windows)")
 		wslKeepRunning = fs.Bool("wsl-keep-running", false, "keep WSL running when no Windows terminal or SSH connection uses it: [general] instanceIdleTimeout=-1 in .wslconfig (WSL; applies once WSL restarts)")
-		remove = fs.String("remove", "", "comma-separated integrations to remove: claude,codex,omp,shell-wrapper,service,linger,terminal,wsl-keep-running (linger, terminal, wsl-keep-running: only what stagent turned on or added)")
+		remove = fs.String("remove", "", "comma-separated integrations to remove: "+strings.Join(removeIDs, ",")+" (linger, terminal, wsl-keep-running: only what stagent turned on or added)")
 	case "uninstall":
 		level = fs.String("level", "", "stop | unhook | purge")
 		uploads = fs.Bool("uploads", false, "also delete ~/.ssh-term/uploads (purge)")
@@ -101,16 +102,16 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		}
 		o := integrateOpts{apply: *apply, shellWrapper: *shellWrapper, service: *service, linger: *linger, terminal: *terminal, executionPolicy: *executionPolicy, wslKeepRunning: *wslKeepRunning}
 		var err error
-		if o.harness, err = parseList(*harness, harnessIDs); err != nil {
+		if o.harness, err = parseList(*harnesses, harness.IDs()); err != nil {
 			return fail(2, err)
 		}
 		if o.remove, err = parseList(*remove, removeIDs); err != nil {
 			return fail(2, err)
 		}
 		if len(o.harness) == 0 && len(o.remove) == 0 && !o.shellWrapper && !o.service && !o.linger && !o.terminal && !o.executionPolicy && !o.wslKeepRunning {
-			for _, h := range harnessIDs {
-				if e.findHarness(h) != "" {
-					o.harness = append(o.harness, h)
+			for _, h := range harness.All {
+				if e.findHarness(h.ID) != "" {
+					o.harness = append(o.harness, h.ID)
 				}
 			}
 		}
