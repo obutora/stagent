@@ -85,6 +85,38 @@ var fixtureWant = map[string][]msg{
 		{"assistant", "", "text 9"},
 		// tool results, custom (system) messages and titles skipped
 	},
+	// Written by Pi 1.3.0's own SessionManager (v3).
+	wire.HarnessPi: {
+		{"user", "", "The test for parseConfig fails, fix it"}, // string content
+		{"assistant", "", "Let me run the tests."},             // thinking dropped
+		{"tool", "bash", "npm test -- config"},
+		{"tool", "read", "src/config.ts"},
+		{"tool", "read", "src/config.test.ts"},
+		{"assistant", "", "The retries default is missing."},
+		{"tool", "edit", "src/config.ts"},
+		{"assistant", "", "Fixed: parseConfig now defaults retries to 3, and the test passes."},
+		// custom_message, custom and bashExecution messages skipped
+		{"user", "", "Also explain this screenshot\n\n[image]"},
+		// role=system (prompt sections) skipped
+		{"assistant", "", "The screenshot shows the failing test output."},
+		// tool results, session_info, usage skipped
+	},
+	// Not a capture: Copilot CLI 1.0.98's records as its published schema
+	// (schemas/session-events.schema.json) shapes them, with records
+	// stagent does not read, one of a type it has never seen and one cut
+	// short in the middle.
+	wire.HarnessCopilot: {
+		{"user", "", "The test for parseConfig fails, fix it"}, // not transformedContent
+		{"assistant", "", "I'll look at the test first."},      // reasoningText dropped
+		{"tool", "view", "/home/user/proj/config_test.go"},
+		{"tool", "bash", "go test ./..."},
+		{"tool", "task", "Look for other callers"},
+		// tool runs, permissions, the sub-agents' messages (agentId,
+		// parentToolCallId), the unknown and the broken record and the
+		// skill's hidden prompt skipped
+		{"assistant", "", "Fixed: parseConfig now retries on EAGAIN, and the test passes."},
+		{"user", "", "Thanks! Commit it"},
+	},
 }
 
 func fixture(h string) string { return filepath.Join("testdata", h+".jsonl") }
@@ -255,10 +287,12 @@ func TestSummarize(t *testing.T) {
 // Conversation index
 
 type tree struct {
-	roots  Roots
-	claude string // listed Claude transcript
-	codex  string
-	omp    string
+	roots   Roots
+	claude  string // listed Claude transcript
+	codex   string
+	omp     string
+	pi      string
+	copilot string
 }
 
 func setupTree(t *testing.T) tree {
@@ -267,7 +301,9 @@ func setupTree(t *testing.T) tree {
 	claudeRoot := filepath.Join(home, ".claude", "projects")
 	codexRoot := filepath.Join(home, ".codex")
 	ompRoot := filepath.Join(home, ".omp", "agent", "sessions")
-	tr := tree{roots: Roots{wire.HarnessClaude: claudeRoot, wire.HarnessCodex: codexRoot, wire.HarnessOmp: ompRoot}}
+	piRoot := filepath.Join(home, ".pi", "agent", "sessions")
+	copilotRoot := filepath.Join(home, ".copilot", "session-state")
+	tr := tree{roots: Roots{wire.HarnessClaude: claudeRoot, wire.HarnessCodex: codexRoot, wire.HarnessOmp: ompRoot, wire.HarnessPi: piRoot, wire.HarnessCopilot: copilotRoot}}
 	copyFile := func(src, dst string, mtime time.Time) string {
 		b, err := os.ReadFile(src)
 		if err != nil {
@@ -295,8 +331,32 @@ func setupTree(t *testing.T) tree {
 	tr.omp = copyFile(fixture("omp"), filepath.Join(ompRoot, "-proj", "2026-09-28T23-49-45-189Z_01a0ea6c-aa65-7290-9f3f-6beb480ab112.jsonl"), base.Add(1*time.Hour))
 	writeFile(t, filepath.Join(ompRoot, "-proj", "2026-09-28T23-49-45-189Z_01a0ea6c-aa65-7290-9f3f-6beb480ab112", "sub.jsonl"),
 		[]byte(`{"type":"session","id":"sub","cwd":"/p"}`+"\n"), base.Add(7*time.Hour))
+
+	tr.pi = copyFile(fixture("pi"), filepath.Join(piRoot, "--home-user-proj--", "2026-10-19T15-17-10-242Z_01a154bc-ede2-7449-9df3-bd69c074f6dc.jsonl"), base.Add(30*time.Minute))
+
+	copilotDir := filepath.Join(copilotRoot, "0193f2c4-5e1a-7c3b-9d2e-4f6a8b0c1d2e")
+	tr.copilot = copyFile(fixture("copilot"), filepath.Join(copilotDir, "events.jsonl"), base.Add(15*time.Minute))
+	writeFile(t, filepath.Join(copilotDir, "workspace.yaml"), []byte(copilotWorkspaceYAML), base.Add(15*time.Minute))
+	// A session that never got a conversation: no events.jsonl.
+	writeFile(t, filepath.Join(copilotRoot, "0193f2c4-0000-7000-8000-000000000000", "workspace.yaml"), []byte("cwd: /p\n"), base.Add(8*time.Hour))
 	return tr
 }
+
+// copilotWorkspaceYAML is a workspace.yaml of Copilot CLI 1.0.98 [INFERENCE:
+// its fields are those the bundle compares (cli-main.js) and the runtime's
+// WorkspaceMetadata names, not seen on disk].
+const copilotWorkspaceYAML = `id: 0193f2c4-5e1a-7c3b-9d2e-4f6a8b0c1d2e
+cwd: /home/user/proj
+git_root: /home/user/proj
+repository: user/proj
+host_type: github
+branch: main
+name: "Fix parseConfig: retries"
+user_named: false
+summary: Fixed parseConfig
+created_at: 2026-10-19T15:20:00.000Z
+updated_at: 2026-10-19T15:21:02.000Z
+`
 
 func writeFile(t *testing.T, p string, b []byte, mtime time.Time) {
 	t.Helper()
@@ -327,6 +387,9 @@ func TestIndexListsInteractiveConversationsNewestFirst(t *testing.T) {
 		{"claude", "2a425a50-3f53-4e94-8acb-f2d54d242f33", "/home/user/proj", "My renamed session", tr.claude},
 		{"codex", "01a09926-8fc8-79c3-b589-f905ca3cd163", "/home/user/proj", "Improve the landing page", tr.codex},
 		{"omp", "01a0ea6c-aa65-7290-9f3f-6beb480ab112", "/home/user/proj", "title 1", tr.omp},
+		{"pi", "01a154bc-ede2-7449-9df3-bd69c074f6dc", "/home/user/proj", "parseConfig retries", tr.pi}, // the last session_info
+		// workspace.yaml's name; the session without events.jsonl is not listed.
+		{"copilot", "0193f2c4-5e1a-7c3b-9d2e-4f6a8b0c1d2e", "/home/user/proj", "Fix parseConfig: retries", tr.copilot},
 	}
 	if !reflect.DeepEqual(gotC, want) {
 		t.Fatalf("List:\n got %v\nwant %v", gotC, want)
@@ -388,6 +451,8 @@ func TestIndexFind(t *testing.T) {
 		{"claude", "2a425a50-3f53-4e94-8acb-f2d54d242f33", tr.claude},
 		{"codex", "01a09926-8fc8-79c3-b589-f905ca3cd163", tr.codex},
 		{"omp", "01a0ea6c-aa65-7290-9f3f-6beb480ab112", tr.omp},
+		{"pi", "01a154bc-ede2-7449-9df3-bd69c074f6dc", tr.pi},
+		{"copilot", "0193f2c4-5e1a-7c3b-9d2e-4f6a8b0c1d2e", tr.copilot},
 	} {
 		if p, ok := x.Find(c.harness, c.id); !ok || p != c.want {
 			t.Errorf("Find(%s, %s) = %q %v, want %q", c.harness, c.id, p, ok, c.want)
@@ -407,6 +472,9 @@ func TestHarnessOfConfinesPaths(t *testing.T) {
 		{tr.claude, "claude", true},
 		{tr.codex, "codex", true},
 		{tr.omp, "omp", true},
+		{tr.pi, "pi", true},
+		{tr.copilot, "copilot", true},
+		{filepath.Join(tr.roots[wire.HarnessCopilot], "..", "settings.json"), "", false},
 		{filepath.Join(tr.roots[wire.HarnessClaude], "..", "settings.json"), "", false},
 		{filepath.Join(tr.roots[wire.HarnessClaude], "..", "..", "x.jsonl"), "", false},
 		{filepath.Join(tr.roots[wire.HarnessCodex], "history.jsonl"), "", false}, // not under sessions/
@@ -429,5 +497,61 @@ func TestFormatsCoverRegistry(t *testing.T) {
 		if f.dir == nil || f.enumerate == nil || f.named == nil || f.scan == nil || f.titler == nil || f.parse == nil {
 			t.Errorf("formats[%q] leaves a function unset: %+v", id, f)
 		}
+	}
+}
+
+// A Pi session is append-only: a grown file is read from where the last
+// scan stopped, a later session_info renames it, and one without any is
+// titled by its first prompt.
+func TestPiTitle(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	roots := Roots{wire.HarnessPi: dir}
+	p := filepath.Join(dir, "--work--", "2026-10-19T15-17-10-242Z_01a154bc-0000-7000-8000-000000000001.jsonl")
+	mtime := time.Now().Add(-time.Hour)
+	writeFile(t, p, []byte(`{"type":"session","version":3,"id":"01a154bc-0000-7000-8000-000000000001","timestamp":"2026-10-19T15:17:10.242Z","cwd":"/work"}`+"\n"+
+		`{"type":"message","id":"a","parentId":null,"timestamp":"2026-10-19T15:17:11.000Z","message":{"role":"user","content":[{"type":"text","text":"Add a\nREADME"}],"timestamp":1}}`+"\n"), mtime)
+	x := OpenIndex(filepath.Join(t.TempDir(), "index.json"), roots)
+	got, err := x.List(nil, 10)
+	if err != nil || len(got) != 1 || got[0].Title != "Add a README" || got[0].Cwd != "/work" {
+		t.Fatalf("first prompt as title: %+v %v", got, err)
+	}
+	appendTo(t, p, []byte(`{"type":"session_info","id":"b","parentId":"a","timestamp":"2026-10-19T15:18:00.000Z","name":"Docs"}`+"\n"))
+	os.Chtimes(p, time.Now(), time.Now())
+	if got, _ = x.List(nil, 10); len(got) != 1 || got[0].Title != "Docs" {
+		t.Fatalf("renamed: %+v", got)
+	}
+}
+
+// A Copilot CLI session is titled by its workspace.yaml: its name (Copilot
+// CLI names it, the user may rename it), else its summary, else the first
+// prompt. Without workspace.yaml the cwd is session.start's and the id the
+// directory's.
+func TestCopilotTitle(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "session-state")
+	roots := Roots{wire.HarnessCopilot: root}
+	dir := filepath.Join(root, "0193f2c4-0000-7000-8000-000000000001")
+	p := filepath.Join(dir, "events.jsonl")
+	mtime := time.Now().Add(-time.Hour)
+	writeFile(t, p, []byte(`{"type":"session.start","id":"a","parentId":null,"timestamp":"2026-10-19T15:20:00.000Z","data":{"sessionId":"0193f2c4-0000-7000-8000-000000000001","context":{"cwd":"/work"}}}`+"\n"+
+		`{"type":"user.message","id":"b","parentId":"a","timestamp":"2026-10-19T15:20:05.000Z","data":{"content":"Add a\nREADME"}}`+"\n"), mtime)
+	x := OpenIndex(filepath.Join(t.TempDir(), "index.json"), roots)
+	got, err := x.List(nil, 10)
+	if err != nil || len(got) != 1 || got[0].Title != "Add a README" || got[0].Cwd != "/work" || got[0].ID != "0193f2c4-0000-7000-8000-000000000001" {
+		t.Fatalf("first prompt as title: %+v %v", got, err)
+	}
+
+	writeFile(t, filepath.Join(dir, "workspace.yaml"), []byte("cwd: /work/sub\nsummary: 'Write the README'\n"), time.Now())
+	appendTo(t, p, []byte(`{"type":"assistant.message","id":"c","parentId":"b","timestamp":"2026-10-19T15:20:06.000Z","data":{"messageId":"m","content":"Done."}}`+"\n"))
+	os.Chtimes(p, time.Now(), time.Now())
+	if got, _ = x.List(nil, 10); len(got) != 1 || got[0].Title != "Write the README" || got[0].Cwd != "/work/sub" {
+		t.Fatalf("summary: %+v", got)
+	}
+
+	writeFile(t, filepath.Join(dir, "workspace.yaml"), []byte("cwd: /work/sub\nname: Docs\nuser_named: true\nsummary: Write the README\n"), time.Now())
+	appendTo(t, p, []byte(`{"type":"session.shutdown","id":"d","parentId":"c","timestamp":"2026-10-19T15:21:00.000Z","data":{"shutdownType":"routine"}}`+"\n"))
+	later := time.Now().Add(time.Second)
+	os.Chtimes(p, later, later)
+	if got, _ = x.List(nil, 10); len(got) != 1 || got[0].Title != "Docs" {
+		t.Fatalf("renamed: %+v", got)
 	}
 }

@@ -17,7 +17,7 @@ var claudeFormat = format{
 	enumerate: func(dir string) ([]fileStat, error) {
 		return listTwoLevels(dir, func(name string) bool { return claudeIDName.MatchString(name) })
 	},
-	named:  func(base, id string) bool { return base == id+".jsonl" },
+	named:  func(path, id string) bool { return filepath.Base(path) == id+".jsonl" },
 	scan:   scanClaude,
 	titler: func(*Index) func(*entry) string { return claudeEntryTitle },
 	parse:  parseClaude,

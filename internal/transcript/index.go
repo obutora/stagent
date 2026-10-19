@@ -62,8 +62,9 @@ type format struct {
 	// enumerate lists the top-level conversation files in dir. Sub-agent
 	// transcripts are not matched.
 	enumerate func(dir string) ([]fileStat, error)
-	// named reports whether base is the file name of conversation id.
-	named func(base, id string) bool
+	// named reports whether path (a file enumerate listed) is the
+	// transcript of conversation id.
+	named func(path, id string) bool
 	// scan reads the metadata of path into e, from e.Scanned where the
 	// harness's files are append-only.
 	scan func(path string, e *entry)
@@ -74,9 +75,11 @@ type format struct {
 }
 
 var formats = map[string]format{
-	wire.HarnessClaude: claudeFormat,
-	wire.HarnessCodex:  codexFormat,
-	wire.HarnessOmp:    ompFormat,
+	wire.HarnessClaude:  claudeFormat,
+	wire.HarnessCodex:   codexFormat,
+	wire.HarnessOmp:     ompFormat,
+	wire.HarnessPi:      piFormat,
+	wire.HarnessCopilot: copilotFormat,
 }
 
 // entry is the cached metadata of one transcript file.
@@ -92,11 +95,22 @@ type entry struct {
 	Scanned int64 `json:"scanned,omitempty"`
 	// Checked: the Claude entrypoint was seen (first occurrence decides).
 	Checked bool `json:"checked,omitempty"`
-	// Titles holds Claude title candidates by record type; Title is omp's.
+	// Titles holds Claude title candidates by record type; Title is the
+	// title the other harnesses record (omp, Pi, Copilot CLI).
 	Titles map[string]string `json:"titles,omitempty"`
 	Title  string            `json:"title,omitempty"`
-	// Prompt is the first user prompt (Codex title fallback).
+	// Prompt is the first user prompt (title fallback of Codex, Pi and
+	// Copilot CLI).
 	Prompt string `json:"prompt,omitempty"`
+}
+
+// titleOrPrompt titles an entry by its title, else by its first prompt
+// (Pi, Copilot CLI).
+func titleOrPrompt(e *entry) string {
+	if t := oneLine(e.Title, maxSummary); t != "" {
+		return t
+	}
+	return oneLine(e.Prompt, maxSummary)
 }
 
 type indexFile struct {
@@ -217,7 +231,7 @@ func (x *Index) Find(harness, id string) (string, bool) {
 		return "", false
 	}
 	for _, f := range files {
-		if hf.named(filepath.Base(f.path), id) {
+		if hf.named(f.path, id) {
 			return f.path, true
 		}
 	}

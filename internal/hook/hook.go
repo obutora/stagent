@@ -67,20 +67,25 @@ type launchInfo struct {
 }
 
 // hookHarness is what the hook command does its own way for one harness
-// (claude.go, codex.go, omp.go).
+// (claude.go, codex.go, omp.go, pi.go, copilot.go).
 type hookHarness struct {
 	// argv reads the event and payload of a harness that passes them as
 	// arguments in a form of its own; ok is false for the usual form.
 	argv func(rest []string) (event string, payload []byte, ok bool)
 	// launch adds what the harness tells about its start to li.
 	launch func(li *launchInfo, payload []byte)
+	// payload rewrites the harness's payload into the form the daemon
+	// reads; nil when it already is.
+	payload func(payload []byte) []byte
 }
 
 // hookHarnesses has an entry for every harness of the registry.
 var hookHarnesses = map[string]hookHarness{
-	wire.HarnessClaude: claudeHook,
-	wire.HarnessCodex:  codexHook,
-	wire.HarnessOmp:    ompHook,
+	wire.HarnessClaude:  claudeHook,
+	wire.HarnessCodex:   codexHook,
+	wire.HarnessOmp:     ompHook,
+	wire.HarnessPi:      piHook,
+	wire.HarnessCopilot: copilotHook,
 }
 
 // Main runs the hook command. It always returns 0.
@@ -174,6 +179,9 @@ func run(args []string, pio procIO) (code int) {
 		}
 	}
 	payload = normalizePayload(payload)
+	if h := hookHarnesses[harnessID]; h.payload != nil && payload != nil {
+		payload = h.payload(payload)
+	}
 	if event == "" {
 		event = eventName(payload)
 	}

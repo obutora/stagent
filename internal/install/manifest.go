@@ -62,10 +62,11 @@ type FileEntry struct {
 }
 
 // ConfigEntry records one integration target. For files we own entirely
-// (omp extension, fish wrapper, service unit) Owned is set and removal
-// deletes the file; for shared config files our elements are identified by
-// Identify and removed element-wise, unless the file is unchanged since our
-// last edit and a valid backup exists, in which case it is restored.
+// (omp and Pi extensions, Copilot CLI hooks, fish wrapper, service unit)
+// Owned is set and removal deletes the file; for shared config files our
+// elements are identified by Identify and removed element-wise, unless the
+// file is unchanged since our last edit and a valid backup exists, in which
+// case it is restored.
 type ConfigEntry struct {
 	ID       string `json:"id"`
 	Path     string `json:"path"`

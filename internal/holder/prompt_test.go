@@ -18,7 +18,11 @@ import (
 // the size in the name is fed, `.txt` the app's plain rendering (`|` +
 // row, then the cursor line). claude_trust_*: Claude Code 2.1.293's
 // workspace trust prompt (#491), captured from its PTY, `.txt` rendered
-// with pyte.
+// with pyte. copilot_*: Copilot CLI 1.0.98's permission dialog, not
+// captured but drawn after its bundle (cli-main.js: the Dialog `hi` box
+// with its title and divider, the approval body `pA`, the select `g9`
+// with `❯ ` on the highlighted row and ` (Esc to stop)` after the last
+// option, the hints `Wt`, the labels of `PRe`).
 
 var fixtureSize = regexp.MustCompile(`_(\d+)x(\d+)$`)
 
@@ -81,12 +85,34 @@ func TestPermissionMenu(t *testing.T) {
 		{"codex_draft3_60x30", false},
 		{"codex_done_60x30", false},
 		{"codex_idle_60x30", false},
+		{"copilot_permission_60x30", true},     // "Do you want to run this command?" in a box
+		{"copilot_permission_45x30", true},     // the same, wrapped
+		{"copilot_permission_nav_60x30", true}, // cursor moved to "2. Yes, and approve `rm` …"
+		{"copilot_edit_60x30", true},           // "Do you want to edit a.txt?"
+		{"copilot_mcp_60x30", true},            // four options
+		{"copilot_after_answer_60x30", false},
 	} {
-		if _, got := permissionMenu(fixtureScreen(t, tc.name).Lines()); got != tc.want {
-			t.Errorf("%s on the holder's screen: %v, want %v", tc.name, got, tc.want)
+		harnessID, _, _ := strings.Cut(tc.name, "_")
+		// The daemon names the harness of the approval; an older one
+		// names none, and every harness's menus are looked for.
+		for _, h := range []string{harnessID, ""} {
+			if _, got := permissionMenu(fixtureScreen(t, tc.name).Lines(), h); got != tc.want {
+				t.Errorf("%s on the holder's screen, harness %q: %v, want %v", tc.name, h, got, tc.want)
+			}
+			if _, got := permissionMenu(fixtureText(t, tc.name), h); got != tc.want {
+				t.Errorf("%s as the app renders it, harness %q: %v, want %v", tc.name, h, got, tc.want)
+			}
 		}
-		if _, got := permissionMenu(fixtureText(t, tc.name)); got != tc.want {
-			t.Errorf("%s as the app renders it: %v, want %v", tc.name, got, tc.want)
+	}
+	// Copilot CLI's menu has claude's cursor, in a box claude never draws:
+	// a watch for one harness does not take the other's menu.
+	for _, c := range [][2]string{
+		{"claude_permission_60x30", "copilot"},
+		{"copilot_permission_60x30", "claude"},
+		{"copilot_permission_60x30", "codex"},
+	} {
+		if _, ok := permissionMenu(fixtureText(t, c[0]), c[1]); ok {
+			t.Errorf("%s read as %s's menu", c[0], c[1])
 		}
 	}
 
@@ -123,7 +149,7 @@ func TestPermissionMenu(t *testing.T) {
 			"  ? for shortcuts",
 		},
 	} {
-		if _, ok := permissionMenu(lines); ok {
+		if _, ok := permissionMenu(lines, ""); ok {
 			t.Errorf("%s: read as a permission menu", name)
 		}
 	}
@@ -156,6 +182,9 @@ func TestLiveMenu(t *testing.T) {
 		{"codex_draft3_60x30", false},
 		{"codex_done_60x30", false},
 		{"codex_idle_60x30", false},
+		{"copilot_permission_60x30", true},
+		{"copilot_mcp_60x30", true},
+		{"copilot_after_answer_60x30", false},
 	} {
 		if _, got := liveMenu(fixtureScreen(t, tc.name).Lines()); got != tc.want {
 			t.Errorf("%s on the holder's screen: %v, want %v", tc.name, got, tc.want)
@@ -280,7 +309,7 @@ func otherFile(t *testing.T) []string {
 func TestMenuSignature(t *testing.T) {
 	sig := func(what string, lines []string) string {
 		t.Helper()
-		s, ok := permissionMenu(lines)
+		s, ok := permissionMenu(lines, "")
 		if !ok {
 			t.Fatalf("%s: no menu", what)
 		}
@@ -333,7 +362,7 @@ func TestMenuSignature(t *testing.T) {
 }
 
 func TestScreenLinesMatchTheAppRendering(t *testing.T) {
-	for _, name := range []string{"claude_permission_60x30", "claude_plan_60x30", "codex_approval_60x30"} {
+	for _, name := range []string{"claude_permission_60x30", "claude_plan_60x30", "codex_approval_60x30", "copilot_permission_60x30", "copilot_permission_45x30", "copilot_mcp_60x30"} {
 		got := fixtureScreen(t, name).Lines()
 		want := fixtureText(t, name)
 		for i := range want {
@@ -374,7 +403,7 @@ func noReport(t *testing.T, reports chan int64, within time.Duration) {
 
 func TestPromptWatchReportsOnceAfterTheMenuLeft(t *testing.T) {
 	scr, w, reports := watchScreen(t)
-	w.set(3, true)
+	w.set(3, true, "")
 	draw(scr, w, string(readFixture(t, "claude_permission_60x30.ansi")))
 	noReport(t, reports, 3*promptEvalEvery)
 
@@ -394,13 +423,13 @@ func TestPromptWatchReportsOnceAfterTheMenuLeft(t *testing.T) {
 		t.Fatal("no prompt_gone")
 	}
 	draw(scr, w, "more output\r\n")
-	w.set(3, true) // re-sent by the daemon: the same watch
+	w.set(3, true, "") // re-sent by the daemon: the same watch
 	noReport(t, reports, promptEvalEvery+2*promptGoneAfter)
 }
 
 func TestPromptWatchNeverSeenReportsNothing(t *testing.T) {
 	scr, w, reports := watchScreen(t)
-	w.set(1, true)
+	w.set(1, true, "")
 	for range 5 {
 		draw(scr, w, answered)
 		time.Sleep(promptEvalEvery / 2)
@@ -429,13 +458,13 @@ const settle = promptEvalEvery + 2*promptGoneAfter
 // second one when its own menu goes.
 func TestPromptWatchNextMenuReplacesTheFirst(t *testing.T) {
 	scr, w, reports := watchScreen(t)
-	w.set(1, true)
+	w.set(1, true, "")
 	draw(scr, w, string(readFixture(t, "claude_permission_60x30.ansi")))
 	noReport(t, reports, 2*promptEvalEvery)
 
 	draw(scr, w, string(readFixture(t, "claude_permission_nav_60x30.ansi"))) // b.txt's prompt
 	time.Sleep(300 * time.Millisecond)                                       // its hook comes later
-	w.set(2, true)
+	w.set(2, true, "")
 	wantReport(t, reports, 1)
 	noReport(t, reports, settle) // b.txt's prompt is up
 
@@ -449,10 +478,10 @@ func TestPromptWatchNextMenuReplacesTheFirst(t *testing.T) {
 // screen switched to the next one.
 func TestPromptWatchNextHookBeforeTheSwitch(t *testing.T) {
 	scr, w, reports := watchScreen(t)
-	w.set(1, true)
+	w.set(1, true, "")
 	draw(scr, w, string(readFixture(t, "claude_permission_60x30.ansi")))
 	time.Sleep(2 * promptEvalEvery)
-	w.set(2, true)
+	w.set(2, true, "")
 	noReport(t, reports, settle)
 
 	draw(scr, w, textScreen(otherFile(t)))
@@ -467,7 +496,7 @@ func TestPromptWatchNextHookBeforeTheSwitch(t *testing.T) {
 // Moving the cursor through the options is no answer.
 func TestPromptWatchCursorMovesWithinTheMenu(t *testing.T) {
 	scr, w, reports := watchScreen(t)
-	w.set(1, true)
+	w.set(1, true, "")
 	draw(scr, w, string(readFixture(t, "claude_permission_60x30.ansi")))
 	time.Sleep(2 * promptEvalEvery)
 	draw(scr, w, textScreen(cursorOnNo(t)))
@@ -483,10 +512,10 @@ func TestPromptWatchCursorMovesWithinTheMenu(t *testing.T) {
 // one (the daemon closes its approval with the next report).
 func TestPromptWatchUnseenWatchFoldsIntoTheNext(t *testing.T) {
 	scr, w, reports := watchScreen(t)
-	w.set(1, true)
+	w.set(1, true, "")
 	draw(scr, w, answered)
 	time.Sleep(2 * promptEvalEvery)
-	w.set(2, true)
+	w.set(2, true, "")
 	draw(scr, w, string(readFixture(t, "claude_permission_60x30.ansi")))
 	time.Sleep(2 * promptEvalEvery)
 	draw(scr, w, answered)
@@ -501,7 +530,7 @@ func TestPromptWatchResizeAndOff(t *testing.T) {
 	scr, w, reports := watchScreen(t)
 	menu := string(readFixture(t, "claude_permission_60x30.ansi"))
 
-	w.set(1, true)
+	w.set(1, true, "")
 	draw(scr, w, menu)
 	time.Sleep(2 * promptEvalEvery)
 	w.resized()
@@ -510,7 +539,7 @@ func TestPromptWatchResizeAndOff(t *testing.T) {
 
 	draw(scr, w, menu)
 	time.Sleep(2 * promptEvalEvery)
-	w.set(1, false)
+	w.set(1, false, "")
 	draw(scr, w, answered)
 	noReport(t, reports, settle)
 }
@@ -519,7 +548,7 @@ func TestPromptWatchResizeAndOff(t *testing.T) {
 // leaves the menu for the canceled request and an empty prompt (#320).
 func TestPromptWatchCodexMenuCanceled(t *testing.T) {
 	scr, w, reports := watchScreen(t)
-	w.set(1, true)
+	w.set(1, true, "")
 	draw(scr, w, string(readFixture(t, "codex_approval_60x30.ansi")))
 	for _, title := range []string{"[ . ]", "[ ! ]", "[ . ]"} {
 		time.Sleep(promptEvalEvery)
@@ -543,6 +572,66 @@ func TestPromptWatchCodexMenuCanceled(t *testing.T) {
 		"",
 		"  ? for shortcuts",
 	}))
+	wantReport(t, reports, 1)
+	noReport(t, reports, settle)
+}
+
+// Copilot CLI's dialog is a box: its signature is the box's text from its
+// top edge to the options (the title, the command, the question), the
+// borders left out, so the same dialog at another width has the same one.
+func TestCopilotMenuSignature(t *testing.T) {
+	sig := func(what string, lines []string) string {
+		t.Helper()
+		s, ok := permissionMenu(lines, "copilot")
+		if !ok {
+			t.Fatalf("%s: no menu", what)
+		}
+		return s
+	}
+	a := sig("rm", fixtureScreen(t, "copilot_permission_60x30").Lines())
+	if a != "Runshellcommandrm-rfbuildDoyouwanttorunthiscommand?" {
+		t.Fatalf("signature %q: want the box's text from its top edge to the question", a)
+	}
+	for what, lines := range map[string][]string{
+		"as the app renders it":   fixtureText(t, "copilot_permission_60x30"),
+		"wrapped at 45 columns":   fixtureScreen(t, "copilot_permission_45x30").Lines(),
+		"cursor moved to 2.":      fixtureScreen(t, "copilot_permission_nav_60x30").Lines(),
+		"read for any harness":    fixtureText(t, "copilot_permission_60x30"),
+		"the top edge scrolled away": fixtureText(t, "copilot_permission_60x30")[14:],
+	} {
+		if what == "read for any harness" {
+			got, _ := permissionMenu(lines, "")
+			if got != a {
+				t.Errorf("%s: signature %q, want %q", what, got, a)
+			}
+			continue
+		}
+		if got := sig(what, lines); got != a {
+			t.Errorf("%s: signature %q, want %q", what, got, a)
+		}
+	}
+	for what, lines := range map[string][]string{
+		"an edit": fixtureText(t, "copilot_edit_60x30"),
+		"another command": editRows(fixtureText(t, "copilot_permission_60x30"), func(row string) string {
+			return strings.Replace(row, "rm -rf build", "rm -rf dist ", 1)
+		}),
+	} {
+		if got := sig(what, lines); got == a {
+			t.Errorf("%s: same signature as the first %q", what, got)
+		}
+	}
+}
+
+// A watch for Copilot CLI's approval reports once its boxed menu left the
+// screen: answered on the PC (or with the key SSH Term typed).
+func TestPromptWatchCopilotMenuAnswered(t *testing.T) {
+	scr, w, reports := watchScreen(t)
+	w.set(1, true, "copilot")
+	draw(scr, w, string(readFixture(t, "copilot_permission_60x30.ansi")))
+	time.Sleep(2 * promptEvalEvery)
+	draw(scr, w, "\x1b[2J\x1b[H"+string(readFixture(t, "copilot_permission_nav_60x30.ansi"))) // ↓ on the PC
+	noReport(t, reports, settle)
+	draw(scr, w, "\x1b[2J\x1b[H"+string(readFixture(t, "copilot_after_answer_60x30.ansi")))
 	wantReport(t, reports, 1)
 	noReport(t, reports, settle)
 }

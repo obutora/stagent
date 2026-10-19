@@ -1,0 +1,30 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[0;2m●[0m Clean the build directory and rebuild.
+
+[0;2m●[0m I'll remove the build directory first.
+
+[0;2m●[0m Run shell command
+  $ rm -rf build
+  └ 1 line...
+
+[0;2m●[0m Removed. Rebuilding now:
+  1. Yes, run make
+  2. Then run the tests

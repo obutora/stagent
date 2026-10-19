@@ -35,7 +35,7 @@ type approval struct {
 // waits on the hook. Every other event returns at once.
 func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (any, error) {
 	pl := parseHookPayload(p.Payload)
-	eff := classifyHook(p.Event, pl)
+	eff := classifyHook(p.Harness, p.Event, pl)
 	now := nowMs()
 
 	d.mu.Lock()
@@ -55,6 +55,11 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 
 	var ap *approval
 	switch {
+	case eff.permissionCheck:
+		// Its menu, if it comes, is told by the harness's notification.
+		if s != nil {
+			s.checkTool, s.checkInput = pl.ToolName, pl.ToolInput
+		}
 	case eff.approval:
 		// A request outside stagent sessions (an IDE, `claude -p`, the SDK)
 		// is neither registered nor pushed: nothing here can answer it.
@@ -85,6 +90,7 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 	if eff.turnComplete {
 		if s != nil {
 			d.cancelApprovalsLocked(s.s.ID) // the turn ended without them
+			s.checkTool, s.checkInput = "", nil
 			if m := firstNonBlank(pl.LastAssistantMessage, pl.Message); m != "" {
 				s.s.LastMessage = clipLine(m, 120)
 				changed = true
@@ -145,12 +151,17 @@ func (d *Daemon) hookSessionLocked(p wire.HookEventParams, pl hookPayload) *sess
 }
 
 // daemonHarness is what the daemon does its own way for one harness's hooks
-// (claude.go, codex.go, omp.go).
+// (claude.go, codex.go, omp.go, pi.go, copilot.go).
 type daemonHarness struct {
 	// watchPrompt: while an approval of the harness is pending, the
 	// session's holder watches the screen for its permission menu
 	// (prompt.go).
 	watchPrompt bool
+	// checksFirst: the harness's PermissionRequest hook runs before its
+	// own permission checks, which may allow the tool without a menu; the
+	// menu comes with a permission_prompt Notification, which registers
+	// the approval (named by the tool the latest check named).
+	checksFirst bool
 	// launch tells how the agent of a sessionless hook was started, from
 	// what the harness reports about itself (unwrapped.go); nil when it
 	// reports nothing.
@@ -159,9 +170,11 @@ type daemonHarness struct {
 
 // daemonHarnesses has an entry for every harness of the registry.
 var daemonHarnesses = map[string]daemonHarness{
-	wire.HarnessClaude: claudeDaemon,
-	wire.HarnessCodex:  codexDaemon,
-	wire.HarnessOmp:    ompDaemon,
+	wire.HarnessClaude:  claudeDaemon,
+	wire.HarnessCodex:   codexDaemon,
+	wire.HarnessOmp:     ompDaemon,
+	wire.HarnessPi:      piDaemon,
+	wire.HarnessCopilot: copilotDaemon,
 }
 
 // hookMetaLocked records what a hook tells about the session: harness,
@@ -189,17 +202,28 @@ func (d *Daemon) hookMetaLocked(s *session, harnessID string, pl hookPayload) bo
 // newApprovalLocked registers a pending approval of s. A harness that shows
 // its prompt while its hook runs (claude) has the hook wait on it; Codex
 // shows its prompt only once the hook returned, so its hook is answered at
-// once. For the harnesses with watchPrompt, s's holder watches for the
-// permission menu meanwhile (prompt.go); a Codex approval also closes on
-// output activity or Stop.
+// once. Copilot CLI's approval comes with its notification, which names no
+// tool: the latest permission check's tool names it, else the
+// notification's message. For the harnesses with watchPrompt, s's holder
+// watches for the permission menu meanwhile (prompt.go); a Codex or
+// Copilot CLI approval also closes on output activity or Stop.
 func (d *Daemon) newApprovalLocked(s *session, harnessID string, pl hookPayload, now int64) *approval {
+	tool, input := pl.ToolName, pl.ToolInput
+	if tool == "" && len(input) == 0 {
+		tool, input = s.checkTool, s.checkInput
+	}
+	s.checkTool, s.checkInput = "", nil
+	summary := approvalSummary(tool, input)
+	if summary == "" {
+		summary = clipLine(strings.TrimSpace(pl.Message), 120)
+	}
 	ap := &approval{
 		a: wire.Approval{
 			RequestID: wire.NewSessionID(),
 			SessionID: s.s.ID,
 			Harness:   harnessID,
-			ToolName:  pl.ToolName,
-			Summary:   approvalSummary(pl.ToolName, pl.ToolInput),
+			ToolName:  tool,
+			Summary:   summary,
 			CreatedAt: now,
 		},
 	}

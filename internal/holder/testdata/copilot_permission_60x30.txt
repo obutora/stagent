@@ -1,0 +1,31 @@
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|● Clean the build directory and rebuild.
+|
+|● I'll remove the build directory first.
+|
+|╭──────────────────────────────────────────────────────────╮
+|│ Run shell command                                        │
+|│ ──────────────────────────────────────────────────────── │
+|│ ╭──────────────────────────────────────────────────────╮ │
+|│ │ rm -rf build                                         │ │
+|│ ╰──────────────────────────────────────────────────────╯ │
+|│                                                          │
+|│ Do you want to run this command?                         │
+|│                                                          │
+|│ ❯ 1. Yes                                                 │
+|│   2. Yes, and approve `rm` for the rest of the running   │
+|│   session                                                │
+|│   3. No, and tell Copilot what to do differently (Esc to │
+|│   stop)                                                  │
+|│                                                          │
+|│ ↑/↓ to navigate · enter to select · esc to cancel        │
+|╰──────────────────────────────────────────────────────────╯
+cursor=0,29 alt=false appCursor=false bracketed=true

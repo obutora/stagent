@@ -3,6 +3,68 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.16.0
+
+### Added
+
+- Pi (`pi`, earendil-works/pi) is a harness (`pi`): `stagent integrate
+  --harness pi` writes an extension to Pi's agent directory
+  (`$PI_CODING_AGENT_DIR`, `~` expanded, else `~/.pi/agent`) under
+  `extensions/ssh-term-stagent.ts` that runs `stagent hook pi` on
+  `session_start`, `before_agent_start` (the prompt), `agent_settled` (the
+  end of the turn) and `session_shutdown`, and `--remove pi` / `uninstall
+  --level unhook` delete it, also where the manifest recorded it under an
+  earlier `PI_CODING_AGENT_DIR`; doctor reports Pi; a new note
+  `pi_restart` when the extension changes. The extension stays silent
+  without a terminal UI, with `-p` / `--print` or `--mode json` / `rpc`
+  (also `--mode=…`) among Pi's arguments (Pi reports a UI in rpc mode),
+  and in a pi that Pi's bash tool started (`PI_SESSION_ID`), so a nested
+  Pi is not counted twice. Pi's process is recognized by its title `pi`
+  and by its npm packages (`@earendil-works/pi-coding-agent`,
+  `@mariozechner/pi-coding-agent`); its conversations (session format v3
+  under `sessions/`) are listed, titled by `session_info` or the first
+  prompt, read and followed; the shell wrapper wraps `pi` and leaves
+  `-p` / `--print`, `--mode` other than `text`, `--no-session` and its
+  package and account commands alone. Its hooks carry Pi's arguments
+  (`argv`): Pi's process title hides them from the process table, and
+  `parent_batch` is judged from them (#1112).
+- GitHub Copilot CLI (`copilot`) is a harness (`copilot`): `stagent
+  integrate --harness copilot` writes `$COPILOT_HOME/hooks/ssh-term-stagent.json`
+  (default `~/.copilot/hooks/`), whose hooks run `stagent hook copilot
+  <event>` from bash and from PowerShell for `SessionStart`, `SessionEnd`,
+  `UserPromptSubmit`, `Stop`, `Notification` and `PermissionRequest`
+  (PascalCase names: Copilot CLI then sends Claude Code's snake_case
+  payload; `stagent hook copilot` also adds `session_id`,
+  `transcript_path`, `tool_name`, `tool_input` from camelCase payloads);
+  `--remove copilot` / `uninstall --level unhook` delete it, also where
+  the manifest recorded it under an earlier `COPILOT_HOME`; doctor
+  reports Copilot CLI; a new note `copilot_restart`. Its PermissionRequest
+  hook returns at once and registers nothing (Copilot CLI runs it before
+  its own permission checks); the `permission_prompt` notification
+  registers the approval, named by the tool the latest permission check
+  named, and the holder watches Copilot CLI's boxed menu like Codex's.
+  Copilot CLI's notices of background work (`shell_completed`,
+  `shell_detached_completed`, `agent_completed`, `agent_idle`) set no
+  state. Its process is recognized by name (the native binary, also under
+  its npm launcher) and npm package (`@github/copilot`); its conversations
+  (`session-state/<id>/events.jsonl`) are listed, titled by
+  `workspace.yaml`'s `name`, else `summary`, else the first prompt, read
+  (records of unknown types and lines that do not parse are skipped) and
+  followed (an open file of the session directory, `--resume[=]<id>`,
+  `-r`, `--session-id`); the shell wrapper wraps `copilot` and leaves
+  `-p` / `--prompt[=…]`, `--acp` and its subcommands alone (#1113).
+- `holder.prompt_watch` gains `harness` (with `on`): the harness whose
+  menu the approval brings, so Copilot CLI's menu (claude's `❯` cursor, in
+  a box) is read as Copilot CLI draws it. Without it every harness's menus
+  are looked for (#1113).
+
+### Changed
+
+- A user message whose content is a plain string (Pi) is read in omp's
+  transcript format too (#1112).
+- `omp_restart` is noted only when `integrate` changes the omp extension,
+  not on every `integrate --harness omp`.
+
 ## 0.15.0
 
 ### Added

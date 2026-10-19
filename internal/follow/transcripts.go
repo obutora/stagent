@@ -121,20 +121,22 @@ type finder struct {
 }
 
 var finders = map[string]finder{
-	wire.HarnessClaude: claudeFinder,
-	wire.HarnessCodex:  codexFinder,
-	wire.HarnessOmp:    ompFinder,
+	wire.HarnessClaude:  claudeFinder,
+	wire.HarnessCodex:   codexFinder,
+	wire.HarnessOmp:     ompFinder,
+	wire.HarnessPi:      piFinder,
+	wire.HarnessCopilot: copilotFinder,
 }
 
 // resolve returns the transcript an agent writes ("" before it has one)
 // and, for a harness with a session record, the working directory it
 // records.
 //
-// Harnesses found by their files (Codex, omp): the transcript the agent
-// has open (they keep it open once they wrote to it), else the session its
-// terminal's breadcrumb names, else the session its command line resumes,
-// else the newest conversation in its directory that no other agent
-// writes.
+// Harnesses found by their files (all but Claude Code): the transcript the
+// agent has open (a harness that keeps it open once it wrote to it), else
+// the session its terminal's breadcrumb names, else the session its command
+// line resumes, else the newest conversation in its directory that no
+// other agent writes.
 func (t *transcripts) resolve(a agentFacts) (path, cwd string) {
 	f, ok := finders[a.harness]
 	switch {
@@ -232,7 +234,7 @@ func absFrom(dir, p string) string {
 }
 
 // createdAt is when a conversation started: the time in its UUIDv7 id (what
-// current Codex and omp use), else the time fileTime reads in its file
+// current Codex, omp and Pi use), else the time fileTime reads in its file
 // name.
 func createdAt(fileTime func(base string) (time.Time, bool), path, id string) (time.Time, bool) {
 	if len(id) == 36 && id[14] == '7' {

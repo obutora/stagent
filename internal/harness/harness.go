@@ -42,8 +42,10 @@ func Of(name string, argv []string) string {
 			return h
 		}
 		for _, h := range All {
-			if strings.Contains(script, "/"+h.Package+"/") {
-				return h.ID
+			for _, pkg := range h.Packages {
+				if strings.Contains(script, "/"+pkg+"/") {
+					return h.ID
+				}
 			}
 		}
 		return ""

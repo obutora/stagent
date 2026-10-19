@@ -381,10 +381,11 @@ const (
 	// auto-starting the daemon, so `uninstall --level stop` sticks.
 	MethodDaemonStopping = "daemon.stopping"
 	// daemon → holder notification, HolderPromptWatchParams: watch the
-	// screen for the permission menu while a claude or Codex approval of
-	// the session is pending (on), or stop (off). Holders before 0.4.0
-	// ignore it, like any notification they do not know; 0.5.0 and earlier
-	// know only claude's menu.
+	// screen for the permission menu while a claude, Codex or Copilot CLI
+	// approval of the session is pending (on), or stop (off). Holders
+	// before 0.4.0 ignore it, like any notification they do not know;
+	// 0.5.0 and earlier know only claude's menu, 0.15.0 and earlier no
+	// Copilot CLI menu.
 	MethodHolderPromptWatch = "holder.prompt_watch"
 )
 
@@ -393,12 +394,16 @@ type HolderRegisterResult struct {
 }
 
 // HolderPromptWatchParams starts (on) or ends a prompt watch. Gen names
-// the watch; a new one starts with every claude or Codex approval
-// registered.
+// the watch; a new one starts with every claude, Codex or Copilot CLI
+// approval registered. Harness (since 0.16.0, with on) is the harness
+// whose menu the approval brings: Copilot CLI's menu has claude's cursor
+// (❯), so the holder reads the screen as that harness draws it. Empty from
+// older daemons: every harness's menus are looked for.
 type HolderPromptWatchParams struct {
-	ID  string `json:"id"`
-	Gen int64  `json:"gen"`
-	On  bool   `json:"on"`
+	ID      string `json:"id"`
+	Gen     int64  `json:"gen"`
+	On      bool   `json:"on"`
+	Harness string `json:"harness,omitempty"`
 }
 
 // HolderPromptGoneParams reports that the permission menu watch Gen saw
@@ -450,8 +455,8 @@ type HookEventParams struct {
 	// stdin on Linux, its controlling terminal on macOS; nil when unknown
 	// (Windows). ParentBatch:
 	// the harness's command line asks for a non-interactive run, by the
-	// shell wrapper's rule (claude -p / --print; codex exec / e; omp -p /
-	// --print or --mode other than text). SSH: $SSH_CONNECTION is set.
+	// shell wrapper's rule (the harness's Batch in the registry, e.g.
+	// claude -p / --print, codex exec). SSH: $SSH_CONNECTION is set.
 	// TerminalAncestor (Windows; nil elsewhere or unknown): a shell
 	// (PowerShell, pwsh, cmd, bash, sh) runs above the harness. Originator
 	// (codex): session_meta.originator of the conversation's rollout file

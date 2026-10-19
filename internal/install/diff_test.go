@@ -63,7 +63,7 @@ func TestPlanShowsDiffAndWritesNothing(t *testing.T) {
 		!strings.Contains(c.Diff, "hook claude || true") {
 		t.Fatalf("claude diff:\n%s", c.Diff)
 	}
-	if o := r.Changes[1]; o.Action != "create" || !strings.Contains(o.Diff, "+"+ompMarker) {
+	if o := r.Changes[1]; o.Action != "create" || !strings.Contains(o.Diff, "+"+extensionMarker) {
 		t.Fatalf("omp change: %+v", o)
 	}
 	if readFile(t, te.claudeSettings()) != orig || exists(te.ompExtension()) || exists(te.l.Manifest) {
