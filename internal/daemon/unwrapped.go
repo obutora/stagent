@@ -3,9 +3,9 @@ package daemon
 import (
 	"runtime"
 	"sort"
-	"strings"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -35,9 +35,9 @@ type unwrappedRec struct {
 // entry points; a Codex conversation of `codex exec`, the SDK or a
 // subagent; a codex / omp whose terminal is known to be missing or whose
 // command line asks for a batch run) or a program that is not an agent
-// harness. Claude Code tells its entry point and Codex its originator;
-// without them (older versions, unreadable rollout) they are judged like
-// the others.
+// harness. Claude Code tells its entry point and Codex its originator
+// (daemonHarness.launch); without them (older versions, unreadable
+// rollout) they are judged like the others.
 //
 // On a Windows host (windows) the terminal is never known: every other
 // launch counts. One from an SSH session has its own reason (the wrapper
@@ -47,30 +47,22 @@ type unwrappedRec struct {
 // the setup. An app that runs the agent in a PowerShell reading its
 // profile (Orca) gets the wrapper; the Codex desktop app counts as ide.
 func unwrappedReason(p wire.HookEventParams, windows bool) string {
-	switch p.Harness {
-	case wire.HarnessClaude, wire.HarnessCodex, wire.HarnessOmp:
-	default:
+	if !harness.Known(p.Harness) {
 		return ""
 	}
-	if p.Harness == wire.HarnessCodex && (p.Originator != "" || p.Subagent) {
-		switch {
-		case p.Subagent:
-			return ""
-		case codexDesktop[p.Originator]:
-			return wire.UnwrappedIDE
-		case !codexTerminal[p.Originator]:
-			return "" // codex_exec, codex_sdk_ts, …
-		}
+	kind := launchUnknown
+	if launch := daemonHarnesses[p.Harness].launch; launch != nil {
+		kind = launch(p)
 	}
-	if p.Harness == wire.HarnessClaude && p.Entrypoint != "" {
-		switch {
-		case strings.HasPrefix(p.Entrypoint, "sdk-"):
-			return ""
-		case p.Entrypoint != "cli":
-			return wire.UnwrappedIDE
-		}
-	} else if (p.ParentTTY != nil && !*p.ParentTTY) || p.ParentBatch {
+	switch kind {
+	case launchBatch:
 		return ""
+	case launchIDE:
+		return wire.UnwrappedIDE
+	case launchUnknown:
+		if (p.ParentTTY != nil && !*p.ParentTTY) || p.ParentBatch {
+			return ""
+		}
 	}
 	if windows && p.SSH {
 		return wire.UnwrappedSSH
@@ -84,11 +76,19 @@ func unwrappedReason(p wire.HookEventParams, windows bool) string {
 	return wire.UnwrappedOldTerminal
 }
 
-// Codex originators (session_meta.originator): its terminal UI (current
-// and older names) and the apps that run it without a terminal.
-var (
-	codexTerminal = map[string]bool{"codex-tui": true, "codex_cli_rs": true}
-	codexDesktop  = map[string]bool{"Codex Desktop": true, "codex_vscode": true}
+// launchKind is what a harness reports about how it was started
+// (daemonHarness.launch).
+type launchKind int
+
+const (
+	// launchUnknown: judged by the terminal and the command line.
+	launchUnknown launchKind = iota
+	// launchTerminal: an interactive start, whatever the terminal facts.
+	launchTerminal
+	// launchBatch: a non-interactive run, not recorded.
+	launchBatch
+	// launchIDE: an app or editor extension that runs the harness.
+	launchIDE
 )
 
 // noteUnwrappedLocked records the agent of a hook that found no session;

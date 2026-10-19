@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/obutora/stagent/internal/wire"
 )
 
 func TestUnifiedDiff(t *testing.T) {
@@ -48,7 +50,7 @@ func TestPlanShowsDiffAndWritesNothing(t *testing.T) {
 	te := newTestEnv(t, "linux")
 	const orig = "{\n  \"model\": \"opus\"\n}\n"
 	writeFile(t, te.claudeSettings(), orig)
-	r := te.integrate(t, integrateOpts{harness: []string{hClaude, hOmp}})
+	r := te.integrate(t, integrateOpts{harness: []string{wire.HarnessClaude, wire.HarnessOmp}})
 	if r.Applied {
 		t.Fatal("plan reported applied")
 	}

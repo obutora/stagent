@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -263,12 +264,10 @@ type tree struct {
 func setupTree(t *testing.T) tree {
 	t.Helper()
 	home := t.TempDir()
-	r := Roots{
-		Claude: filepath.Join(home, ".claude", "projects"),
-		Codex:  filepath.Join(home, ".codex"),
-		Omp:    filepath.Join(home, ".omp", "agent", "sessions"),
-	}
-	tr := tree{roots: r}
+	claudeRoot := filepath.Join(home, ".claude", "projects")
+	codexRoot := filepath.Join(home, ".codex")
+	ompRoot := filepath.Join(home, ".omp", "agent", "sessions")
+	tr := tree{roots: Roots{wire.HarnessClaude: claudeRoot, wire.HarnessCodex: codexRoot, wire.HarnessOmp: ompRoot}}
 	copyFile := func(src, dst string, mtime time.Time) string {
 		b, err := os.ReadFile(src)
 		if err != nil {
@@ -279,22 +278,22 @@ func setupTree(t *testing.T) tree {
 	}
 	base := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 
-	tr.claude = copyFile(fixture("claude"), filepath.Join(r.Claude, "-home-user-proj", "2a425a50-3f53-4e94-8acb-f2d54d242f33.jsonl"), base.Add(3*time.Hour))
+	tr.claude = copyFile(fixture("claude"), filepath.Join(claudeRoot, "-home-user-proj", "2a425a50-3f53-4e94-8acb-f2d54d242f33.jsonl"), base.Add(3*time.Hour))
 	// claude -p run (automation) and a sub-agent transcript: never listed.
-	writeFile(t, filepath.Join(r.Claude, "-home-user-proj", "11111111-2222-4333-8444-555555555555.jsonl"),
+	writeFile(t, filepath.Join(claudeRoot, "-home-user-proj", "11111111-2222-4333-8444-555555555555.jsonl"),
 		[]byte(`{"type":"user","entrypoint":"sdk-cli","cwd":"/home/user/proj","message":{"content":"x"}}`+"\n"), base.Add(5*time.Hour))
-	writeFile(t, filepath.Join(r.Claude, "-home-user-proj", "2a425a50-3f53-4e94-8acb-f2d54d242f33", "subagents", "agent-a1.jsonl"),
+	writeFile(t, filepath.Join(claudeRoot, "-home-user-proj", "2a425a50-3f53-4e94-8acb-f2d54d242f33", "subagents", "agent-a1.jsonl"),
 		[]byte(`{"type":"user","entrypoint":"cli","cwd":"/x"}`+"\n"), base.Add(6*time.Hour))
 
-	tr.codex = copyFile(fixture("codex"), filepath.Join(r.Codex, "sessions", "2026", "09", "13", "rollout-2026-09-13T14-03-56-01a09926-8fc8-79c3-b589-f905ca3cd163.jsonl"), base.Add(2*time.Hour))
-	writeFile(t, filepath.Join(r.Codex, "sessions", "2026", "09", "14", "rollout-2026-09-14T00-00-00-01a0aaaa-0000-7000-8000-000000000000.jsonl"),
+	tr.codex = copyFile(fixture("codex"), filepath.Join(codexRoot, "sessions", "2026", "09", "13", "rollout-2026-09-13T14-03-56-01a09926-8fc8-79c3-b589-f905ca3cd163.jsonl"), base.Add(2*time.Hour))
+	writeFile(t, filepath.Join(codexRoot, "sessions", "2026", "09", "14", "rollout-2026-09-14T00-00-00-01a0aaaa-0000-7000-8000-000000000000.jsonl"),
 		[]byte(`{"type":"session_meta","payload":{"id":"01a0aaaa-0000-7000-8000-000000000000","cwd":"/p","originator":"codex_exec","source":"exec"}}`+"\n"), base.Add(4*time.Hour))
-	writeFile(t, filepath.Join(r.Codex, "session_index.jsonl"),
+	writeFile(t, filepath.Join(codexRoot, "session_index.jsonl"),
 		[]byte(`{"id":"01a09926-8fc8-79c3-b589-f905ca3cd163","thread_name":"old name"}`+"\n"+
 			`{"id":"01a09926-8fc8-79c3-b589-f905ca3cd163","thread_name":"Improve the landing page"}`+"\n"), base)
 
-	tr.omp = copyFile(fixture("omp"), filepath.Join(r.Omp, "-proj", "2026-09-28T23-49-45-189Z_01a0ea6c-aa65-7290-9f3f-6beb480ab112.jsonl"), base.Add(1*time.Hour))
-	writeFile(t, filepath.Join(r.Omp, "-proj", "2026-09-28T23-49-45-189Z_01a0ea6c-aa65-7290-9f3f-6beb480ab112", "sub.jsonl"),
+	tr.omp = copyFile(fixture("omp"), filepath.Join(ompRoot, "-proj", "2026-09-28T23-49-45-189Z_01a0ea6c-aa65-7290-9f3f-6beb480ab112.jsonl"), base.Add(1*time.Hour))
+	writeFile(t, filepath.Join(ompRoot, "-proj", "2026-09-28T23-49-45-189Z_01a0ea6c-aa65-7290-9f3f-6beb480ab112", "sub.jsonl"),
 		[]byte(`{"type":"session","id":"sub","cwd":"/p"}`+"\n"), base.Add(7*time.Hour))
 	return tr
 }
@@ -408,15 +407,27 @@ func TestHarnessOfConfinesPaths(t *testing.T) {
 		{tr.claude, "claude", true},
 		{tr.codex, "codex", true},
 		{tr.omp, "omp", true},
-		{filepath.Join(tr.roots.Claude, "..", "settings.json"), "", false},
-		{filepath.Join(tr.roots.Claude, "..", "..", "x.jsonl"), "", false},
-		{filepath.Join(tr.roots.Codex, "history.jsonl"), "", false}, // not under sessions/
+		{filepath.Join(tr.roots[wire.HarnessClaude], "..", "settings.json"), "", false},
+		{filepath.Join(tr.roots[wire.HarnessClaude], "..", "..", "x.jsonl"), "", false},
+		{filepath.Join(tr.roots[wire.HarnessCodex], "history.jsonl"), "", false}, // not under sessions/
 		{"relative/a.jsonl", "", false},
 	}
 	for _, c := range cases {
 		h, ok := tr.roots.HarnessOf(c.path)
 		if h != c.harness || ok != c.ok {
 			t.Errorf("HarnessOf(%s) = %q %v, want %q %v", c.path, h, ok, c.harness, c.ok)
+		}
+	}
+}
+
+// Every harness of the registry has a transcript format.
+func TestFormatsCoverRegistry(t *testing.T) {
+	for _, id := range harness.Missing(formats) {
+		t.Errorf("harness %q has no entry in formats", id)
+	}
+	for id, f := range formats {
+		if f.dir == nil || f.enumerate == nil || f.named == nil || f.scan == nil || f.titler == nil || f.parse == nil {
+			t.Errorf("formats[%q] leaves a function unset: %+v", id, f)
 		}
 	}
 }

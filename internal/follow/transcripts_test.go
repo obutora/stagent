@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/transcript"
+	"github.com/obutora/stagent/internal/wire"
 )
 
 func write(t *testing.T, path, content string, mtime time.Time) string {
@@ -113,7 +115,7 @@ func TestCodexResume(t *testing.T) {
 
 func TestCodexTranscriptOfResumedSession(t *testing.T) {
 	codexHome := t.TempDir()
-	roots := transcript.Roots{Codex: codexHome}
+	roots := transcript.Roots{wire.HarnessCodex: codexHome}
 	start := time.Now().Add(-time.Minute)
 	old := start.Add(-72 * time.Hour)
 	resumed := codexRollout(t, codexHome, "/work", "codex-tui", old, old, 1)
@@ -133,7 +135,7 @@ func TestCodexTranscriptOfResumedSession(t *testing.T) {
 
 func TestCodexTranscriptOfFreshSession(t *testing.T) {
 	codexHome := t.TempDir()
-	roots := transcript.Roots{Codex: codexHome}
+	roots := transcript.Roots{wire.HarnessCodex: codexHome}
 	start := time.Now().Add(-time.Hour)
 	codexRollout(t, codexHome, "/work", "codex-tui", start.Add(-time.Hour), start.Add(-time.Hour), 1) // before the agent
 	codexRollout(t, codexHome, "/other", "codex-tui", start.Add(time.Minute), start.Add(20*time.Minute), 2)
@@ -170,7 +172,7 @@ func TestCodexTranscriptOfFreshSession(t *testing.T) {
 
 func TestCodexTranscriptFromOpenFile(t *testing.T) {
 	codexHome := t.TempDir()
-	roots := transcript.Roots{Codex: codexHome}
+	roots := transcript.Roots{wire.HarnessCodex: codexHome}
 	start := time.Now().Add(-time.Hour)
 	open := codexRollout(t, codexHome, "/work", "codex-tui", start.Add(time.Minute), start.Add(time.Minute), 1)
 	codexRollout(t, codexHome, "/work", "codex-tui", start.Add(2*time.Minute), start.Add(2*time.Minute), 2)
@@ -210,11 +212,12 @@ func TestOpenFileUnderSymlinkedRoot(t *testing.T) {
 		}
 		return r
 	}
-	roots := transcript.Roots{Codex: filepath.Join(link, "codex"), Omp: filepath.Join(link, "omp")}
+	codexHome, ompRoot := filepath.Join(link, "codex"), filepath.Join(link, "omp")
+	roots := transcript.Roots{wire.HarnessCodex: codexHome, wire.HarnessOmp: ompRoot}
 	start := time.Now().Add(-time.Hour)
-	rollout := codexRollout(t, roots.Codex, "/work", "codex-tui", start.Add(time.Minute), start.Add(time.Minute), 1)
-	session := ompSession(t, roots.Omp, "-work", "/work", start.Add(time.Minute), start.Add(time.Minute), 2)
-	sub := write(t, filepath.Join(roots.Omp, "-work", "x", "Helper.jsonl"), "{}\n", start.Add(3*time.Minute))
+	rollout := codexRollout(t, codexHome, "/work", "codex-tui", start.Add(time.Minute), start.Add(time.Minute), 1)
+	session := ompSession(t, ompRoot, "-work", "/work", start.Add(time.Minute), start.Add(time.Minute), 2)
+	sub := write(t, filepath.Join(ompRoot, "-work", "x", "Helper.jsonl"), "{}\n", start.Add(3*time.Minute))
 	tr := newTranscripts()
 	codex := agentFacts{harness: "codex", pids: []int{7}, start: start, cwd: "/work", roots: roots,
 		argv: argvOf("codex"), claimed: noClaims,
@@ -268,7 +271,7 @@ func ompID(path string) string {
 
 func TestOmpTranscript(t *testing.T) {
 	root := t.TempDir()
-	roots := transcript.Roots{Omp: root}
+	roots := transcript.Roots{wire.HarnessOmp: root}
 	start := time.Now().Add(-time.Hour)
 	top := ompSession(t, root, "-work", "/work", start.Add(time.Minute), start.Add(time.Minute), 1)
 	sub := write(t, filepath.Join(root, "-work", "x", "Helper.jsonl"), "{}\n", start.Add(3*time.Minute))
@@ -292,7 +295,7 @@ func TestOmpTranscript(t *testing.T) {
 
 func TestOmpTranscriptFromArgs(t *testing.T) {
 	root := t.TempDir()
-	roots := transcript.Roots{Omp: root}
+	roots := transcript.Roots{wire.HarnessOmp: root}
 	start := time.Now().Add(-time.Minute)
 	day := 24 * time.Hour
 	resumed := ompSession(t, root, "-work", "/work", start.Add(-3*day), start.Add(-3*day), 1)
@@ -374,7 +377,7 @@ func TestOmpTranscriptFromTerminalBreadcrumb(t *testing.T) {
 		}, "other"},
 	} {
 		root := filepath.Join(t.TempDir(), "sessions")
-		roots := transcript.Roots{Omp: root}
+		roots := transcript.Roots{wire.HarnessOmp: root}
 		own := ompSession(t, root, "-work", "/work", start.Add(-2*day), start.Add(-day), 1)
 		// Another agent's, created later and written since this one started.
 		other := ompSession(t, root, "-work", "/work", start.Add(-time.Hour), start.Add(30*time.Second), 2)
@@ -384,6 +387,19 @@ func TestOmpTranscriptFromTerminalBreadcrumb(t *testing.T) {
 		want := map[string]string{"own": own, "other": other, "": ""}[c.want]
 		if path, _ := newTranscripts().resolve(a); path != want {
 			t.Errorf("%s: got %q, want %q", c.name, path, want)
+		}
+	}
+}
+
+// Every harness of the registry has a way its agents' transcripts are
+// found.
+func TestFindersCoverRegistry(t *testing.T) {
+	for _, id := range harness.Missing(finders) {
+		t.Errorf("harness %q has no entry in finders", id)
+	}
+	for id, f := range finders {
+		if f.session == nil && f.matcher == nil {
+			t.Errorf("finders[%q] sets neither session nor matcher", id)
 		}
 	}
 }

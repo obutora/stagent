@@ -4,6 +4,8 @@ import (
 	"errors"
 	"slices"
 	"strings"
+
+	"github.com/obutora/stagent/internal/harness"
 )
 
 // IntegrateResult is the output of `stagent integrate`.
@@ -38,8 +40,9 @@ type integrateOpts struct {
 	remove          []string
 }
 
-// Removable integration names for --remove.
-var removeIDs = []string{hClaude, hCodex, hOmp, "shell-wrapper", "service", "linger", "terminal", wslKeepRunningID}
+// Removable integration names for --remove: the harnesses of the registry,
+// then stagent's own integrations.
+var removeIDs = append(harness.IDs(), "shell-wrapper", "service", "linger", "terminal", wslKeepRunningID)
 
 func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	for _, h := range o.harness {
@@ -78,24 +81,7 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	noShell := false
 
 	for _, h := range o.harness {
-		switch h {
-		case hClaude:
-			c, err := e.addChange(e.claudeTarget())
-			one(h)(c, err)
-			if c != nil {
-				e.note(noteClaudeRestart, "Claude Code reads hooks when a session starts; restart running Claude sessions to activate them.")
-				if e.goos == "windows" {
-					e.note(noteClaudeWindowsHooks, "On Windows the hooks run stagent.exe directly (valid in Git Bash and cmd). If the binary is deleted without `stagent uninstall --level unhook`, Claude reports a non-blocking hook error until the entries are removed; `stagent doctor` lists them as orphans.")
-				}
-			}
-		case hCodex:
-			many(h)(e.codexAddChanges())
-		case hOmp:
-			one(h)(e.addChange(e.ompTarget()))
-			if e.findHarness(hOmp) != "" {
-				e.note(noteOmpRestart, "omp loads extensions at startup; restart running omp sessions to activate the extension.")
-			}
-		}
+		many(h)(integrations[h].plan(e))
 	}
 	if o.shellWrapper {
 		ts := e.shellAddTargets()
@@ -215,43 +201,12 @@ func summarize(changes []*Change, settled int, otherErr, noShell bool) string {
 	return resultPartial
 }
 
-// codexAddChanges plans the Codex integration: hooks.json plus the features
-// flag, or the notify fallback.
-func (e *env) codexAddChanges() ([]*Change, error) {
-	mode, reason := e.codexMode()
-	var out []*Change
-	if mode == "hooks" {
-		c, err := e.addChange(e.codexHooksTarget())
-		if err != nil {
-			return nil, err
-		}
-		if c != nil {
-			out = append(out, c)
-			e.note(noteCodexTrust, "Codex asks you to review and trust the new hooks on its next start; stagent does not write trust entries.")
-		}
-	} else {
-		e.note(noteCodexNotifyFallback, "Codex: "+codexNotifyWhy[reason]+"; using the notify program instead (turn-complete events only, no approvals).", "reason", reason)
-	}
-	c, err := e.addChange(e.codexConfigTarget(mode))
-	if err != nil {
-		return out, err
-	}
-	if c != nil {
-		out = append(out, c)
-	}
-	return out, nil
-}
-
 // targetsFor maps a --remove name to its file targets.
 func (e *env) targetsFor(id string) []*target {
-	switch id {
-	case hClaude:
-		return []*target{e.claudeTarget()}
-	case hCodex:
-		return []*target{e.codexHooksTarget(), e.codexConfigTarget("")}
-	case hOmp:
-		return []*target{e.ompTarget()}
-	case "shell-wrapper":
+	if hi, ok := integrations[id]; ok {
+		return hi.targets(e)
+	}
+	if id == "shell-wrapper" {
 		return e.shellTargets()
 	}
 	return nil
@@ -261,10 +216,10 @@ func (e *env) targetsFor(id string) []*target {
 // by serviceRemoveChanges).
 func (e *env) allTargets() []*target {
 	var ts []*target
-	for _, id := range []string{hClaude, hCodex, hOmp, "shell-wrapper"} {
-		ts = append(ts, e.targetsFor(id)...)
+	for _, h := range harness.All {
+		ts = append(ts, integrations[h.ID].targets(e)...)
 	}
-	return ts
+	return append(ts, e.shellTargets()...)
 }
 
 // touchManifest refreshes the layout facts recorded in the manifest.

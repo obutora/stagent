@@ -3,7 +3,6 @@ package install
 import (
 	"encoding/json"
 	"maps"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/logind"
 	"github.com/obutora/stagent/internal/notify"
@@ -295,9 +295,9 @@ func (e *env) doctor() *DoctorReport {
 		}
 	}
 
-	r.Harnesses = append(r.Harnesses, e.claudeReport())
-	r.Harnesses = append(r.Harnesses, e.codexReport())
-	r.Harnesses = append(r.Harnesses, e.harnessReport(hOmp, e.ompTarget()))
+	for _, h := range harness.All {
+		r.Harnesses = append(r.Harnesses, integrations[h.ID].report(e))
+	}
 
 	r.ShellWrapper.Files = []string{}
 	for _, t := range e.shellTargets() {
@@ -463,7 +463,9 @@ func (e *env) graphicalSession() bool {
 	return false
 }
 
-func (e *env) harnessReport(id string, t *target) HarnessReport {
+// harnessReport is the item of harness id whose integration lives in t,
+// with t's content (nil when absent).
+func (e *env) harnessReport(id string, t *target) (HarnessReport, []byte) {
 	h := HarnessReport{ID: id, ConfigPath: t.path, HooksSupported: true, Notes: []string{}}
 	h.Path = e.findHarness(id)
 	h.Found = h.Path != ""
@@ -476,57 +478,6 @@ func (e *env) harnessReport(id string, t *target) HarnessReport {
 	}
 	if cur != nil {
 		h.Integrated = t.present(cur) != ""
-		if id == hClaude {
-			if _, err := parseJSONDoc(cur); err != nil {
-				h.Notes = append(h.Notes, t.path+" is not valid JSON")
-			}
-		}
 	}
-	return h
-}
-
-// claudeReport adds the user's Remote Control setting to the claude item.
-// Only ~/.claude/settings.json is read: managed and project settings are
-// not guessed, and stagent never changes the setting.
-func (e *env) claudeReport() HarnessReport {
-	h := e.harnessReport(hClaude, e.claudeTarget())
-	h.RemoteControlAtStartup = json.RawMessage("null")
-	var s struct {
-		RemoteControlAtStartup json.RawMessage `json:"remoteControlAtStartup"`
-	}
-	if b, err := os.ReadFile(e.claudeSettings()); err == nil && json.Unmarshal(b, &s) == nil {
-		if v := string(s.RemoteControlAtStartup); v == "true" || v == "false" {
-			h.RemoteControlAtStartup = json.RawMessage(v)
-		}
-	}
-	return h
-}
-
-func (e *env) codexReport() HarnessReport {
-	hooks := e.codexHooksTarget()
-	h := e.harnessReport(hCodex, hooks)
-	cfg := e.codexConfigTarget("")
-	mode, reason := e.codexMode()
-	h.HooksSupported = mode == "hooks"
-	if !h.HooksSupported {
-		h.ConfigPath = cfg.path
-		h.Notes = append(h.Notes, codexNotifyWhy[reason]+"; integration uses the notify program")
-	}
-	if cur, _ := readOptional(cfg.path); cur != nil {
-		d := parseTOMLLines(cur)
-		if i := topLevelNotify(d); i >= 0 && isOurCommand(d.lines[i].text()) {
-			if !h.HooksSupported {
-				h.Integrated = true
-			} else if removeNotify(parseTOMLLines(cur)) {
-				// A leftover of the notify fallback: integrate replaces it
-				// with hooks, so the app offers to run it.
-				h.Integrated = false
-				h.Notes = append(h.Notes, "config.toml still runs stagent as the notify program (set up while this Codex had no hooks); integrate replaces it with hooks")
-			}
-		}
-		if on, set := featureHooksEnabled(d); set && !on && h.HooksSupported {
-			h.Notes = append(h.Notes, "hooks are disabled in config.toml ([features] hooks = false); integrate enables them")
-		}
-	}
-	return h
+	return h, cur
 }

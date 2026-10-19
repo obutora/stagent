@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/obutora/stagent/internal/wire"
 )
 
 // integrateRaw runs integrate on a fresh command state without failing on
@@ -63,11 +65,11 @@ func TestRemoveDeletesDirectoriesStagentCreated(t *testing.T) {
 			if c.existing != "" {
 				writeFile(t, te.home(c.existing), "x")
 			}
-			te.integrate(t, integrateOpts{apply: true, harness: []string{hOmp}})
+			te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessOmp}})
 			if !exists(te.ompExtension()) {
 				t.Fatal("extension not installed")
 			}
-			te.integrate(t, integrateOpts{apply: true, remove: []string{hOmp}})
+			te.integrate(t, integrateOpts{apply: true, remove: []string{wire.HarnessOmp}})
 			for _, p := range c.gone {
 				if exists(te.home(p)) {
 					t.Errorf("%s left behind", p)
@@ -82,10 +84,10 @@ func TestRemoveDeletesDirectoriesStagentCreated(t *testing.T) {
 	}
 	// Something else put a file next to ours: the directory stays.
 	te := newTestEnv(t, "linux")
-	te.integrate(t, integrateOpts{apply: true, harness: []string{hOmp}})
+	te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessOmp}})
 	other := filepath.Join(filepath.Dir(te.ompExtension()), "other.ts")
 	writeFile(t, other, "x")
-	te.integrate(t, integrateOpts{apply: true, remove: []string{hOmp}})
+	te.integrate(t, integrateOpts{apply: true, remove: []string{wire.HarnessOmp}})
 	if exists(te.ompExtension()) || !exists(other) {
 		t.Fatalf("extension exists %v, other.ts exists %v", exists(te.ompExtension()), exists(other))
 	}
@@ -111,12 +113,12 @@ func TestIntegrateResult(t *testing.T) {
 	t.Run("nothing_to_do", func(t *testing.T) {
 		te := newTestEnv(t, "linux")
 		te.vars["SHELL"] = "/usr/bin/tcsh"
-		r := te.integrateRaw(t, integrateOpts{shellWrapper: true, harness: []string{hOmp}})
+		r := te.integrateRaw(t, integrateOpts{shellWrapper: true, harness: []string{wire.HarnessOmp}})
 		if r.Result != resultNothingToDo || r.LoginShell != "tcsh" {
 			t.Fatalf("result %s, login_shell %q", r.Result, r.LoginShell)
 		}
 		// Without --shell-wrapper the same host is ok.
-		if r := te.integrateRaw(t, integrateOpts{harness: []string{hOmp}}); r.Result != resultOK {
+		if r := te.integrateRaw(t, integrateOpts{harness: []string{wire.HarnessOmp}}); r.Result != resultOK {
 			t.Fatalf("harness only: result %s", r.Result)
 		}
 	})

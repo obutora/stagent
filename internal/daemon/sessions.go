@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/notify"
 	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/wire"
@@ -82,8 +83,11 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 	if ws.ID == "" {
 		return wire.HolderRegisterResult{}, wire.Errorf(wire.ErrBadRequest, "session id required")
 	}
+	// The daemon judges the command itself: an older holder sends no
+	// command_harness.
+	ws.CommandHarness = harness.Command(ws.Command)
 	if ws.Harness == "" {
-		ws.Harness = wire.DetectHarness(ws.Command)
+		ws.Harness = ws.CommandHarness
 	}
 	if ws.Mode == "" {
 		ws.Mode = wire.ModePassthrough

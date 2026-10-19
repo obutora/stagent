@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/obutora/stagent/internal/wire"
 )
 
 const claudeSettingsBefore = `{
@@ -72,8 +74,8 @@ func TestClaudeMergeKeepsForeignEntriesOrderAndFormatting(t *testing.T) {
 	path := te.claudeSettings()
 	writeFile(t, path, claudeSettingsBefore)
 
-	r := te.integrate(t, integrateOpts{apply: true, harness: []string{hClaude}})
-	if got := changeIDs(r.Changes); len(got) != 1 || got[0] != hClaude || r.Changes[0].Action != "modify" {
+	r := te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessClaude}})
+	if got := changeIDs(r.Changes); len(got) != 1 || got[0] != wire.HarnessClaude || r.Changes[0].Action != "modify" {
 		t.Fatalf("changes = %v", got)
 	}
 	out := readFile(t, path)
@@ -104,7 +106,7 @@ func TestClaudeMergeKeepsForeignEntriesOrderAndFormatting(t *testing.T) {
 	if len(stop) != 2 || stop[0].Hooks[0].Command != "notify-send done" {
 		t.Fatalf("Stop groups = %+v", stop)
 	}
-	wantCmd := te.hookCommand(hClaude)
+	wantCmd := te.hookCommand(claudeHooks)
 	for _, ev := range claudeEvents {
 		groups := s.Hooks[ev]
 		last := groups[len(groups)-1].Hooks
@@ -125,7 +127,7 @@ func TestClaudeMergeKeepsForeignEntriesOrderAndFormatting(t *testing.T) {
 	}
 
 	// Idempotent: a second apply plans nothing.
-	if r := te.integrate(t, integrateOpts{apply: true, harness: []string{hClaude}}); len(r.Changes) != 0 {
+	if r := te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessClaude}}); len(r.Changes) != 0 {
 		t.Fatalf("second apply changed %v", changeIDs(r.Changes))
 	}
 }
@@ -135,8 +137,8 @@ func TestClaudeUnmergeRemovesOnlyOurEntries(t *testing.T) {
 	path := te.claudeSettings()
 	writeFile(t, path, claudeSettingsBefore)
 	backup := ""
-	te.integrate(t, integrateOpts{apply: true, harness: []string{hClaude}})
-	if rec := te.m.config(hClaude, path); rec == nil || rec.Backup == "" {
+	te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessClaude}})
+	if rec := te.m.config(wire.HarnessClaude, path); rec == nil || rec.Backup == "" {
 		t.Fatalf("backup not recorded: %+v", rec)
 	} else {
 		backup = rec.Backup
@@ -154,7 +156,7 @@ func TestClaudeUnmergeRemovesOnlyOurEntries(t *testing.T) {
 	b, _ := json.MarshalIndent(doc, "", "  ")
 	writeFile(t, path, string(b))
 
-	r := te.integrate(t, integrateOpts{apply: true, remove: []string{hClaude}})
+	r := te.integrate(t, integrateOpts{apply: true, remove: []string{wire.HarnessClaude}})
 	if len(r.Changes) != 1 || r.Changes[0].Action != "modify" {
 		t.Fatalf("changes = %+v", r.Changes)
 	}
@@ -184,7 +186,7 @@ func TestClaudeUnmergeRemovesOnlyOurEntries(t *testing.T) {
 	if te.reload(); !exists(backup) || !slices.Contains(te.m.Backups, backup) {
 		t.Errorf("backup %s dropped after an element-wise removal (listed: %v)", backup, te.m.Backups)
 	}
-	if te.m.config(hClaude, path) != nil {
+	if te.m.config(wire.HarnessClaude, path) != nil {
 		t.Error("manifest still records the Claude integration")
 	}
 }
@@ -196,12 +198,12 @@ func TestClaudeRemoveRestoresBackupWhenUntouched(t *testing.T) {
 	// array): restoring the backup must bring it back byte for byte.
 	orig := "{\n    \"permissions\": {\"allow\": [\"Bash(ls)\"]},\n    \"hooks\": {}\n}"
 	writeFile(t, path, orig)
-	te.integrate(t, integrateOpts{apply: true, harness: []string{hClaude}})
-	rec := te.m.config(hClaude, path)
+	te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessClaude}})
+	rec := te.m.config(wire.HarnessClaude, path)
 	if rec == nil || rec.Backup == "" || readFile(t, rec.Backup) != orig {
 		t.Fatalf("backup not recorded: %+v", rec)
 	}
-	r := te.integrate(t, integrateOpts{apply: true, remove: []string{hClaude}})
+	r := te.integrate(t, integrateOpts{apply: true, remove: []string{wire.HarnessClaude}})
 	if len(r.Changes) != 1 || !strings.HasPrefix(r.Changes[0].Summary, "restore") {
 		t.Fatalf("expected a restore, got %+v", r.Changes)
 	}
@@ -217,7 +219,7 @@ func TestClaudeRemoveRestoresBackupWhenUntouched(t *testing.T) {
 func TestClaudeCreatedSettingsAreDeletedOnRemove(t *testing.T) {
 	te := newTestEnv(t, "linux")
 	path := te.claudeSettings()
-	r := te.integrate(t, integrateOpts{apply: true, harness: []string{hClaude}})
+	r := te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessClaude}})
 	if len(r.Changes) != 1 || r.Changes[0].Action != "create" {
 		t.Fatalf("changes = %+v", r.Changes)
 	}
@@ -229,7 +231,7 @@ func TestClaudeCreatedSettingsAreDeletedOnRemove(t *testing.T) {
 	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("created settings mode = %v", st.Mode().Perm())
 	}
-	te.integrate(t, integrateOpts{apply: true, remove: []string{hClaude}})
+	te.integrate(t, integrateOpts{apply: true, remove: []string{wire.HarnessClaude}})
 	if exists(path) {
 		t.Fatal("settings.json created by stagent was not deleted")
 	}
@@ -238,7 +240,7 @@ func TestClaudeCreatedSettingsAreDeletedOnRemove(t *testing.T) {
 func TestWindowsHookCommandInvokesExeDirectly(t *testing.T) {
 	te := newTestEnv(t, "windows")
 	te.l.Bin = `C:\Users\u\.ssh-term\agent\bin\stagent.exe`
-	cmd := te.hookCommand(hClaude)
+	cmd := te.hookCommand(claudeHooks)
 	if cmd != `"C:/Users/u/.ssh-term/agent/bin/stagent.exe" hook claude` {
 		t.Fatalf("windows command = %s", cmd)
 	}

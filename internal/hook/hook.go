@@ -14,13 +14,13 @@ import (
 	"io"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/term"
 
 	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/ptable"
 	"github.com/obutora/stagent/internal/rpc"
@@ -38,7 +38,6 @@ const (
 	callTimeout = 3 * time.Second
 
 	eventPermissionRequest = "PermissionRequest"
-	codexNotify            = "notify"
 )
 
 // procIO is the process environment, replaceable in tests.
@@ -67,6 +66,23 @@ type launchInfo struct {
 	subagent         bool
 }
 
+// hookHarness is what the hook command does its own way for one harness
+// (claude.go, codex.go, omp.go).
+type hookHarness struct {
+	// argv reads the event and payload of a harness that passes them as
+	// arguments in a form of its own; ok is false for the usual form.
+	argv func(rest []string) (event string, payload []byte, ok bool)
+	// launch adds what the harness tells about its start to li.
+	launch func(li *launchInfo, payload []byte)
+}
+
+// hookHarnesses has an entry for every harness of the registry.
+var hookHarnesses = map[string]hookHarness{
+	wire.HarnessClaude: claudeHook,
+	wire.HarnessCodex:  codexHook,
+	wire.HarnessOmp:    ompHook,
+}
+
 // Main runs the hook command. It always returns 0.
 func Main(args []string) int {
 	return run(args, procIO{
@@ -79,12 +95,11 @@ func Main(args []string) int {
 }
 
 // osLaunch reads the launch facts from the environment, the harness that
-// runs the hook (harnessPID; on Windows winAncestry) and, for Codex, the
-// conversation's rollout file.
-func osLaunch(harness string, payload []byte) launchInfo {
+// runs the hook (harnessPID; on Windows winAncestry) and what the harness
+// tells of its own (hookHarness.launch).
+func osLaunch(harnessID string, payload []byte) launchInfo {
 	li := launchInfo{
 		shellWrapper: os.Getenv(wire.EnvShellWrapper) != "",
-		entrypoint:   os.Getenv("CLAUDE_CODE_ENTRYPOINT"),
 		ssh:          os.Getenv("SSH_CONNECTION") != "",
 	}
 	pid := 0
@@ -103,11 +118,11 @@ func osLaunch(harness string, payload []byte) launchInfo {
 	}
 	if pid != 0 {
 		if argv, err := ptable.Argv(pid); err == nil {
-			li.parentBatch = batchArgs(harness, argv)
+			li.parentBatch = harness.BatchArgs(harnessID, argv)
 		}
 	}
-	if harness == wire.HarnessCodex {
-		li.originator, li.subagent = codexOrigin(payload)
+	if h := hookHarnesses[harnessID]; h.launch != nil {
+		h.launch(&li, payload)
 	}
 	return li
 }
@@ -130,37 +145,6 @@ func harnessPID() int {
 	return pid
 }
 
-// batchArgs reports whether a harness command line (argv[0] first) asks for
-// a non-interactive run, by the shell wrapper's rule: claude -p / --print;
-// codex exec / e as the first argument; omp -p / --print or --mode other
-// than text. omp runs under its JavaScript runtime, so every argument is
-// looked at.
-func batchArgs(harness string, argv []string) bool {
-	if len(argv) < 2 {
-		return false
-	}
-	args := argv[1:]
-	switch harness {
-	case wire.HarnessCodex:
-		return args[0] == "exec" || args[0] == "e"
-	case wire.HarnessClaude, wire.HarnessOmp:
-	default:
-		return false
-	}
-	omp := harness == wire.HarnessOmp
-	for i, a := range args {
-		switch {
-		case a == "-p" || a == "--print":
-			return true
-		case omp && a == "--mode" && i+1 < len(args) && args[i+1] != "text":
-			return true
-		case omp && strings.HasPrefix(a, "--mode=") && a != "--mode=text":
-			return true
-		}
-	}
-	return false
-}
-
 func run(args []string, pio procIO) (code int) {
 	defer func() {
 		if recover() != nil {
@@ -170,17 +154,16 @@ func run(args []string, pio procIO) (code int) {
 	if len(args) == 0 {
 		return 0
 	}
-	harness, rest := args[0], args[1:]
-	event := ""
-	var payload []byte
-	switch {
-	case harness == wire.HarnessCodex && len(rest) > 0 && rest[0] == codexNotify:
-		// Codex's notify program gets the JSON as its last argument.
-		event = codexNotify
-		if len(rest) > 1 {
-			payload = []byte(rest[len(rest)-1])
-		}
-	default:
+	harnessID, rest := args[0], args[1:]
+	var (
+		event   string
+		payload []byte
+		own     bool
+	)
+	if h := hookHarnesses[harnessID]; h.argv != nil {
+		event, payload, own = h.argv(rest)
+	}
+	if !own {
 		if len(rest) > 0 {
 			event = rest[0]
 		}
@@ -206,24 +189,24 @@ func run(args []string, pio procIO) (code int) {
 	client := rpc.NewClient(conn, nil)
 	defer client.Close()
 
-	// claude shows its prompt while the hook runs, so the daemon may hold
-	// it until the prompt is answered (it answers at once outside stagent
-	// sessions). Codex shows its prompt only after the hook returned.
+	// A harness that shows its prompt while the hook runs (claude) may be
+	// held until the prompt is answered (the daemon answers at once
+	// outside stagent sessions); the others' calls are bounded.
 	ctx := context.Background()
-	if harness != wire.HarnessClaude || event != eventPermissionRequest {
+	if h, _ := harness.Lookup(harnessID); !h.HookHeldForPrompt || event != eventPermissionRequest {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, callTimeout)
 		defer cancel()
 	}
 	params := wire.HookEventParams{
-		Harness:       harness,
+		Harness:       harnessID,
 		Event:         event,
 		SessionID:     pio.sessionID,
 		Payload:       payload,
 		RemoteControl: pio.remoteControl,
 	}
 	if pio.sessionID == "" && pio.launch != nil {
-		li := pio.launch(harness, payload)
+		li := pio.launch(harnessID, payload)
 		params.ShellWrapper, params.Entrypoint = li.shellWrapper, li.entrypoint
 		params.ParentTTY, params.ParentBatch = li.parentTTY, li.parentBatch
 		params.SSH, params.TerminalAncestor = li.ssh, li.terminalAncestor

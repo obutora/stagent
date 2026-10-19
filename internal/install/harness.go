@@ -4,34 +4,51 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/wire"
 )
 
-// Harness ids accepted by --harness / --remove.
-const (
-	hClaude = wire.HarnessClaude
-	hCodex  = wire.HarnessCodex
-	hOmp    = wire.HarnessOmp
-)
+// harnessIntegration is how stagent integrates with one harness of the
+// registry (harness.All), the id accepted by --harness / --remove. Each
+// lives in the harness's own file (claude.go, codex.go, omp.go).
+type harnessIntegration interface {
+	// plan plans adding the integration, noting what the user should know.
+	plan(e *env) ([]*Change, error)
+	// targets are the harness's file targets, for --remove, uninstall and
+	// doctor's orphans.
+	targets(e *env) []*target
+	// report is the harness's item of doctor.
+	report(e *env) HarnessReport
+}
 
-var harnessIDs = []string{hClaude, hCodex, hOmp}
+// integrations holds the integration of every harness of the registry, by
+// harness id.
+var integrations = map[string]harnessIntegration{
+	wire.HarnessClaude: claudeIntegration{},
+	wire.HarnessCodex:  codexIntegration{},
+	wire.HarnessOmp:    ompIntegration{},
+}
 
-var claudeEvents = []string{"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification", "PermissionRequest"}
-
-var codexEvents = []string{"SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest"}
+// hookFile is how a harness reads our hooks from its JSON hooks file.
+type hookFile struct {
+	// harness is the harness id, the argument of `stagent hook`.
+	harness string
+	events  []string
+	// timeouts are the hook timeouts (seconds) of events whose hook takes
+	// longer than hookTimeoutSec.
+	timeouts map[string]int
+	// sessionShell: the harness runs the hook command with the session's
+	// shell, PowerShell on Windows.
+	sessionShell bool
+}
 
 const (
 	hookTimeoutSec = 10
-	// claudeApprovalTimeoutSec (7 days) is the timeout of claude's
-	// PermissionRequest hook: the daemon holds that hook until the prompt
-	// is answered, with no time limit of its own.
-	claudeApprovalTimeoutSec = 7 * 24 * 60 * 60
-	identifyHooks            = `hooks.<event>[].hooks[].command contains "` + binMarker + `"`
+	identifyHooks  = `hooks.<event>[].hooks[].command contains "` + binMarker + `"`
 )
 
 // --- paths ---------------------------------------------------------------
@@ -40,38 +57,32 @@ func (e *env) home(parts ...string) string {
 	return filepath.Join(append([]string{e.l.Home}, parts...)...)
 }
 
-func (e *env) claudeSettings() string { return e.home(".claude", "settings.json") }
-func (e *env) codexHooks() string     { return e.home(".codex", "hooks.json") }
-func (e *env) codexConfig() string    { return e.home(".codex", "config.toml") }
-func (e *env) ompExtension() string {
-	return e.home(".omp", "agent", "extensions", "ssh-term-stagent.ts")
-}
-
 // --- hook commands -------------------------------------------------------
 
-// hookCommand is the command a harness runs for our hooks. On unix it is
-// guarded so that a deleted binary is a silent no-op. On Windows the
+// hookCommand is the command the harness of f runs for our hooks. On unix
+// it is guarded so that a deleted binary is a silent no-op. On Windows the
 // absolute path (forward slashes) is invoked directly; a missing binary
 // then shows up as a non-blocking hook error in the harness, and doctor
-// reports the entries as orphans. Claude Code runs the command through Git
-// Bash or cmd, where the quoted path works. Codex runs it with the
-// session's shell, PowerShell on Windows, where a quoted path followed by
-// arguments is a syntax error: the path is left bare, valid in every
-// shell, unless it has a character PowerShell treats specially; then
-// PowerShell's call operator is used.
-func (e *env) hookCommand(harness string) string {
+// reports the entries as orphans. A harness running the command through
+// Git Bash or cmd gets the path quoted. One that runs it with the
+// session's shell (hookFile.sessionShell), PowerShell on Windows, where a
+// quoted path followed by arguments is a syntax error, gets the path bare,
+// valid in every shell, unless it has a character PowerShell treats
+// specially; then PowerShell's call operator is used.
+func (e *env) hookCommand(f hookFile) string {
+	id := f.harness
 	if e.goos == "windows" {
 		bin := strings.ReplaceAll(e.l.Bin, `\`, "/")
-		if harness != hCodex {
-			return `"` + bin + `" hook ` + harness
+		if !f.sessionShell {
+			return `"` + bin + `" hook ` + id
 		}
 		if strings.ContainsAny(bin, " \t'\"`$&|;,(){}[]@#<>%^") {
-			return "& '" + strings.ReplaceAll(bin, "'", "''") + "' hook " + harness
+			return "& '" + strings.ReplaceAll(bin, "'", "''") + "' hook " + id
 		}
-		return bin + " hook " + harness
+		return bin + " hook " + id
 	}
 	q := shellQuote(e.l.Bin)
-	return "[ -x " + q + " ] && " + q + " hook " + harness + " || true"
+	return "[ -x " + q + " ] && " + q + " hook " + id + " || true"
 }
 
 // shellQuote single-quotes s for POSIX shells.
@@ -79,21 +90,22 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-func hookSpecs(harness string, events []string) []hookSpec {
-	out := make([]hookSpec, len(events))
-	for i, ev := range events {
-		t := hookTimeoutSec
-		if harness == hClaude && ev == "PermissionRequest" {
-			t = claudeApprovalTimeoutSec
+func hookSpecs(f hookFile) []hookSpec {
+	out := make([]hookSpec, len(f.events))
+	for i, ev := range f.events {
+		t, ok := f.timeouts[ev]
+		if !ok {
+			t = hookTimeoutSec
 		}
 		out[i] = hookSpec{ev, t}
 	}
 	return out
 }
 
-// --- Claude Code / Codex hooks files -------------------------------------
+// --- JSON hooks files ----------------------------------------------------
 
-func (e *env) hooksTarget(id, path, harness string, events []string) *target {
+// hooksTarget is target id: the JSON hooks file at path, read as f.
+func (e *env) hooksTarget(id, path string, f hookFile) *target {
 	return &target{
 		id: id, path: path, identify: identifyHooks, mode: 0o600,
 		add: func(cur []byte) (addResult, error) {
@@ -101,7 +113,7 @@ func (e *env) hooksTarget(id, path, harness string, events []string) *target {
 			if err != nil {
 				return addResult{}, unmanagedFile(path + " is not valid JSON; left unchanged")
 			}
-			created, changed, err := mergeHooks(d.root, e.hookCommand(harness), hookSpecs(harness, events))
+			created, changed, err := mergeHooks(d.root, e.hookCommand(f), hookSpecs(f))
 			if err != nil {
 				return addResult{}, unmanagedFile(path + ": " + err.Error() + "; left unchanged")
 			}
@@ -111,7 +123,7 @@ func (e *env) hooksTarget(id, path, harness string, events []string) *target {
 			return addResult{
 				after:      d.encode(),
 				containers: created,
-				summary:    "add `stagent hook " + harness + "` for " + strings.Join(events, ", "),
+				summary:    "add `stagent hook " + f.harness + "` for " + strings.Join(f.events, ", "),
 			}, nil
 		},
 		remove: func(cur []byte, rec *ConfigEntry) ([]byte, error) {
@@ -144,205 +156,17 @@ func (e *env) hooksTarget(id, path, harness string, events []string) *target {
 	}
 }
 
-func (e *env) claudeTarget() *target {
-	return e.hooksTarget(hClaude, e.claudeSettings(), hClaude, claudeEvents)
-}
-
-func (e *env) codexHooksTarget() *target {
-	return e.hooksTarget("codex-hooks", e.codexHooks(), hCodex, codexEvents)
-}
-
-// --- Codex config.toml ---------------------------------------------------
-
-// Why Codex falls back to the notify program: the reason of codexMode
-// (noteCodexNotifyFallback's arg) and its English wording.
-const (
-	codexReasonInlineFeatures = "inline_features"
-	codexReasonHooksRemoved   = "hooks_removed"
-	codexReasonNoHooksFeature = "no_hooks_feature"
-)
-
-var codexNotifyWhy = map[string]string{
-	codexReasonInlineFeatures: "config.toml defines features as an inline table, which stagent does not edit",
-	codexReasonHooksRemoved:   "this Codex version removed the hooks feature",
-	codexReasonNoHooksFeature: "this Codex version has no hooks feature",
-}
-
-// codexMode decides how Codex is integrated: "hooks" (hooks.json plus the
-// features flag) or "notify" (the legacy notify program, turn-complete
-// only), with the reason (codexReason*) for "notify".
-func (e *env) codexMode() (mode string, reason string) {
-	if cur, _ := readOptional(e.codexConfig()); cur != nil {
-		d := parseTOMLLines(cur)
-		if d.findKey("features", 0, d.firstHeader()) >= 0 {
-			return "notify", codexReasonInlineFeatures
-		}
-	}
-	if bin := e.findHarness(hCodex); bin != "" {
-		out, err := e.run.Run(5*time.Second, bin, "features", "list")
-		if err == nil {
-			for _, line := range strings.Split(out, "\n") {
-				f := strings.Fields(line)
-				if len(f) >= 2 && f[0] == "hooks" {
-					if f[1] == "removed" {
-						return "notify", codexReasonHooksRemoved
-					}
-					return "hooks", ""
-				}
-			}
-			return "notify", codexReasonNoHooksFeature
-		}
-	}
-	return "hooks", ""
-}
-
-func (e *env) codexConfigTarget(mode string) *target {
-	path := e.codexConfig()
-	return &target{
-		id: "codex-config", path: path, mode: 0o600,
-		identify: `top-level notify containing "` + binMarker + `"; [features] hooks as recorded in toml_edits`,
-		add: func(cur []byte) (addResult, error) {
-			d := parseTOMLLines(cur)
-			if mode == "hooks" {
-				// A notify program of ours is left from a time this Codex
-				// had no hooks; with hooks.json it would report each turn
-				// twice. It goes for good: removal does not bring it back.
-				dropped := removeNotify(d)
-				ed, err := ensureFeatureHooks(d)
-				if err != nil {
-					return addResult{}, err
-				}
-				var parts []string
-				var edits []TOMLEdit
-				if dropped {
-					parts = append(parts, "remove the notify program that ran stagent")
-				}
-				if ed != nil {
-					parts = append(parts, "enable Codex hooks ([features] hooks = true)")
-					edits = append(edits, *ed)
-				}
-				if len(parts) == 0 {
-					return addResult{after: cur}, nil
-				}
-				return addResult{after: d.bytes(), edits: edits, summary: strings.Join(parts, "; ")}, nil
-			}
-			added, existing := addNotify(d, e.l.Bin)
-			if !added {
-				if !isOurCommand(existing) {
-					e.note(noteCodexNotifyKept, "Codex already has a notify program ({command}); stagent did not replace it, so Codex turn-complete events are not reported.", "command", strings.TrimSpace(existing))
-				}
-				return addResult{after: cur}, nil
-			}
-			return addResult{after: d.bytes(), edits: []TOMLEdit{{Kind: "notify", Action: "added"}}, summary: "set Codex notify to `stagent hook codex notify` (turn-complete only)"}, nil
-		},
-		remove: func(cur []byte, rec *ConfigEntry) ([]byte, error) {
-			d := parseTOMLLines(cur)
-			removeNotify(d)
-			if rec != nil {
-				for _, ed := range rec.TOMLEdits {
-					if ed.Kind != "features_hooks" {
-						continue
-					}
-					if _, ok := revertFeatureHooks(d, ed); !ok {
-						e.note(noteCodexFeaturesKept, "Left Codex [features] hooks as it is: it was changed after stagent enabled it.")
-					}
-				}
-			}
-			removeTables(d, e.codexTrustTables())
-			return d.bytes(), nil
-		},
-		present: func(cur []byte) string {
-			d := parseTOMLLines(cur)
-			var parts []string
-			if i := topLevelNotify(d); i >= 0 && isOurCommand(d.lines[i].text()) {
-				parts = append(parts, "notify runs stagent")
-			}
-			if rec := e.m.config("codex-config", path); rec != nil {
-				for _, ed := range rec.TOMLEdits {
-					if on, _ := featureHooksEnabled(d); ed.Kind == "features_hooks" && on {
-						parts = append(parts, "[features] hooks enabled by stagent")
-					}
-				}
-			}
-			if countTables(d, e.codexTrustTables()) > 0 {
-				parts = append(parts, "trust entries for stagent hooks")
-			}
-			return strings.Join(parts, "; ")
-		},
-	}
-}
-
-// codexTrustTables are the [hooks.state."<hooks.json>:<event>:<i>:<j>"]
-// tables Codex writes once the user trusts our hooks, keyed by the current
-// positions of our entries in hooks.json.
-func (e *env) codexTrustTables() map[string]bool {
-	out := map[string]bool{}
-	cur, _ := readOptional(e.codexHooks())
-	if cur == nil {
-		return out
-	}
-	d, err := parseJSONDoc(cur)
-	if err != nil {
-		return out
-	}
-	for event, pos := range ourHookPositions(d.root) {
-		for _, p := range pos {
-			key := e.codexHooks() + ":" + snakeCase(event) + ":" + strconv.Itoa(p[0]) + ":" + strconv.Itoa(p[1])
-			out["hooks.state."+key] = true
-		}
-	}
-	return out
-}
-
-func countTables(d *tomlDoc, names map[string]bool) int {
-	n := 0
-	for _, l := range d.lines {
-		if !l.array && names[l.header] {
-			n++
-		}
-	}
-	return n
-}
-
-var upperRun = regexp.MustCompile(`([a-z0-9])([A-Z])`)
-
-func snakeCase(s string) string {
-	return strings.ToLower(upperRun.ReplaceAllString(s, "${1}_${2}"))
-}
-
-// --- omp -------------------------------------------------------------------
-
-func (e *env) ompTarget() *target {
-	return &target{
-		id: hOmp, path: e.ompExtension(), owned: true, mode: 0o644,
-		identify: "whole file (first line " + ompMarker + ")",
-		add: func(cur []byte) (addResult, error) {
-			if cur != nil && !isOmpExtension(cur) {
-				return addResult{}, unmanagedFile(e.ompExtension() + " exists and is not managed by stagent; left unchanged")
-			}
-			return addResult{after: []byte(ompExtensionSource), summary: "install the omp extension that reports session events to stagent"}, nil
-		},
-		remove: func(cur []byte, _ *ConfigEntry) ([]byte, error) {
-			if !isOmpExtension(cur) {
-				return cur, nil
-			}
-			return nil, nil
-		},
-		present: func(cur []byte) string {
-			if isOmpExtension(cur) {
-				return "stagent omp extension"
-			}
-			return ""
-		},
-	}
-}
-
 // --- discovery -------------------------------------------------------------
 
-// findHarness locates a harness executable: PATH first, then the usual
-// per-user install locations (ssh exec shells often have a minimal PATH).
-func (e *env) findHarness(name string) string {
-	if p, err := e.lookPath(name); err == nil {
+// findHarness locates the executable of harness id: PATH first, then the
+// usual per-user install locations (ssh exec shells often have a minimal
+// PATH).
+func (e *env) findHarness(id string) string {
+	h, ok := harness.Lookup(id)
+	if !ok {
+		return ""
+	}
+	if p, err := e.lookPath(h.Command); err == nil {
 		if abs, err := filepath.Abs(p); err == nil {
 			return abs
 		}
@@ -354,7 +178,7 @@ func (e *env) findHarness(name string) string {
 	}
 	for _, dir := range e.harnessDirs() {
 		for _, ext := range exts {
-			p := filepath.Join(dir, name+ext)
+			p := filepath.Join(dir, h.Command+ext)
 			if st, err := os.Stat(p); err == nil && !st.IsDir() && (e.goos == "windows" || st.Mode()&0o111 != 0) {
 				return p
 			}
