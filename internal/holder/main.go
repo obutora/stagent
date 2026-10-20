@@ -23,7 +23,7 @@ const memoryLimit = 64 << 20
 // "1" (handoff); other values are ignored.
 const EnvHandoff = "STAGENT_HANDOFF"
 
-const runUsage = `usage: stagent run [--detached | --handoff[=auto]] [--id ID] [--cols N --rows N] [--cwd DIR] [--task ID] -- <cmd> [args...]
+const runUsage = `usage: stagent run [--detached | --handoff[=auto]] [--id ID] [--cols N --rows N] [--cwd DIR] [--task ID] [--schedule ID --run ID] -- <cmd> [args...]
 
 Runs <cmd> on a PTY as an agent session the SSH Term app can view and
 control. Without --detached the session is mirrored on this terminal and
@@ -69,6 +69,8 @@ type runFlags struct {
 	id, cwd    string
 	cols, rows int
 	task       string
+	// schedule, run: the schedule run the daemon started this session as.
+	schedule, run string
 }
 
 func (r *runFlags) flagSet() *flag.FlagSet {
@@ -84,6 +86,8 @@ func (r *runFlags) flagSet() *flag.FlagSet {
 	fs.IntVar(&r.rows, "rows", 0, "rows of a detached session (default 24)")
 	fs.StringVar(&r.cwd, "cwd", "", "working directory of the program (default: current)")
 	fs.StringVar(&r.task, "task", "", "task the session belongs to (session.spawn task_id); the daemon decides")
+	fs.StringVar(&r.schedule, "schedule", "", "schedule the session is a run of (the daemon starts schedule runs)")
+	fs.StringVar(&r.run, "run", "", "run id of that schedule run")
 	return fs
 }
 
@@ -154,15 +158,17 @@ func Main(args []string) int {
 		recordWrapperRun(layout, esc, bs)
 	}
 	code, err := Run(context.Background(), Options{
-		Command:  command,
-		Detached: rf.detached,
-		Handoff:  rf.wantHandoff(layout),
-		ID:       rf.id,
-		Cols:     rf.cols,
-		Rows:     rf.rows,
-		Dir:      rf.cwd,
-		TaskID:   rf.task,
-		Layout:   layout,
+		Command:    command,
+		Detached:   rf.detached,
+		Handoff:    rf.wantHandoff(layout),
+		ID:         rf.id,
+		Cols:       rf.cols,
+		Rows:       rf.rows,
+		Dir:        rf.cwd,
+		TaskID:     rf.task,
+		ScheduleID: rf.schedule,
+		RunID:      rf.run,
+		Layout:     layout,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stagent run: %v\n", err)

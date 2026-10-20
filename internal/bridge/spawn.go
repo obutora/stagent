@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/loginenv"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/proc"
 	"github.com/obutora/stagent/internal/rpc"
@@ -142,14 +143,14 @@ func (b *Bridge) startHolder(id, exe string, args, env []string, logPath string)
 }
 
 // sessionEnv is the environment detached sessions start from: the login
-// shell's environment merged over the bridge's own (see captureLoginEnv),
+// shell's environment merged over the bridge's own (see loginenv.Capture),
 // captured once per bridge. When capturing fails the bridge's own
 // environment is used.
 func (b *Bridge) sessionEnv() []string {
 	b.envOnce.Do(func() {
 		b.baseEnv = os.Environ()
 		if login, err := b.loginEnv(); err == nil {
-			b.baseEnv = mergeLoginEnv(b.baseEnv, login)
+			b.baseEnv = loginenv.Merge(b.baseEnv, login)
 		}
 	})
 	return slices.Clone(b.baseEnv)

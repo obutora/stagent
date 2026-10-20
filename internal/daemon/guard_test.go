@@ -40,8 +40,10 @@ func errCode(err error) string {
 }
 
 // TestAgentRefusedMethods: a connection from a coding agent's process tree
-// may report hooks and read, but not change settings, presence or
-// notifications, nor stop the daemon.
+// may report hooks and read (schedules and their runs, a schedule's
+// preview included), but not change settings, presence or notifications,
+// create, update, remove, pause, resume or run a schedule now, nor stop
+// the daemon.
 func TestAgentRefusedMethods(t *testing.T) {
 	e := startDaemon(t, fastConfig(), Options{Guard: guardAs("claude")})
 	c, _ := e.client()
@@ -50,23 +52,29 @@ func TestAgentRefusedMethods(t *testing.T) {
 		defer cancel()
 		return c.Call(ctx, method, params, nil)
 	}
-	for _, m := range []struct {
+	type rpcCall struct {
 		method string
 		params any
-	}{
+	}
+	daily := wire.Schedule{Name: "n", Kind: wire.ScheduleKindCommand, Command: "true", Cwd: os.TempDir(),
+		When: wire.ScheduleWhen{Every: wire.EveryDaily, Time: "09:00"}, TZ: "UTC"}
+	for _, m := range []rpcCall{
 		{wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{}`)}},
 		{wire.MethodPresenceSet, wire.PresenceSetParams{Foreground: true}},
 		{wire.MethodNotifyTest, nil},
 		{wire.MethodDaemonShutdown, nil},
+		{wire.MethodScheduleCreate, wire.ScheduleCreateParams{Schedule: daily}},
+		{wire.MethodScheduleUpdate, wire.ScheduleUpdateParams{ID: "0123456789abcdef", Schedule: daily}},
+		{wire.MethodScheduleRemove, wire.ScheduleRemoveParams{ID: "0123456789abcdef", StopRun: true}},
+		{wire.MethodSchedulePause, wire.ScheduleRef{ID: "0123456789abcdef"}},
+		{wire.MethodScheduleResume, wire.ScheduleRef{ID: "0123456789abcdef"}},
+		{wire.MethodScheduleRunNow, wire.ScheduleRef{ID: "0123456789abcdef"}},
 	} {
 		if err := do(m.method, m.params); errCode(err) != wire.ErrAgentRefused {
 			t.Errorf("%s from an agent: %v, want %s", m.method, err, wire.ErrAgentRefused)
 		}
 	}
-	for _, m := range []struct {
-		method string
-		params any
-	}{
+	readers := []rpcCall{
 		{wire.MethodPing, nil},
 		{wire.MethodSessionsList, nil},
 		{wire.MethodApprovalsList, nil},
@@ -74,7 +82,16 @@ func TestAgentRefusedMethods(t *testing.T) {
 		{wire.MethodDaemonStatus, nil},
 		{wire.MethodConversationsList, wire.ConversationsListParams{}},
 		{wire.MethodHookEvent, wire.HookEventParams{Harness: wire.HarnessClaude, Event: "Stop", SessionID: sid, Payload: json.RawMessage(`{"session_id":"conv-1"}`)}},
-	} {
+	}
+	if schedulesServed {
+		readers = append(readers,
+			rpcCall{wire.MethodScheduleList, nil},
+			rpcCall{wire.MethodScheduleRuns, wire.ScheduleRunsParams{ID: "0123456789abcdef"}},
+			rpcCall{wire.MethodSchedulePreview, wire.ScheduleCreateParams{Schedule: daily}})
+		readers = append(readers,
+			rpcCall{wire.MethodScheduleOutput, wire.ScheduleOutputParams{ID: "0123456789abcdef", RunID: "0123456789abcdef"}})
+	}
+	for _, m := range readers {
 		if err := do(m.method, m.params); errCode(err) == wire.ErrAgentRefused {
 			t.Errorf("%s from an agent refused: %v", m.method, err)
 		}

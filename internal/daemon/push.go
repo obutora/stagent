@@ -33,6 +33,9 @@ const (
 // (see above). push, when non-nil, replaces the pushed copy. Both carry
 // the session id.
 func (d *Daemon) notifyLocked(s *session, n wire.NotificationData, push *wire.NotificationData) {
+	if quietInRuns(s, n.Reason) {
+		return
+	}
 	if s == nil {
 		d.emitLocked("", wire.EventNotification, n)
 		return

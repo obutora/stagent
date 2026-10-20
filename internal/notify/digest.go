@@ -121,13 +121,16 @@ func Fold(ns []wire.NotificationData, lang string) wire.NotificationData {
 			title = Text(lang, PhraseDigestWaitingInput, count)
 		case "exited":
 			title = Text(lang, PhraseDigestExited, count)
+		case "schedule":
+			title = Text(lang, PhraseDigestSchedule, count)
 		}
 	}
 	return wire.NotificationData{
-		Title:  title,
-		Body:   strings.Join(lines, "\n"),
-		Level:  level,
-		Reason: "digest",
-		Count:  count,
+		Title:     title,
+		Body:      strings.Join(lines, "\n"),
+		Level:     level,
+		Reason:    "digest",
+		Count:     count,
+		Schedules: slices.ContainsFunc(ns, func(n wire.NotificationData) bool { return n.ScheduleID != "" }),
 	}
 }

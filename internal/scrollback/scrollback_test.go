@@ -2,6 +2,7 @@ package scrollback
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -201,5 +202,47 @@ func TestOpenDiscardsStaleSegmentsAndUsesPrivateModes(t *testing.T) {
 		if dst.Mode().Perm() != 0o700 {
 			t.Fatalf("dir mode %v, want 0700", dst.Mode().Perm())
 		}
+	}
+}
+
+// A closed store's segments are read back from its directory as the store
+// read them, the oldest dropped ones included in the offsets; the directory
+// is left as it was.
+func TestReadDirReadsAClosedStore(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sess")
+	s, err := open(dir, 3, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Write(stream(0, 47))
+	want, wStart, wEnd, wFirst, _ := s.Read(0, 12)
+	s.Close()
+	before := segFiles(t, dir)
+
+	data, start, end, first, err := ReadDir(dir, 0, 12)
+	if err != nil || !bytes.Equal(data, want) || start != wStart || end != wEnd || first != wFirst {
+		t.Fatalf("ReadDir = %v [%d,%d) first %d, %v; want %v [%d,%d) first %d", data, start, end, first, err, want, wStart, wEnd, wFirst)
+	}
+	if first != 20 || end != 47 {
+		t.Errorf("bounds [%d,%d), want [20,47)", first, end)
+	}
+	data, start, end, _, err = ReadDir(dir, 25, 0)
+	if err != nil || start != 20 || end != 25 || !bytes.Equal(data, stream(20, 5)) {
+		t.Errorf("before 25: %v [%d,%d), %v", data, start, end, err)
+	}
+	if after := segFiles(t, dir); len(after) != len(before) {
+		t.Errorf("segments %v after reading, %v before", after, before)
+	}
+}
+
+// A directory without segments is an empty stream; no directory is
+// os.ErrNotExist.
+func TestReadDirEmptyAndMissing(t *testing.T) {
+	dir := t.TempDir()
+	if data, start, end, first, err := ReadDir(dir, 0, 0); err != nil || len(data) != 0 || start != 0 || end != 0 || first != 0 {
+		t.Errorf("empty: %v [%d,%d) first %d, %v", data, start, end, first, err)
+	}
+	if _, _, _, _, err := ReadDir(filepath.Join(dir, "gone"), 0, 0); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("missing: %v", err)
 	}
 }

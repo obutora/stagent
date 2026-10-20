@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // spawnLabelPrefix + the spawn name is the label of a spawn job.
@@ -26,17 +25,18 @@ const spawnLabelPrefix = "com.obutora.stagent."
 // for the holder to answer). When there is no GUI login (launchctl refuses
 // the job), the holder is started directly and the reason goes to its log.
 func SpawnHolder(exe string, args []string, dir string, env []string, logPath string) (int, error) {
-	err := spawnViaGUI(exe, args, dir, env, logPath)
-	if err == nil {
-		return 0, nil
-	}
-	if logPath != "" {
-		if f, ferr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); ferr == nil {
-			fmt.Fprintf(f, "%s stagent: started outside the GUI login session (the login keychain stays locked): %v\n", time.Now().Format(time.RFC3339), err)
-			f.Close()
-		}
-	}
-	return SpawnDetached(exe, args, dir, env, logPath)
+	pid, _, err := StartHolder(exe, args, dir, env, logPath)
+	return pid, err
+}
+
+// StartHolder is SpawnHolder that also tells whether the holder is outside
+// the GUI login session (started directly), where claude cannot read its
+// login from the keychain.
+func StartHolder(exe string, args []string, dir string, env []string, logPath string) (pid int, outsideGUI bool, err error) {
+	return startHolder(
+		func() error { return spawnViaGUI(exe, args, dir, env, logPath) },
+		func() (int, error) { return SpawnDetached(exe, args, dir, env, logPath) },
+		logPath)
 }
 
 func spawnViaGUI(exe string, args []string, dir string, env []string, logPath string) error {

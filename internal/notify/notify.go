@@ -174,6 +174,8 @@ func Wants(cfg wire.NotifyConfig, n wire.NotificationData) bool {
 		return on(r.TurnComplete)
 	case "terminal":
 		return on(r.Terminal)
+	case "schedule":
+		return on(r.Schedule)
 	case "exited":
 		return r.Exited == wire.ExitedAll || r.Exited == wire.ExitedError && n.Level == wire.LevelWarn
 	}
@@ -357,8 +359,8 @@ func (s *Sender) push(ctx context.Context, cfg wire.NotifyConfig, n wire.Notific
 	}
 	if cfg.Ntfy.Enabled && cfg.Ntfy.Topic != "" {
 		push(wire.ChannelNtfy, func() error {
-			replaced, err := pushNtfy(ctx, s.client, cfg.Ntfy, n, ClickURL(cfg.ClickBase, s.hostID, n.SessionID))
-			if err == nil && n.SessionID != "" && !replaced && !s.noReplace.Swap(true) {
+			replaced, err := pushNtfy(ctx, s.client, cfg.Ntfy, n, ClickURLOf(cfg.ClickBase, s.hostID, n))
+			if err == nil && ReplaceKey(n) != "" && !replaced && !s.noReplace.Swap(true) {
 				s.logf("notify: the ntfy server ignored the sequence ID: notifications of a session are neither replaced nor cleared (ntfy 2.16 does)")
 			}
 			return err
@@ -366,7 +368,7 @@ func (s *Sender) push(ctx context.Context, cfg wire.NotifyConfig, n wire.Notific
 	}
 	if cfg.Webhook.Enabled && cfg.Webhook.URL != "" {
 		push(wire.ChannelWebhook, func() error {
-			return pushWebhook(ctx, s.client, cfg.Webhook, n, PageURL(cfg.ClickPage, s.hostID, n.SessionID))
+			return pushWebhook(ctx, s.client, cfg.Webhook, n, PageURLOf(cfg.ClickPage, s.hostID, n))
 		})
 	}
 	var m ChatMessage
@@ -609,8 +611,8 @@ func pushNtfy(ctx context.Context, client *http.Client, c wire.NtfyConfig, n wir
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	seq := ""
-	if n.SessionID != "" {
-		seq = SequenceID(n.SessionID)
+	if key := ReplaceKey(n); key != "" {
+		seq = SequenceID(key)
 		req.Header.Set("X-Sequence-ID", seq)
 	}
 	if click != "" {

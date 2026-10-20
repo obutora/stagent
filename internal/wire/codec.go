@@ -70,6 +70,8 @@ const (
 	ErrNotClean = "not_clean"
 	// ErrBusy: task.remove found live sessions of the task it was not
 	// asked to stop, or could not stop them.
+	// schedule.run_now: the schedule's previous run is still running;
+	// schedule.remove: its running run did not stop.
 	ErrBusy = "busy"
 	// ErrInUse: another number's in_place task uses that source checkout.
 	ErrInUse = "in_use"

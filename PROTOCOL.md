@@ -27,7 +27,9 @@ Error codes: `bad_request`, `unknown_method`, `not_found`, `unsupported`,
 `not_clean`: `task.remove` found uncommitted changes and no `force`.
 `busy`: `task.remove` found live sessions of the task and no
 `stop_sessions`, could not stop them, or found the task still
-`preparing` or already `removing`. `in_use`: another number's
+`preparing` or already `removing`; `schedule.run_now` found the
+schedule's previous run still running, and `schedule.remove` with
+`stop_run` could not stop it. `in_use`: another number's
 `in_place` task uses that source checkout (see "Tasks"). `paste_by_hand`:
 `host_screen.input` could not paste a text into an iOS simulator; it is
 on the simulator's clipboard for the user to paste (see "Host screen").
@@ -45,9 +47,12 @@ their commands in), or from one it could not check: it exited first, or
 its parents were more than 256 deep or kept changing (ADR 0004). A
 holder answers whatever such a connection asks first with it and closes
 the connection; the daemon refuses `config.set`, `presence.set`,
-`notify.test`, `daemon.shutdown` and the methods that change tasks
-(`task.register`, `task.progress`, `task.forget`), and serves the rest
-(`hook.event`, `holder.*`, reads, `task.list`). The daemon decides
+`notify.test`, `daemon.shutdown`, the methods that change tasks
+(`task.register`, `task.progress`, `task.forget`) and those that change
+schedules (`schedule.create`, `schedule.update`, `schedule.remove`,
+`schedule.pause`, `schedule.resume`, `schedule.run_now`), and serves the rest (`hook.event`,
+`holder.*`, reads, `task.list`, `schedule.list`, `schedule.runs`,
+`schedule.preview`, `schedule.output`). The daemon decides
 when the connection is made. The message says why. Only Linux and macOS
 check, and only without `STAGENT_HOME`. `stagent bridge`, started by
 sshd, has no agent among its parents, so the app does not see this error
@@ -98,9 +103,11 @@ process that created its stdin pipe ends — Win32-OpenSSH's session process
 - Capabilities are reserved for what depends on the host OS. Linux and
   macOS keep relying on `persist`; Windows needs `persist_shell` as well.
   `github` is announced only on Windows, where the bridge serves the
-  GitHub screen, and `host_screen_ios` only on macOS, where the host
+  GitHub screen, `host_screen_ios` only on macOS, where the host
   screen shows iOS simulators (the other kinds work on every OS and need
-  none; a missing tool, such as Xcode, is told by `host_screen.list`).
+  none; a missing tool, such as Xcode, is told by `host_screen.list`),
+  and `schedules` only on Linux and macOS, where the daemon runs
+  schedules (定期実行).
   `push_chat` is the one exception that does not depend on the OS: an
   older stagent stores `notify.chat` like any unknown config key and
   silently never sends to it, so the app configures chat destinations
@@ -145,7 +152,8 @@ fails as an ordinary error and `blocked` is absent. Plain SSH terminals
 are unaffected. Absent from stagent versions before 0.7.0.
 
 `session.spawn` starts the command with the environment of the user's login
-shell (`$SHELL -l -i`, then `$SHELL -l`, captured once per bridge), not the
+shell (`$SHELL -l -i`, then `$SHELL -l`, each 5 s at most, 10 s in all;
+captured once per bridge), not the
 narrower one of the SSH exec channel, so agents on a PATH set in
 `~/.bash_profile` / `~/.zprofile` / `~/.zshrc` are found. A bare command
 name still missing from that PATH is looked up in the usual per-user tool
@@ -196,8 +204,8 @@ the bridge starts them in the GUI login session so that the agent can use
 the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
-`push_chat`, `persist`, on Windows `persist_shell` and `github`, and on
-macOS `host_screen_ios`. `push_chat`
+`push_chat`, `persist`, on Windows `persist_shell` and `github`, on
+macOS `host_screen_ios`, and on Linux and macOS `schedules`. `push_chat`
 announces the chat destination (`notify.chat`) and `notify.test`'s
 `channels`: an older stagent stores `notify.chat` like any unknown key
 without sending to it, so an app configures chat destinations only on
@@ -212,7 +220,10 @@ announced `persist` but refused `shell` with `unsupported`; on Windows
 Windows bridge without it as needing an update. `github` (Windows only)
 announces the `github.*` methods below. `host_screen_ios` (macOS only,
 since 0.11.0) announces the host screen's `ios` kind below: its `list`
-section and `start` of a simulator.
+section and `start` of a simulator. `schedules` (Linux and macOS, since
+0.17.0) announces the `schedule.*` methods (see "Schedules"); a stagent
+before it answers them `unknown_method`, and on any other OS the daemon
+answers them `unsupported`.
 
 #### Creating a task (`task.create`, `stagent task run`)
 
@@ -1216,6 +1227,15 @@ max 1 MiB.
 | `notify.test` | `{channels?: ["ntfy" \| "webhook" \| "chat"]}` | `{}`; pushes a test right away to the enabled channels among `channels` (absent or empty: every enabled channel) and emits a `notification` event (reason `test`); `bad_request` for a channel name not in the list; `not_configured` (nothing sent, no event) when none of them is enabled; `unavailable` with the failure when a channel failed |
 | `presence.set` | `{foreground}` | `{}`; the app is (not) in the foreground (see "Push notifications") |
 | `task.list` | – | `{tasks[]}` — every task, in the order they were created (see "Tasks") |
+| `schedule.list` | – | `{schedules[]}` — every schedule as `ScheduleEntry`, in the order they were created (see "Schedules"; `schedules`) |
+| `schedule.create` | `{schedule}` | `ScheduleEntry` of the new schedule; refused with `agent_refused` to a coding agent's process tree |
+| `schedule.runs` | `{id}` | `{runs[]}` — the schedule's runs, newest first |
+| `schedule.preview` | `{schedule}` | `SchedulePreview` `{argv[], cwd, next[], next_offsets[], tz_offset, warnings[], cwd_kind?, task_id?, host_clock?}` — what the schedule would run and when, nothing saved |
+| `schedule.update` | `{id, schedule}` | `ScheduleEntry` — what the schedule runs and when, replaced; refused with `agent_refused` to a coding agent's process tree |
+| `schedule.remove` | `{id, stop_run?}` | `{}` — the schedule and its runs removed (`stop_run`: its running run stopped first); refused to a coding agent's process tree |
+| `schedule.pause` / `schedule.resume` | `{id}` | `ScheduleEntry`; refused to a coding agent's process tree |
+| `schedule.run_now` | `{id}` | the run started (`trigger: now`); `busy` while the previous run runs; refused to a coding agent's process tree |
+| `schedule.output` | `{id, run_id, session_id?, before?, max_bytes?}` | `{data, start, end, first, gone?}` — a page of a try's output (`session_id`; omitted: the newest try) from the disk, as `session.scrollback`; `gone: true` once it is no longer kept |
 
 Nothing in the protocol answers an approval: the program's own screen does
 (the PC, Claude's Remote Control, or a client typing the option's key with
@@ -1371,6 +1391,455 @@ answer `internal` when `tasks.json` cannot be written.
 passing on `kept_branch`), the last step of `task.remove`; an unknown
 `id` is `not_found`.
 
+#### Schedules
+
+A schedule (定期実行; `Schedule` below, since 0.17.0) is a command or a
+coding agent the daemon runs at the times it names. The daemon serves
+`schedule.*` on Linux and macOS only (capability `schedules`); elsewhere
+it answers them `unsupported`. It keeps the schedules in
+`state/schedules.json` (`{schedules: [Schedule]}`, mode 0600, written
+like `tasks.json`) and each one's runs in
+`state/schedule-runs/<schedule id>.jsonl`; only the daemon writes them.
+Members a later stagent adds to a `Schedule` (its `when` included) or to
+a run are kept as they are when this one writes them back, and
+`schedule.create` stores the members of its `schedule` it does not know
+the same way.
+
+**`Schedule`**:
+
+| member | |
+|---|---|
+| `id` | 16 lowercase hex characters (the daemon's) |
+| `name` | not empty, at most 200 characters, no line break |
+| `kind` | `command` or `agent` (see "Agent schedules") |
+| `command` | a `command` schedule's shell string (`$SHELL -c`); not empty, no NUL. Not stored for `agent` |
+| `harness`, `prompt`, `permission` | an `agent` schedule's (see "Agent schedules"); not stored for `command` |
+| `cwd` | the directory it runs in (absolute; a leading `~` given to the methods is the home directory) |
+| `when` | when it runs (below) |
+| `tz` | the IANA time zone of the times (`Local` is not one); the app's default is the phone's |
+| `state` | `active` or `paused` (the daemon's) |
+| `created_at` | unix ms (the daemon's) |
+| `timeout_min?` | a run's time limit in minutes, `0` none (omitted: 60, which `schedule.create` stores; the app offers 15, 30, 60, 120, 360 and none); 0 … 10080 |
+| `retries?` | how many times a run that `failed` or `timed_out` runs again, 0 … 3 (omitted: 0) |
+| `retry_delay_min?` | minutes after such a run ended its retry starts, 1 … 60 (omitted: 5, which `schedule.create` stores; the app offers 1, 5 and 15) |
+| `stop_after_failures?` | pause the schedule when this many of its times in a row failed, 0 never (omitted: 0; the app offers 3, 5 and 10); at most 100 |
+| `notify?` | which of its runs are notified: `problems` (omitted or `""`), `always` or `off` (see "Notifications") |
+| `failed_in_row?` | how many of its times in a row failed (the daemon's) |
+| `auto_stopped?` | `true`: `stop_after_failures` paused it (the daemon's) |
+| `problem_sent?` | a problem was notified and no success since (the daemon's) |
+| `last_at?` | unix ms, the daemon's; see "Missed times" |
+
+The members marked as the daemon's are ignored by `schedule.create` and
+`schedule.update` (`update` keeps them).
+
+`when` is one of
+
+| `when` | runs |
+|---|---|
+| `{every: "daily", time: "HH:MM"}` | every day |
+| `{every: "weekdays", time}` | Monday to Friday |
+| `{every: "weekly", time, days: [0…6]}` | on those weekdays (0 Sunday … 6 Saturday; at least one) |
+| `{every: "hours", hours: 1…23, minute?: 0…59}` | at `minute` past every hour `h` of the day with `h % hours == 0` (6: 0:00, 6:00, 12:00, 18:00) |
+| `{every: "once", date: "YYYY-MM-DD", time}` | once, on that date; then it has no next time (and stays). A date and time already past when it is created or updated never run |
+| `{every: "cron", cron: "0 3 1 * *"}` | at the times the cron expression names (below) |
+
+The times are on the wall clock of the schedule's `tz`, never the
+host's: a 9:00 `Asia/Tokyo` schedule runs at 0:00 on a host whose clock
+is UTC. A wall-clock time a daylight saving change skips runs at the time
+it turns into (America/New_York on its spring day: 2:30 → 3:30 EDT); one
+it repeats runs once, the first time (on its autumn day 1:30 EDT, not
+1:30 EST). This holds for every `when`, `cron` included: each wall-clock
+time of the day runs at most once, so `*/30 * * * *` runs at 1:00 and
+1:30 EST, then 3:00 and 3:30 EDT on the spring day, and at 1:00 and 1:30
+EDT, then 2:00 EST on the autumn day (the repeated 1:00 and 1:30 EST do
+not run).
+
+**Cron expressions** have five fields separated by spaces — minute
+(0–59), hour (0–23), day of the month (1–31), month (1–12 or `jan` …
+`dec`), weekday (0–7, 0 and 7 Sunday, or `sun` … `sat`; names in any
+case) — each a comma-separated list of `*`, `n` or `n-m`, each
+optionally followed by `/step` (`n/step` is `n` to the field's last
+value). When neither the day of the month nor the weekday starts with
+`*`, a day runs when either matches (`0 6 1 * 5`: the 1st and every
+Friday); otherwise when both do. Nicknames (`@daily`) and seconds are not
+supported. `bad_request` says what is wrong (`when.cron "61 * * * *":
+minute 61 is not 0 … 59`); an expression whose day never comes (`0 0 31
+2 *`) is one.
+
+**UTC offsets.** The daemon gives every time with the UTC offset of the
+schedule's `tz` at it (`tz_offset`, `next_offset`, `next_offsets`:
+seconds, east positive); the app shows `unix ms + offset` as that wall
+clock and does no time zone arithmetic of its own (today and tomorrow
+are told by `ScheduleEntry.tz_offset`).
+
+**`ScheduleEntry`** (a schedule as `schedule.list` answers it):
+`{schedule, next_at?, next_offset?, tz_offset, last_run?, retry_at?,
+host_clock?}` — `next_at` (unix ms) omitted when it never runs again or
+is `paused`, `next_offset` the offset at `next_at` (omitted with it),
+`tz_offset` the offset now, `last_run` its newest run (omitted before
+the first; `result: running` while it runs, even when times skipped
+meanwhile are recorded after it), `retry_at` (unix ms) when its newest
+run waits to be retried.
+
+**`HostClock`** `{tz, at, offset, tz_offset}`, in `ScheduleEntry` and
+`schedule.preview` as `host_clock`, when the host's own clock is not the
+schedule's `tz`'s at its next time (`at`, unix ms; for a `paused`
+schedule the next time it would have): `tz` names the host's zone (its
+IANA name — `$TZ`, else what `/etc/localtime` links to — else its
+abbreviation, `UTC`), `offset` and `tz_offset` are the host's and the
+`tz`'s UTC offsets then, in seconds. Omitted when the offsets are the
+same (a host on `Asia/Tokyo` and a `Japan` schedule). The app says it
+once ("this host is on UTC: 9:00 is its 0:00"), not per time.
+
+**`ScheduleRun`** is one time of a schedule — a time that came, or one
+`schedule.run_now` — and one line of its `.jsonl`; its retries go on in
+the same line. Its members: `run_id` (16 hex; the same for all its
+tries), `scheduled_at` (unix ms, the time it was due; `run_now`'s is
+when it was asked), `trigger`, `harness?` (an agent run's), `cwd` (the
+schedule's `cwd` when the time started), `retries?` (the schedule's
+`retries` when the time started: the m of "retry n/m"; omitted when 0,
+and on a skipped line), `tz_offset` (the offset at `scheduled_at`; its
+`started_at` and `ended_at` are shown with it too), `auto_stopped?`
+(when this time failing paused the schedule, `failed_in_row` then), then
+the members of its newest try, and `tries?` (the tries before it, oldest
+first).
+
+**`ScheduleTry`** (a try: the first run of the time, or a retry):
+`retry?` (which retry, 1 …; omitted for the first try), `started_at`,
+`ended_at?`, `result`, `exit_code?`, `session_id?` (its session), `error?`
+(one line, at most 300 bytes), `summary?`, `conversation_id?`,
+`denials?`, `unjudged?`, `outside_gui?`, `auth_failed?` (see below).
+
+`trigger` is one of
+
+| `trigger` | |
+|---|---|
+| `scheduled` | its time came |
+| `late` | its time came over a minute before it started (see "Missed times") |
+| `now` | `schedule.run_now` |
+
+`result` is one of
+
+| `result` | |
+|---|---|
+| `running` | its try runs |
+| `succeeded` | a command's exit code 0; an agent run that ended well |
+| `failed` | a non-zero exit code (`exit_code`), or none: it could not start or its session was lost (`error` says) |
+| `timed_out` | stopped at its time limit (see "Time limit, retries and stopping") |
+| `denied` | an agent run went to its end, but operations were refused (`denials`) |
+| `undetermined` | its end is not known: it was running when the daemon started again and its session did not come back |
+| `skipped_overlap` | not run: its time came while the previous run still ran |
+| `skipped_paused` | not run: a once schedule's time passed while it was paused |
+
+An app shows a `trigger` or `result` it does not know as such, not as a
+success.
+
+**Methods.**
+
+`schedule.list` answers every schedule as a `ScheduleEntry`, in the
+order they were created. `schedule.runs {id}` answers its runs newest
+first. An unknown `id` is `not_found` for every method that takes one.
+
+`schedule.create {schedule}` takes the members above but the daemon's
+and answers the new `ScheduleEntry`. `bad_request` says which member is
+wrong: `name`, `kind`, `command`, `harness`, `prompt`, `permission`,
+`cwd` (not absolute, or not a directory that exists), `tz`, `when`,
+`timeout_min`, `retries`, `retry_delay_min`, `stop_after_failures` or
+`notify` outside what the tables allow. `internal` when
+`schedules.json` cannot be written (nothing changes).
+
+`schedule.preview {schedule}` takes the same `schedule` and answers
+`SchedulePreview` `{argv, cwd, next, next_offsets, tz_offset, warnings,
+cwd_kind?, task_id?, host_clock?}`: what a run would execute (`argv`: a
+command schedule's `$SHELL` of the daemon, `-c` and the command; an agent
+schedule's command line, see "Agent schedules"), in which directory
+(`cwd`, `~` expanded), the next three times (`next`, unix ms) with their
+offsets (`next_offsets`, as long as `next`), the offset now and the
+warnings that apply (`[{code, message}]`, below). It saves nothing; the
+app shows it before saving and builds neither the command nor the times
+itself. It checks `kind`, `command`, `harness`, `prompt`, `permission`,
+`tz`, `when` and that `cwd` is absolute (`bad_request`), not `name`, the
+limits, `notify` nor that `cwd` exists. When `cwd` is a directory,
+`cwd_kind` says what it is: `task` (in the worktree of a task that is not
+`in_place`, the innermost one as for `Session.task_id`, symlinks
+resolved; `task_id` names it), `checkout` (in another Git work tree: a
+checkout the user works in) or `directory` (outside Git). The warning
+codes:
+
+| `code` | |
+|---|---|
+| `cwd_missing` | `cwd` is not a directory (`schedule.create` refuses it) |
+| `codex_outside_git` | a codex schedule outside Git: its runs pass `--skip-git-repo-check` |
+| `writes_checkout` | an agent schedule with `write` or `all` in a `checkout` |
+| `claude_gui_login` | a claude schedule on a macOS host without `${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json` (see "Without a GUI login") |
+
+`schedule.update {id, schedule}` replaces what `schedule.create` takes,
+checked the same way (`bad_request`); `id`, `state`, `created_at`, the
+daemon's members and the members this stagent does not know stay, unless
+`schedule` carries the unknown ones. A time that came and was not
+compared yet is dealt with as the schedule was before (run, recorded as
+skipped, or ending a waiting retry); then `last_at` is now and the next
+time is the new schedule's. A running run goes on as it started.
+
+`schedule.pause {id}` makes it `paused`: its times pass without a run
+and are not made up for (a once schedule's records `skipped_paused`),
+and a retry it waits for is dropped (see "Retries"). `schedule.resume
+{id}` makes it `active` from its next time on: `last_at` is now,
+`failed_in_row` 0, `auto_stopped` dropped. Both answer the
+`ScheduleEntry`.
+
+`schedule.run_now {id}` starts a run now (`trigger: now`), paused or
+not, and answers the `ScheduleRun`; `busy` while the schedule's previous
+run is still running. A retry the schedule waits for is dropped first.
+
+`schedule.remove {id, stop_run?}` removes the schedule and its record.
+With `stop_run` a running run's session gets `session.signal hangup`,
+`kill` 5 s later and is waited for 3 s more; the answer comes after
+(`busy`, nothing removed, when it did not end: the run goes on as
+before). A run stopped so is not notified, counted or retried. Without
+`stop_run` the run goes on and its end is recorded nowhere. `internal`
+when `schedules.json` cannot be written (nothing changes).
+
+Two apps changing a schedule: the later change wins. A coding agent's
+process tree may list, read runs, preview and read output
+(`schedule.list`, `schedule.runs`, `schedule.preview`,
+`schedule.output`); `schedule.create`, `schedule.update`,
+`schedule.remove`, `schedule.pause`, `schedule.resume` and
+`schedule.run_now` are refused to it with `agent_refused`.
+
+**`schedule.changed {id, entry?}`** goes to the watchers whenever a
+schedule or its newest run changes — created, updated, paused, resumed,
+a try started, skipped or ended — with its `ScheduleEntry` as
+`schedule.list` would answer it now (`entry`), or without `entry` when
+it was removed.
+
+**When it runs.** Every 30 s the daemon compares the wall clock with each
+active schedule's next time and starts the ones that came. The clock is
+compared again and again rather than waited for with one long timer (a
+timer may not advance while the machine sleeps). A time that comes while
+the previous run is still running does not run: it is recorded with
+`result: skipped_overlap`.
+
+**Missed times.** The daemon keeps each schedule's last time in
+`schedules.json` (`last_at`, unix ms): the newest of its times it dealt
+with — ran, skipped — or when the times before stopped counting (it was
+created, updated or resumed); its next time is counted from it. Times
+after it that came while the host slept, was off or the daemon was not
+running are missed: when the daemon starts again (or at its next
+comparison after a sleep), however many there were, they run once, as
+the newest of them (`scheduled_at`), with `trigger: late` when the run
+starts over a minute after that time. There is no limit past which a
+missed time is dropped. A daemon started again never runs a time at or
+before `last_at` again. Times that pass while a schedule is `paused` are
+not missed: they are not made up for. A once schedule whose time passes
+while it is paused does not run and is recorded with `result:
+skipped_paused`; resumed, it has no next time.
+
+A skipped line (`skipped_overlap`, `skipped_paused`) has `trigger:
+scheduled`, `ended_at` at once and no `session_id`.
+
+**A run** is a detached session. Right before it the daemon takes the
+login shell's environment (`$SHELL -l -i`, then `$SHELL -l`, as the
+bridge does for `session.spawn`; 5 s in all for both, the daemon's own
+environment when that fails) and starts `stagent run --detached --id
+<session id> --cols 120 --rows 40 --cwd <cwd> --schedule <id> --run
+<run_id> -- <command…>` the way the bridge starts a holder (on macOS in
+the GUI login session when there is one), `<command…>` being `$SHELL -c
+'<command>'` (`$SHELL` of that environment, `/bin/sh` when unset) or an
+agent schedule's wrapper. Its `Session` has `schedule_id` and `run_id`;
+it belongs to no task, and the app lists it under its schedule only, not
+among the kept shells or the host's agents. Attaching from the app
+resizes it as usual.
+
+The try ends with its session's exit (`holder.ended`) — a command run
+with exit code 0 `succeeded`, any other `failed` with `exit_code` — or
+with its session lost without one (`failed`, `error: "session lost"`).
+A holder that exits before registering, or does not register within
+30 s, fails the try with `error` (the end of its log). A try still
+`running` when the daemon starts again ends `undetermined` unless its
+session comes back within 30 s. Only the newest try's session ends the
+time. The newest 200 lines are kept per schedule (the 201st drops the
+oldest).
+
+**Agent schedules** (`kind: "agent"`) run a coding agent instead of a
+command: `harness` (`claude` | `codex` | `omp`), `prompt` (not empty, no
+NUL) and `permission` (`read` | `write` | `all`; omitted or `""` is
+`read`, which `schedule.create` stores). Nobody is there while it runs,
+so the agent never waits on an approval: what its permission does not
+allow is refused and the run goes on to its end. Each permission is the
+harness's own flags:
+
+| `permission` | claude | codex | omp |
+|---|---|---|---|
+| `read` (読むだけ) | `--permission-mode manual` | `--sandbox read-only` | `--approval-mode=always-ask` |
+| `write` (ディレクトリの中を書き換える) | `--permission-mode acceptEdits` | `--sandbox workspace-write` | `--approval-mode=write` |
+| `all` (何でも・確認なし) | `--permission-mode bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` | `--approval-mode=yolo` |
+
+The same permission lets the three do different things. Measured on a
+Linux host (claude 2.1.296, omp 18.8.9; codex from its sandbox rules,
+its login having expired there):
+
+- `read`: claude reads files and runs read-only commands (`ls`); writes
+  (Write, Edit) and other commands are refused. codex runs commands in a
+  read-only sandbox; writes and the network fail. omp has its reading
+  tools only; `write`, `edit` and `bash` are refused.
+- `write`: claude changes files in its directory and runs file commands
+  there (`touch`, `rm`); other programs (`python3 …`) and writes outside
+  the directory are refused. codex runs any command in its sandbox and
+  writes in its directory (and the temporary directory); writes outside
+  it and the network fail. omp's `--approval-mode=write` allows its
+  `write` and `edit` tools — **outside the directory too** (a file in
+  another directory was written) — and refuses `bash`, even `ls`.
+- `all`: anything, anywhere, network included, without asking.
+
+A run's command is the agent's non-interactive mode with JSON output,
+the prompt last after `--` (so one starting with `-` stays the prompt):
+`claude -p --output-format json --permission-prompts none
+--permission-mode <mode> -- <prompt>`, `codex exec --json <sandbox>
+[--skip-git-repo-check] -- <prompt>` (the flag when `cwd` is in no Git
+work tree: no `.git` in it or above), `omp -p --mode json
+--approval-mode=<mode> [--allow-home] -- <prompt>`. omp started in the
+home directory moves to a temporary directory (`~/tmp`, `/tmp`,
+`/var/tmp`), so when `cwd` is the home directory `--allow-home` keeps it
+in `cwd`. Nothing asks the agent not to keep its conversation. The
+daemon builds the command for every try (and for `schedule.preview`'s
+`argv`) and the holder runs it under `stagent schedule agent --result
+<file> -- <command…>` (`<file>` in the log directory): that wrapper
+starts the agent with an empty standard input, shows its JSON on the
+terminal as text (replies, the commands and tools it runs, `[stagent]
+refused: …` for each refused operation, a last line with the result;
+`session.scrollback` reads it as it reads any session), leaves the
+outcome in `<file>` and exits with the agent's exit code (128+n for
+signal n; signals it gets are passed on). For the session's harness the
+wrapper is looked through, as `stagent task run` is (`harness` is the
+agent's; codex gets `--no-daemon`).
+
+The result: `failed` when the exit code is not 0 or the output says so
+(claude's `is_error` or a `subtype` other than `success`; codex's
+`turn.failed`, or an `error` event with no `turn.completed`; omp's
+assistant message ending with `stopReason` `error` or `aborted`), with
+`error` saying why; else `denied` when operations were refused (claude's
+`permission_denials`; codex's items with `status: declined` and file
+changes that `failed`; omp's tool results that require an approval no
+one can give), counted in `denials`; else `succeeded`. Output that is
+none of that JSON is judged by the exit code alone (0 `succeeded`, else
+`failed`) with `unjudged: true`, as is a try whose wrapper left no
+outcome (it was killed), but for one stopped at its time limit
+(`timed_out`, never `unjudged`). An agent try also records
+`conversation_id` (claude's `session_id`, codex's `thread.started`
+`thread_id`, omp's `session` `id`: `claude --resume <id>`, `codex resume
+<id>`, `omp -r <id>` continue it in the run's `cwd`) and `summary` (its
+last reply, at most 8 KiB).
+
+`transcript.get {harness, conversation_id}` reads an agent run's
+conversation from the agent's own transcript (claude's `-p` and codex's
+`exec` ones too, though `conversations.list` never lists them), so it is
+there for as long as the agent keeps it, after the run's output is gone.
+
+A run's session handles no approvals: a hook's `PermissionRequest`
+registers none and is answered at once (claude refuses the tool, as
+`--permission-prompts none` says), and the session raises no
+`needs_approval`, `waiting_input`, `turn_complete` or `exited`
+notification (its end is notified as the schedule's; see
+"Notifications").
+
+**Time limit, retries and stopping** (`command` and `agent` schedules
+alike). A try still running `timeout_min` after it started is sent
+`session.signal terminate` (SIGTERM to its process group; an agent
+run's wrapper passes it on and still leaves its outcome), and `kill` 10
+s later when it has not ended. It is recorded with `result: timed_out`
+(whatever its exit code, which is kept) and `error: "timed out after
+<limit>"` (Go's duration, `15m0s`); an agent try keeps its
+`conversation_id`, `summary` and `denials`. Like the times, the limit is
+compared with the wall clock every 30 s.
+
+A try that ends `failed` or `timed_out` while the line's `retries` are
+not used up and the schedule is `active` is run again
+`retry_delay_min` after it ended, in the same line: meanwhile the line
+keeps the failed try's `result` and the entry has `retry_at`; when the
+retry starts, the try before goes to the end of `tries` and the line's
+head is the new try (`result: running`, `retry: n`, a new `session_id`;
+the holder's `--run` stays the `run_id`). The app shows "retry 1/2".
+A retry runs in the line's `cwd` with the schedule's command, prompt and
+permission as they are then. Runs of `trigger: now` are retried the same
+way. `denied`, `succeeded`, `undetermined` and skipped lines are not
+retried, nor is a try that ends while the schedule is `paused`. A
+waiting retry is dropped when the schedule's next time comes,
+`schedule.run_now` is called or the schedule is paused or removed; the
+failed try is then its time's last result. A daemon that starts again
+waits again for the retry of a schedule's newest line when its newest
+try failed with retries left, the schedule is `active`, no run of it is
+running and nothing has been dealt with since (`scheduled_at` not before
+`last_at`): `ended_at` + `retry_delay_min`.
+
+A time counts once, its retries included: when its last try ends
+`failed` or `timed_out` (or its retry is dropped) the schedule's
+`failed_in_row` goes up by one; `succeeded` or `denied` makes it 0;
+`undetermined` and skipped lines leave it. When it reaches
+`stop_after_failures` while the schedule is `active`, the schedule
+becomes `paused` with `auto_stopped: true` (and `schedule.changed`), and
+that time's line gets `auto_stopped: <failed_in_row>`; the app shows
+"stopped after 3 failures in a row" with Resume. `schedule.resume`
+makes `failed_in_row` 0 and drops `auto_stopped`, as for any paused
+schedule.
+
+**A run's output** is its sessions' scrollback, which stays on the disk
+after the holder exits (`session.scrollback` is the holder's and ends
+with it). `schedule.output {id, run_id, session_id?, before?,
+max_bytes?}` reads a try's there, running or ended — `session_id` names
+the try (omitted: the newest; a session of no try of the run is
+`not_found`) — and answers a page as `session.scrollback` does (`{data,
+start, end, first}`, the same `before` and `max_bytes`), or `gone: true`
+with empty `data` when it is no longer kept or the try had no session
+(it could not start); an unknown `id` or `run_id` is `not_found`. When a
+try ends it gets `summary?`: the end of its output as plain text, kept
+for when the output is gone — a command try's last 50 lines (escape
+sequences removed, a line redrawn after `\r` as it was left), at most 8
+KiB; an agent try's is its agent's last reply, or its output's end when
+the reply could not be read. Retention (`scrollback_days`) does not
+delete the output of each schedule's newest 5 lines that had a session
+(all their tries), so a weekly run's output is there until the next; it
+still counts toward `scrollback_total_mib`, over which the oldest output
+goes first, these included. Older runs' output goes after
+`scrollback_days` like any session's.
+
+**Without a GUI login (macOS).** A run's holder starts in the GUI login
+session as a `session.spawn` holder does (see "Starting in the GUI login
+session"); while nobody is logged in to the desktop it is started
+directly, and the try records `outside_gui: true` (any kind of
+schedule). There claude cannot read its login from the keychain and,
+without `~/.claude/.credentials.json`, ends asking for `/login`: an agent
+try that failed because its agent could not log in (claude's `is_error`
+with a result asking for `/login`, or `api_error_status` 401) records
+`auth_failed: true`. The `claude_gui_login` warning looks at the
+credentials file of the daemon's environment only
+(`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` are not looked for;
+see the README): its runs fail while nobody is logged in to the desktop.
+
+**Notifications.** A schedule's `notify` says which of its runs are
+notified, with reason `schedule`. Only the last result of a time is,
+once its retries are done: a failure that is run again is not. A problem
+is `failed`, `timed_out`, `denied`, `undetermined`, an `unjudged` run,
+`skipped_overlap`, and the schedule stopping after failures; `late` and
+`skipped_paused` are recorded only, and a run stopped by
+`schedule.remove` is not notified. Under `problems`, while problems go
+on only the first and the stop are notified, and the first success after
+them is notified as fixed (`problem_sent` remembers it); `always`
+notifies every result, a success after problems as fixed; `off` none.
+`notify.reasons.schedule` `false` pushes no schedule's (the event still
+comes; the app filters it as it does the other reasons). The
+notification (`title` the schedule's name, `body` a fixed phrase in
+`notify.lang` — "Failed (exit code 2)", "Stopped at its time limit", "3
+actions were refused", "<agent> could not authenticate: nobody is logged
+in to the GUI" for a failed try with `outside_gui` and `auth_failed` —
+never the agent's reply or the output) has no `session_id` but
+`schedule_id` and, for a run's result, `run_id` (none for a stop, a fix
+or a skip: those are about the schedule). It is pushed under the usual
+conditions (no app in the foreground, nobody present at the run's
+session). On ntfy its sequence ID is `schedule_<schedule id>`, and on
+Discord and Telegram it replaces the schedule's previous message, so the
+newest stands for the schedule; nothing clears it.
+
 #### Click link
 
 A push links to the session it is about (`h=<host_id>`, `s=<session
@@ -1382,6 +1851,11 @@ id>`), or to the host only (`h`) when it is about no session (a digest,
 | ntfy (`Click`) | `notify.click_base` with `h` and `s` added to its query, e.g. `sshtermx://open?h=<host_id>&s=<session id>` | every push (`h` only without a session) |
 | chat destination (a button, on Slack a link; see "Chat destinations") | `notify.click_page` with `h` and `s` in its fragment, e.g. `https://sshterm.iru-yo.com/open#h=<host_id>&s=<session id>` | a push of one session only: none for a digest, `notify.test` or a push of no session |
 | generic webhook (`click_url`) | as the chat destination | every push (`#h=<host_id>` only without a session) |
+
+A schedule's notification links `sc=<schedule id>` and, for a run's
+result, `r=<run id>` instead of `s` (`sshtermx://open?h=…&r=…&sc=…`, in
+the fragment likewise); a digest folding some schedule's notification
+links an empty `sc=` (the host's schedules).
 
 The fragment is `h=<host_id>&s=<session id>` (form-encoded, `h` first);
 it never reaches the open page's server, but the message — link included —
@@ -1618,6 +2092,7 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 | `unwrapped.updated` | `{unwrapped[]}` (the whole current list of `UnwrappedLaunch`; replaces the previous one) |
 | `task.updated` | `Task` (full object, added or changed; replaces the previous one) |
 | `task.removed` | `{id, kept_branch?}` — `kept_branch`: the branch `task.remove` kept (see "Removing a task") |
+| `schedule.changed` | `{id, entry?}` — `entry`: the `ScheduleEntry` now, omitted when the schedule was removed (see "Schedules") |
 | `host_screen.frame` | `{seq, data, width, height}` (see "Host screen") |
 | `host_screen.state` | `{state: "live"\|"gone", title?, url?}` (see "Host screen") |
 
@@ -1629,7 +2104,7 @@ holder_pid, mode (passthrough|detached), attached, state (working|idle|
 waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
 process), title?, conversation_id?, transcript_path?, last_message?, cols,
 rows, started_at, last_activity_at, last_local_input_at?, focused?,
-presence_file?, exit_code?, task_id?`.
+presence_file?, exit_code?, task_id?, schedule_id?, run_id?`.
 `mode` is fixed for the life of a session except for one transition
 (`persist`): a `passthrough` session started with `--handoff` becomes
 `detached` when its local terminal hangs up.
@@ -1667,6 +2142,10 @@ hangs up lose it. `presence_file` is the holder's
 
 `task_id` is the task the session belongs to, decided by the daemon (see
 "Tasks"); omitted when none.
+
+`schedule_id` and `run_id` (since 0.17.0) name the schedule run the
+session is (see "Schedules"); omitted for any other session. The app
+leaves these sessions out of the kept shells and the host's agents.
 
 `harness` starts as the program the session runs (`other` for a shell).
 Hooks of an agent running inside the session (by `STAGENT_SESSION_ID`)
@@ -1793,7 +2272,7 @@ live_session_id?`.
 token?}, webhook {enabled, url, headers?}, chat {enabled, url},
 debounce_ms, digest_window_ms,
 host_label, click_base, click_page, reasons {needs_approval, waiting_input,
-turn_complete, exited, terminal}, lang, skip_when_claude_app_notifies},
+turn_complete, exited, terminal, schedule}, lang, skip_when_claude_app_notifies},
 retention {events_days, events_max, scrollback_days,
 scrollback_total_mib, scrollback_session_mib}, idle_after_ms,
 disable_handoff, repos? {<source checkout>: {worktree_include?[]}},
@@ -1815,7 +2294,8 @@ that chat destinations and the generic webhook link to (see "Click
 link"); it must be an absolute https URL with no query and no fragment.
 `notify.reasons` selects
 what is pushed (see "Push notifications"): booleans, defaults `true`,
-`true`, `true` and `terminal` `false`; `exited` is `off`, `error`
+`true`, `true` and `terminal` `false`, `schedule` `true` (see "Schedules";
+an older stagent ignores the key); `exited` is `off`, `error`
 (default: abnormal exits only) or `all`. `notify.lang` is `en` (default),
 `ja`, `ko` or `zh`; the app sets it to its own language.
 `notify.skip_when_claude_app_notifies` defaults to false. `notify.chat` is
@@ -2560,6 +3040,8 @@ GUI login), the holder is started directly, without the keychain, and its
 log says why. claude then asks to log in; a `/login` there is saved to
 `~/.claude/.credentials.json` (claude's fallback when it cannot write the
 keychain), which later sessions started outside the GUI session read.
+Schedule runs start the same way and record whether they did not get
+into the GUI login session (`outside_gui`; see "Schedules").
 
 In a terminal (not `--detached`), just before the program starts, `stagent
 run` prints one line to stderr when the daemon holds agent sessions on the

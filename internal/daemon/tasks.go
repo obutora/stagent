@@ -430,17 +430,29 @@ func (d *Daemon) taskList() wire.TaskListResult {
 // taskOfLocked decides the task of s: an in_place task it prepares or was
 // started for (session.spawn task_id), else the worktree task whose
 // worktree holds its cwd (the innermost). An in_place task never takes a
-// session by its cwd.
+// session by its cwd, and no task a schedule's run.
 func (d *Daemon) taskOfLocked(s *session) string {
+	if s.s.ScheduleID != "" {
+		return ""
+	}
+	for _, t := range d.tasks {
+		if t.InPlace && (s.s.ID == t.SessionID || s.taskWant == t.ID) {
+			return t.ID
+		}
+	}
+	if s.cwd == "" {
+		return ""
+	}
+	return d.worktreeTaskLocked(s.cwd)
+}
+
+// worktreeTaskLocked is the task whose worktree holds canonical path p,
+// the innermost when worktrees nest ("": none; an in_place task has none,
+// its directory is the source checkout).
+func (d *Daemon) worktreeTaskLocked(p string) string {
 	best, bestLen := "", -1
 	for _, t := range d.tasks {
-		if t.InPlace {
-			if s.s.ID == t.SessionID || s.taskWant == t.ID {
-				return t.ID
-			}
-			continue
-		}
-		if s.cwd != "" && task.Within(s.cwd, t.Worktree) && len(t.Worktree) > bestLen {
+		if !t.InPlace && t.Worktree != "" && task.Within(p, t.Worktree) && len(t.Worktree) > bestLen {
 			best, bestLen = t.ID, len(t.Worktree)
 		}
 	}
