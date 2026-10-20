@@ -21,13 +21,17 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/bootstrap"
+	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/eventlog"
 	"github.com/obutora/stagent/internal/follow"
 	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/hostid"
+	"github.com/obutora/stagent/internal/loginenv"
 	"github.com/obutora/stagent/internal/notify"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/proc"
 	"github.com/obutora/stagent/internal/rpc"
+	"github.com/obutora/stagent/internal/schedule"
 	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/transcript"
 	"github.com/obutora/stagent/internal/version"
@@ -68,6 +72,19 @@ type Options struct {
 	// Guard refuses some methods to coding agents' process trees (ADR
 	// 0004; default: harness.NewGuard(Layout)).
 	Guard *harness.Guard
+	// Now is the wall clock schedules run by (default time.Now), and
+	// ScheduleTick how often it is compared with their times (default
+	// 30 s). RunStartGrace: how long a run's holder has to register
+	// (default 30 s; see schedules.go).
+	Now           func() time.Time
+	ScheduleTick  time.Duration
+	RunStartGrace time.Duration
+	// LoginEnv takes the login shell's environment before each schedule
+	// run (default: loginenv.Capture of this stagent, runLoginEnvWithin at
+	// most), and SpawnHolder starts the run's holder and tells whether it
+	// is outside the GUI login session (default: proc.StartHolder).
+	LoginEnv    func() ([]string, error)
+	SpawnHolder func(exe string, args []string, dir string, env []string, logPath string) (pid int, outsideGUI bool, err error)
 }
 
 const (
@@ -122,6 +139,17 @@ type Daemon struct {
 	review       *time.Timer
 	reviewAt     time.Time
 
+	// schedules in the order they were created (schedules.json);
+	// schedDue: when each runs next; runs: their records; pendingRuns:
+	// the runs whose end is not recorded yet, by run id.
+	schedules   []*wire.Schedule
+	schedDue    map[string]time.Time
+	runs        schedule.RunLog
+	pendingRuns map[string]*pendingRun
+	// retryWaits: the retry each schedule waits to run, by schedule id
+	// (kept in memory only: a daemon restart drops them).
+	retryWaits map[string]*retryWait
+
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
 	wg           sync.WaitGroup
@@ -166,6 +194,27 @@ func New(opts Options) (*Daemon, error) {
 	if opts.Guard == nil {
 		opts.Guard = harness.NewGuard(opts.Layout)
 	}
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	if opts.ScheduleTick <= 0 {
+		opts.ScheduleTick = defaultScheduleTick
+	}
+	if opts.RunStartGrace <= 0 {
+		opts.RunStartGrace = defaultRunStartGrace
+	}
+	if opts.LoginEnv == nil {
+		opts.LoginEnv = func() ([]string, error) {
+			exe, err := daemonclient.Exe()
+			if err != nil {
+				return nil, err
+			}
+			return loginenv.Capture(exe, runLoginEnvWithin)
+		}
+	}
+	if opts.SpawnHolder == nil {
+		opts.SpawnHolder = proc.StartHolder
+	}
 	l := opts.Layout
 	if err := l.EnsureDirs(); err != nil {
 		return nil, err
@@ -189,6 +238,10 @@ func New(opts Options) (*Daemon, error) {
 	tasks, err := loadTasks(l.Tasks)
 	if err != nil {
 		opts.Logf("daemon: tasks: %v (starting without tasks)", err)
+	}
+	schedules, err := loadSchedules(l.Schedules)
+	if err != nil {
+		opts.Logf("daemon: schedules: %v (starting without schedules)", err)
 	}
 	roots := opts.Roots
 	if roots == nil {
@@ -217,6 +270,12 @@ func New(opts Options) (*Daemon, error) {
 		tasks:        tasks,
 		prepAt:       map[string]time.Time{},
 		removingFrom: map[string]string{},
+
+		schedules:   schedules,
+		schedDue:    map[string]time.Time{},
+		runs:        schedule.RunLog{Dir: l.ScheduleRuns},
+		pendingRuns: map[string]*pendingRun{},
+		retryWaits:  map[string]*retryWait{},
 	}
 	d.digest = notify.NewDigester(func(ns []wire.NotificationData) {
 		d.mu.Lock()
@@ -240,6 +299,7 @@ func New(opts Options) (*Daemon, error) {
 		}
 	}
 	d.reviewTasksLocked(d.started)
+	d.restoreSchedulesLocked()
 	d.mu.Unlock()
 	return d, nil
 }
@@ -253,6 +313,9 @@ func (d *Daemon) restoreChat() {
 	cfg := d.eff.Notify
 	d.sender.Reconfigure(cfg)
 	for _, id := range d.sender.ChatSessions(cfg) {
+		if notify.IsScheduleKey(id) {
+			continue // a schedule's message stays until a newer replaces it
+		}
 		if d.holderAnswers(id) {
 			d.chatSent[id] = true
 		} else {
@@ -268,6 +331,13 @@ func (d *Daemon) Serve(ln net.Listener) error {
 		defer d.wg.Done()
 		d.runSweep()
 	}()
+	if schedulesServed {
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.runSchedules()
+		}()
+	}
 	go func() {
 		<-d.shutdown
 		ln.Close()
@@ -396,8 +466,8 @@ func (d *Daemon) serveConn(nc net.Conn) {
 
 // agentRefusal is the error for the methods a connection from a coding
 // agent's process tree may not call (ADR 0004): those that change settings
-// or stop the daemon, and those that change tasks. Hooks, holders and
-// readers (task.list included) are served.
+// or stop the daemon, and those that change tasks or schedules. Hooks,
+// holders and readers (task.list, schedule.list included) are served.
 func (d *Daemon) agentRefusal(cs *connState) *wire.Error {
 	if cs.refusal != nil && !cs.logged {
 		cs.logged = true
@@ -409,9 +479,20 @@ func (d *Daemon) agentRefusal(cs *connState) *wire.Error {
 func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, error) {
 	switch m.Method {
 	case wire.MethodConfigSet, wire.MethodPresenceSet, wire.MethodNotifyTest, wire.MethodDaemonShutdown,
-		wire.MethodTaskProgress, wire.MethodTaskRegister, wire.MethodTaskForget:
+		wire.MethodTaskProgress, wire.MethodTaskRegister, wire.MethodTaskForget,
+		wire.MethodScheduleCreate,
+		wire.MethodScheduleUpdate, wire.MethodScheduleRemove, wire.MethodSchedulePause, wire.MethodScheduleResume,
+		wire.MethodScheduleRunNow:
 		if werr := d.agentRefusal(cs); werr != nil {
 			return nil, werr
+		}
+	}
+	switch m.Method {
+	case wire.MethodScheduleList, wire.MethodScheduleCreate, wire.MethodScheduleRuns, wire.MethodSchedulePreview,
+		wire.MethodScheduleUpdate, wire.MethodScheduleRemove, wire.MethodSchedulePause, wire.MethodScheduleResume,
+		wire.MethodScheduleRunNow, wire.MethodScheduleOutput:
+		if !schedulesServed {
+			return nil, wire.Errorf(wire.ErrUnsupported, "%s: schedules run on Linux and macOS only", m.Method)
 		}
 	}
 	switch m.Method {
@@ -522,6 +603,37 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		return struct{}{}, nil
 	case wire.MethodTaskList:
 		return d.taskList(), nil
+
+	// bridge → daemon (schedules)
+	case wire.MethodScheduleList:
+		return d.scheduleList(), nil
+	case wire.MethodScheduleCreate:
+		var p wire.ScheduleCreateParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return d.scheduleCreate(p)
+	case wire.MethodScheduleRuns:
+		var p wire.ScheduleRunsParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return d.scheduleRuns(p)
+	case wire.MethodSchedulePreview:
+		var p wire.ScheduleCreateParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return d.schedulePreview(p)
+	case wire.MethodScheduleUpdate, wire.MethodScheduleRemove, wire.MethodSchedulePause, wire.MethodScheduleResume,
+		wire.MethodScheduleRunNow:
+		return d.scheduleChange(cs, m)
+	case wire.MethodScheduleOutput:
+		var p wire.ScheduleOutputParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return d.scheduleOutput(p)
 
 	// bridge, `stagent task` → daemon (tasks)
 	case wire.MethodTaskRegister:

@@ -3,6 +3,114 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.17.0
+
+### Added
+
+- Schedules (定期実行, capability `schedules`, Linux and macOS; the daemon
+  answers `schedule.*` `unsupported` on any other OS): the daemon runs a
+  command (`kind: "command"`, `$SHELL -c` in the schedule's directory) or
+  a coding agent (`kind: "agent"`) at the times a schedule names, each run
+  a detached holder session (`stagent run --detached --schedule <id> --run
+  <run_id>`, 120×40) whose `Session` has `schedule_id` and `run_id` and
+  belongs to no task. Schedules live in `state/schedules.json`, each one's
+  runs in `state/schedule-runs/<id>.jsonl`, both keeping the members a
+  later stagent adds (#1091).
+- Schedule methods on the daemon, forwarded by the bridge:
+  `schedule.list`, `schedule.runs`, `schedule.preview` (what a run would
+  execute, in which directory and what it is — `cwd_kind`, `task_id` —,
+  the next three times and warnings, nothing saved), `schedule.output`,
+  and `schedule.create`, `schedule.update` (a running run goes on as it
+  started; the later of two changes wins), `schedule.pause` /
+  `schedule.resume`, `schedule.run_now` (`trigger: now`, paused or not;
+  `busy` while the previous run runs) and `schedule.remove` (with
+  `stop_run` the running run is hung up, killed 5 s later, and neither
+  notified nor counted as a failure), these five refused to coding agents'
+  process trees. Watchers get `schedule.changed {id, entry?}` whenever a
+  schedule or its newest run changes (#1092).
+- Times: `when` is `daily`, `weekdays`, `weekly`, every N `hours`, `once`
+  (a date and time; then no next time) or `cron` (a five-field
+  expression with lists, ranges, steps and names; `bad_request` says what
+  is wrong), on the wall clock of the schedule's own IANA `tz`, not the
+  host's. On a daylight saving day each wall-clock time runs at most
+  once: a skipped one at the time it turns into, a repeated one the first
+  time. The daemon compares the wall clock with each schedule's next time
+  every 30 s (not one long timer, which may not advance while the machine
+  sleeps) and keeps the last time it dealt with (`last_at`): the times
+  missed while the host slept, was off or the daemon was not running run
+  once, as the newest of them, with `trigger: late` when over a minute
+  after it, and a time is never run twice. A time that comes while the
+  previous run still runs is recorded `skipped_overlap`; a once schedule
+  whose time passes while paused, `skipped_paused`. The daemon gives each
+  time with its `tz`'s UTC offset (`tz_offset`, `next_offset`,
+  `next_offsets`) for the app to show, and `host_clock` when the host's
+  own clock differs from the schedule's (#1093, #1097).
+- Agent schedules: claude, codex or omp with a prompt, with one of three
+  permissions — `read` (the default), `write` (change files in the
+  directory) or `all` (anything, without asking) — mapped to each agent's
+  own flags (claude `--permission-mode manual` / `acceptEdits` /
+  `bypassPermissions` with `--permission-prompts none`, codex `--sandbox
+  read-only` / `workspace-write` /
+  `--dangerously-bypass-approvals-and-sandbox`, omp
+  `--approval-mode=always-ask` / `write` / `yolo`; omp's `write` was
+  measured to allow its write and edit tools outside the directory too,
+  and no `bash`). A run starts the agent non-interactively with JSON
+  output (`claude -p --output-format json`, `codex exec --json`, adding
+  `--skip-git-repo-check` outside Git, `omp -p --mode json`, adding
+  `--allow-home` in the home directory) under the new `stagent schedule
+  agent` wrapper, which shows that JSON on the terminal as text and
+  judges the run: `succeeded`, `denied` (it went to its end but
+  operations were refused; `denials`) or `failed`, by the exit code alone
+  with `unjudged` when the output is not that JSON. A run records the
+  agent's `conversation_id` and its last reply; its session handles no
+  approvals and raises no needs_approval, waiting_input or turn_complete
+  notification. `schedule.preview` warns `codex_outside_git` and
+  `writes_checkout` (#1096).
+- Time limit, retries and stopping after failures, for command and agent
+  schedules alike: `timeout_min` (default 60, `0` none) sends a run still
+  running at it `terminate`, `kill` 10 s later, and records `timed_out`;
+  `retries` (0–3) runs a `failed` or `timed_out` run again
+  `retry_delay_min` (default 5) minutes after it ended, as a new try in
+  the same run (`retry`, `retries`, `tries`; the entry's `retry_at` while
+  it waits; not while the schedule is paused, and a daemon started again
+  waits again), dropped when the next time, `run_now` or pausing comes
+  first; `stop_after_failures` pauses the schedule when that many of its
+  times in a row failed, retries included (`failed_in_row`,
+  `auto_stopped`, the run's `auto_stopped`; `schedule.resume` clears
+  them) (#1095).
+- Runs and their output: a run is one line per time (the newest 200 per
+  schedule) with its tries; a command's exit code 0 `succeeded`, else
+  `failed`, `undetermined` when it was running while the daemon was not.
+  `schedule.output {id, run_id, session_id?, before?, max_bytes?}` reads
+  a try's output from the disk after its holder exited, as
+  `session.scrollback` answers, or `gone: true` once it is no longer
+  kept; coding agents may read it. Each try keeps a `summary` (a
+  command's last 50 lines as plain text, an agent's last reply; 8 KiB at
+  most). Retention keeps the output of each schedule's newest 5 runs past
+  `scrollback_days`; they still count toward `scrollback_total_mib`
+  (#1094).
+- Notifications of schedules: `notify.reasons.schedule` (default on) and
+  each schedule's `notify` (`problems` — the default —, `always`,
+  `off`). The last result of a time (its retries done) is notified with
+  reason `schedule`, a fixed phrase as its body and `schedule_id` /
+  `run_id`; under `problems` only the first of problems in a row and the
+  stop after failures, then "fixed" once a run succeeds. The
+  notifications of a schedule replace one another (ntfy sequence ID
+  `schedule_<id>`, the chat message), and their links carry `sc=` and
+  `r=`. A run's session does not notify `exited` (#1102).
+- Schedules on a Mac nobody is logged in to: a run whose holder could not
+  start in the GUI login session records `outside_gui: true`, and an
+  agent run that failed because claude could not log in records
+  `auth_failed: true`. On a macOS host `schedule.preview` of a claude
+  schedule warns `claude_gui_login` when there is no
+  `~/.claude/.credentials.json`. The README says what
+  `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` would cost instead
+  (#1099).
+- A run starts with the login shell's environment taken right before it
+  (5 s in all, the daemon's own environment when that fails); the
+  bridge's capture for `session.spawn` and `task.create` gives each of
+  its two tries 5 s, 10 s in all. Both use the same capture.
+
 ## 0.16.0
 
 ### Added

@@ -59,6 +59,9 @@ type Options struct {
 	// task_id), sent with holder.register; the daemon decides
 	// Session.TaskID.
 	TaskID string
+	// ScheduleID and RunID name the schedule run the daemon started the
+	// session as (Session.ScheduleID, RunID), sent with holder.register.
+	ScheduleID, RunID string
 	// Env is the program's environment before STAGENT_SESSION_ID (and, when
 	// detached, TERM/COLORTERM defaults) are added; nil = os.Environ().
 	Env    []string
@@ -240,6 +243,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 		State: wire.StateWorking, StateSource: wire.SourceActivity,
 		Cols: cols, Rows: rows, StartedAt: now, LastActivityAt: now,
 		PresenceFile: presenceFile, TaskID: o.TaskID,
+		ScheduleID: o.ScheduleID, RunID: o.RunID,
 	}
 
 	if infraErr == nil {

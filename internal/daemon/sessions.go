@@ -343,6 +343,9 @@ func (d *Daemon) endLocked(s *session, exitCode int, lost, hungUp bool) {
 	d.broadcastLocked(wire.NotifySessionUpdated, s.s)
 	// A task this session prepared is interrupted.
 	d.reviewTasksLocked(time.Now())
+	if s.s.RunID != "" {
+		d.scheduleRunEndedLocked(s, exitCode, lost)
+	}
 	s.remove = time.AfterFunc(d.opts.EndedLinger, func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()

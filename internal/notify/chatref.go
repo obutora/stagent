@@ -128,12 +128,12 @@ func (s *Sender) Reconfigure(cfg wire.NotifyConfig) bool {
 }
 
 // chatLink is the link of a chat message of n: only a push of one session
-// gets one (a digest and notify.test have no session).
+// or of a schedule's run gets one (a digest and notify.test have none).
 func (s *Sender) chatLink(cfg wire.NotifyConfig, n wire.NotificationData) string {
-	if n.SessionID == "" {
+	if ReplaceKey(n) == "" {
 		return ""
 	}
-	return PageURL(cfg.ClickPage, s.hostID, n.SessionID)
+	return PageURLOf(cfg.ClickPage, s.hostID, n)
 }
 
 // keepChatRef follows a push of n (labelled; sessions: a digest's) that
@@ -141,8 +141,8 @@ func (s *Sender) chatLink(cfg wire.NotifyConfig, n wire.NotificationData) string
 // its sessions are deleted (a digest's are not). Worker only.
 func (s *Sender) keepChatRef(cfg wire.NotifyConfig, n wire.NotificationData, sessions []string, m ChatMessage) {
 	digest := sessions != nil
-	if !digest && n.SessionID != "" {
-		sessions = []string{n.SessionID}
+	if key := ReplaceKey(n); !digest && key != "" {
+		sessions = []string{key}
 	}
 	fp := chatFingerprint(cfg.Chat.URL)
 	s.mu.Lock()

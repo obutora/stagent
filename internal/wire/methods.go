@@ -55,6 +55,10 @@ var DaemonMethods = map[string]bool{
 	MethodApprovalsList: true,
 	MethodConfigGet:     true, MethodConfigSet: true, MethodNotifyTest: true,
 	MethodPresenceSet: true, MethodTaskList: true,
+	MethodScheduleList: true, MethodScheduleCreate: true, MethodScheduleRuns: true, MethodSchedulePreview: true,
+	MethodScheduleUpdate: true, MethodScheduleRemove: true, MethodSchedulePause: true, MethodScheduleResume: true,
+	MethodScheduleRunNow: true,
+	MethodScheduleOutput: true,
 }
 
 // HolderMethods are forwarded by the bridge to the session's holder.

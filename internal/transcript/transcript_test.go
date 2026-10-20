@@ -555,3 +555,30 @@ func TestCopilotTitle(t *testing.T) {
 		t.Fatalf("renamed: %+v", got)
 	}
 }
+
+// An agent 定期実行's run (claude -p, codex exec) is never listed, but
+// transcript.get still finds and reads its conversation by id, also once
+// List has cached it as skipped.
+func TestFindReadsAutomationRuns(t *testing.T) {
+	tr := setupTree(t)
+	x := OpenIndex(filepath.Join(t.TempDir(), "index.json"), tr.roots)
+	if _, err := x.List(nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ harness, id, text string }{
+		{"claude", "11111111-2222-4333-8444-555555555555", "x"},
+		{"codex", "01a0aaaa-0000-7000-8000-000000000000", ""},
+	} {
+		p, ok := x.Find(c.harness, c.id)
+		if !ok {
+			t.Fatalf("Find(%s, %s) found nothing", c.harness, c.id)
+		}
+		page, err := ReadPage(p, c.harness, 0, 0)
+		if err != nil {
+			t.Fatalf("ReadPage(%s): %v", p, err)
+		}
+		if c.text != "" && (len(page.Messages) != 1 || page.Messages[0].Text != c.text) {
+			t.Errorf("%s messages = %+v, want one %q", c.harness, page.Messages, c.text)
+		}
+	}
+}

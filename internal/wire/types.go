@@ -91,6 +91,12 @@ type Session struct {
 	// ones session.spawn started with its task_id. A holder registers with
 	// the task_id it was started with (`stagent run --task`).
 	TaskID string `json:"task_id,omitempty"`
+	// ScheduleID and RunID name the schedule run the session is (omitted:
+	// none): the daemon started it (`stagent run --schedule --run`). The
+	// app lists it under the schedule only, not among the kept shells or
+	// the host's agents, and it belongs to no task.
+	ScheduleID string `json:"schedule_id,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
 }
 
 // NewSessionID returns a random 16-hex-char id (paths.sessionIDLen).
@@ -104,9 +110,12 @@ func NewSessionID() string {
 
 // AgentArgv is the program a command runs in the end: for `stagent task
 // run [flags] <id> -- <command…>` (a task's prepared session) the command
-// after "--", which that one becomes; argv itself otherwise.
+// after "--", which that one becomes, and for `stagent schedule agent
+// [flags] -- <command…>` (an agent schedule's run) the agent it runs;
+// argv itself otherwise.
 func AgentArgv(argv []string) []string {
-	if len(argv) < 4 || ProgramName(argv[0]) != "stagent" || argv[1] != "task" || argv[2] != "run" {
+	if len(argv) < 4 || ProgramName(argv[0]) != "stagent" ||
+		!(argv[1] == "task" && argv[2] == "run" || argv[1] == "schedule" && argv[2] == "agent") {
 		return argv
 	}
 	for i := 3; i < len(argv); i++ {
@@ -198,7 +207,8 @@ type NotificationData struct {
 	Body  string `json:"body"`
 	Level string `json:"level"`
 	// Reason: "waiting_input" | "needs_approval" | "turn_complete" |
-	// "exited" | "terminal" (OSC/BEL from the program) | "test" | "digest".
+	// "exited" | "terminal" (OSC/BEL from the program) | "test" | "digest" |
+	// "schedule" (a run of a schedule: ScheduleID, RunID).
 	Reason string `json:"reason"`
 	// Count > 1 for a digest folding several notifications together.
 	Count int `json:"count,omitempty"`
@@ -210,6 +220,16 @@ type NotificationData struct {
 	// ("": none). Not part of the event: pushes title the notification
 	// "<label> <title>" (see notify's labelled), a digest of several never.
 	TaskLabel string `json:"-"`
+	// ScheduleID and RunID: a notification of reason "schedule" is about
+	// that run of that schedule (RunID absent when about the schedule:
+	// stopped after failures). It has no SessionID; ntfy's sequence ID
+	// and the chat message it replaces are the schedule's, and the links
+	// carry sc=<schedule id> and r=<run id>.
+	ScheduleID string `json:"schedule_id,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
+	// Schedules: a digest folding some schedule's notification; its links
+	// carry an empty sc= (the host's schedules). Not part of the event.
+	Schedules bool `json:"-"`
 }
 
 // Approval is a pending permission request reported by a harness hook. It
@@ -364,6 +384,9 @@ type NotifyReasons struct {
 	// lost session; default) | all.
 	Exited   string `json:"exited,omitempty"`
 	Terminal *bool  `json:"terminal,omitempty"` // default false
+	// Schedule: the runs of schedules (default true), each as its
+	// Schedule.Notify says.
+	Schedule *bool `json:"schedule,omitempty"`
 }
 
 // NotifyReasons.Exited values.
@@ -492,6 +515,9 @@ func (c Config) WithDefaults() Config {
 			v := f.def
 			*f.p = &v
 		}
+	}
+	if nr.Schedule == nil {
+		nr.Schedule = new(true)
 	}
 	if nr.Exited == "" {
 		nr.Exited = ExitedError

@@ -16,6 +16,8 @@ import (
 	"github.com/obutora/stagent/internal/holder"
 	"github.com/obutora/stagent/internal/hook"
 	"github.com/obutora/stagent/internal/install"
+	"github.com/obutora/stagent/internal/loginenv"
+	"github.com/obutora/stagent/internal/schedagent"
 	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/version"
 )
@@ -50,6 +52,9 @@ const usage = `usage: stagent <command> [args]
   task remove [--force] <id>
                       internal (task.remove): archive and remove task <id>
                       in a session of its source checkout
+  schedule agent --result FILE -- <agent> [args...]
+                      internal (agent schedules): run the agent of a schedule
+                      run non-interactively and judge how it went
   version             print the version
 `
 
@@ -81,11 +86,13 @@ func dispatch(args []string) int {
 	case "install", "integrate", "uninstall", "doctor", "wsl-shutdown":
 		return install.Main(cmd, rest)
 	case "__env": // internal: environment probe run through the login shell
-		return bridge.EnvDump()
+		return loginenv.Dump()
 	case "spawn-task":
 		return spawnTask(rest)
 	case "task":
 		return task.Main(rest)
+	case "schedule":
+		return schedagent.Main(rest)
 	case "version", "--version", "-v":
 		fmt.Printf("stagent %s (protocol %d, %s/%s)\n", version.Version, version.Protocol, runtime.GOOS, runtime.GOARCH)
 		return 0

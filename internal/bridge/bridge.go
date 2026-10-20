@@ -26,6 +26,7 @@ import (
 	"github.com/obutora/stagent/internal/hostscreen"
 
 	"github.com/obutora/stagent/internal/ipc"
+	"github.com/obutora/stagent/internal/loginenv"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/proc"
 	"github.com/obutora/stagent/internal/rpc"
@@ -93,6 +94,9 @@ type Bridge struct {
 	liveDirs func(holders []int) []string // see github.LiveDirs
 	// hostScreen serves host_screen.* (one stream per connection).
 	hostScreen *hostscreen.Server
+	// goos is the host's operating system as hello announces what it
+	// serves (runtime.GOOS; tests change it).
+	goos string
 
 	envOnce  sync.Once
 	baseEnv  []string                 // see sessionEnv
@@ -150,6 +154,7 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		known:          map[string]bool{},
 		tasks:          map[string]bool{},
 		github:         runtime.GOOS == "windows",
+		goos:           runtime.GOOS,
 		liveDirs:       liveDirs,
 	}
 	b.out = wire.NewCodec(nil, appWriter{w, b})
@@ -165,7 +170,11 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		if err != nil {
 			return nil, err
 		}
-		return captureLoginEnv(exe)
+		// The bridge takes it once, before its first session, and keeps
+		// its full TryTimeout for each of the two tries: a slow
+		// interactive rc file that worked before still does. A schedule
+		// run, which takes it each time, has 5 s in all (the daemon's).
+		return loginenv.Capture(exe, 2*loginenv.TryTimeout)
 	}
 	b.spawnProc = proc.SpawnHolder
 	b.hostScreen = hostscreen.NewServer(func(method string, params any) { b.out.Notify(method, params) }, b.hostScreenKinds(runtime.GOOS)...)
@@ -332,6 +341,10 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	}
 	if b.github {
 		caps = append(caps, wire.CapGitHub)
+	}
+	// The daemon runs schedules on Linux and macOS only.
+	if wire.SchedulesServedOn(b.goos) {
+		caps = append(caps, wire.CapSchedules)
 	}
 	res := wire.HelloResult{
 		Protocol:     version.Protocol,

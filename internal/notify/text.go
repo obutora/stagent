@@ -29,6 +29,19 @@ const (
 	PhraseDigestWaitingInput
 	PhraseDigestExited
 	PhraseDigestMore
+	// The bodies of a schedule's notifications (reason schedule) and the
+	// digest title of several.
+	PhraseScheduleSucceeded
+	PhraseScheduleFixed
+	PhraseScheduleFailed
+	PhraseScheduleFailedCode   // %d: exit code
+	PhraseScheduleTimedOut     //
+	PhraseScheduleDenied       // %d: refused actions
+	PhraseScheduleUndetermined //
+	PhraseScheduleSkipped      //
+	PhraseScheduleAutoStopped  // %d: failures in a row
+	PhraseScheduleGUILogin     // %s: the agent
+	PhraseDigestSchedule       // %d: count
 	phraseCount
 )
 
@@ -51,6 +64,18 @@ var phrases = map[string][phraseCount]string{
 		PhraseDigestMore:          "…and %d more",
 		PhraseOpen:                "Open in SSH Term",
 		PhraseResolved:            " (resolved)",
+
+		PhraseScheduleSucceeded:    "Succeeded",
+		PhraseScheduleFixed:        "Succeeded again: fixed",
+		PhraseScheduleFailed:       "Failed",
+		PhraseScheduleFailedCode:   "Failed (exit code %d)",
+		PhraseScheduleTimedOut:     "Stopped at its time limit",
+		PhraseScheduleDenied:       "%d actions were refused",
+		PhraseScheduleUndetermined: "Could not tell the result",
+		PhraseScheduleSkipped:      "Skipped: the previous run was still running",
+		PhraseScheduleAutoStopped:  "Stopped after %d failures in a row",
+		PhraseScheduleGUILogin:     "%s could not authenticate: nobody is logged in to the GUI",
+		PhraseDigestSchedule:       "%d schedule notifications",
 	},
 	wire.LangJa: {
 		PhraseWaitingInput:        "入力待ち",
@@ -70,6 +95,18 @@ var phrases = map[string][phraseCount]string{
 		PhraseDigestMore:          "…ほか %d 件",
 		PhraseOpen:                "SSH Term で開く",
 		PhraseResolved:            "（解決済み）",
+
+		PhraseScheduleSucceeded:    "成功しました",
+		PhraseScheduleFixed:        "直りました（成功しました）",
+		PhraseScheduleFailed:       "失敗しました",
+		PhraseScheduleFailedCode:   "失敗しました（終了コード %d）",
+		PhraseScheduleTimedOut:     "時間切れで止めました",
+		PhraseScheduleDenied:       "操作を %d 件断られました",
+		PhraseScheduleUndetermined: "結果を判定できませんでした",
+		PhraseScheduleSkipped:      "前の実行が終わっていないので飛ばしました",
+		PhraseScheduleAutoStopped:  "%d 回続けて失敗したので止めました",
+		PhraseScheduleGUILogin:     "GUI にログインしていないので %s が認証できませんでした",
+		PhraseDigestSchedule:       "定期実行の通知 %d 件",
 	},
 	wire.LangKo: {
 		PhraseWaitingInput:        "입력 대기",
@@ -89,6 +126,18 @@ var phrases = map[string][phraseCount]string{
 		PhraseDigestMore:          "…외 %d개",
 		PhraseOpen:                "SSH Term에서 열기",
 		PhraseResolved:            " (해결됨)",
+
+		PhraseScheduleSucceeded:    "성공했습니다",
+		PhraseScheduleFixed:        "복구되었습니다(성공)",
+		PhraseScheduleFailed:       "실패했습니다",
+		PhraseScheduleFailedCode:   "실패했습니다(종료 코드 %d)",
+		PhraseScheduleTimedOut:     "시간 제한으로 중지했습니다",
+		PhraseScheduleDenied:       "작업 %d개가 거부되었습니다",
+		PhraseScheduleUndetermined: "결과를 판정할 수 없습니다",
+		PhraseScheduleSkipped:      "이전 실행이 끝나지 않아 건너뛰었습니다",
+		PhraseScheduleAutoStopped:  "%d번 연속 실패하여 중지했습니다",
+		PhraseScheduleGUILogin:     "GUI에 로그인하지 않아 %s이(가) 인증하지 못했습니다",
+		PhraseDigestSchedule:       "예약 실행 알림 %d개",
 	},
 	wire.LangZh: {
 		PhraseWaitingInput:        "等待输入",
@@ -108,6 +157,18 @@ var phrases = map[string][phraseCount]string{
 		PhraseDigestMore:          "…另有 %d 条",
 		PhraseOpen:                "在 SSH Term 中打开",
 		PhraseResolved:            "（已解决）",
+
+		PhraseScheduleSucceeded:    "已成功",
+		PhraseScheduleFixed:        "已恢复（成功）",
+		PhraseScheduleFailed:       "已失败",
+		PhraseScheduleFailedCode:   "已失败（退出码 %d）",
+		PhraseScheduleTimedOut:     "已因超时停止",
+		PhraseScheduleDenied:       "%d 个操作被拒绝",
+		PhraseScheduleUndetermined: "无法判定结果",
+		PhraseScheduleSkipped:      "上一次运行尚未结束，已跳过",
+		PhraseScheduleAutoStopped:  "连续失败 %d 次，已停止",
+		PhraseScheduleGUILogin:     "未登录 GUI，%s 无法认证",
+		PhraseDigestSchedule:       "%d 条定时运行通知",
 	},
 }
 

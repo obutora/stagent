@@ -151,6 +151,22 @@ the SSH session and claude asks you to `/login`; that login is kept in
 closes a window running an agent, or at logout (`stagent` in each
 profile's `noWarnProcesses`; removing it takes out only that entry).
 
+Schedules (定期実行) start their runs the same way, so while nobody is
+logged in to a Mac's desktop, a claude schedule there fails asking for
+`/login` unless `~/.claude/.credentials.json` is there: start claude once
+over SSH (outside the GUI) and `/login` in it. The run's record says it
+started outside the GUI login session and could not log in (`outside_gui`,
+`auth_failed`), and creating a claude schedule on a Mac without that file
+warns of it (`claude_gui_login`). claude also logs in without the
+keychain from two environment variables, which the app does not suggest:
+`CLAUDE_CODE_OAUTH_TOKEN` (the one-year token of `claude setup-token`)
+makes model requests only — no Remote Control, no claude.ai connectors —
+and once it is in your login shell's environment, which every session
+stagent starts inherits, your interactive sessions lose Remote Control
+too; `ANTHROPIC_API_KEY` is billed per token to the API key's account,
+not to your subscription. The warning looks at the file only, so it
+stays when you use one of them.
+
 On Windows the wrapper goes into the profiles of Windows PowerShell 5.1
 and PowerShell 7 (cmd has none), and wraps only in a console of the
 desktop: an SSH session is not interactive for PowerShell, and an agent

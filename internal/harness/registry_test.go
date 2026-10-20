@@ -22,6 +22,8 @@ func TestCommand(t *testing.T) {
 		{[]string{"/home/u/.local/bin/stagent", "task", "run", "0123456789abcdef", "--", "claude", "Issue #3"}, wire.HarnessClaude},
 		{[]string{`C:\stagent\stagent.exe`, "task", "run", "--switch-branch", "0123456789abcdef", "--", "omp.cmd"}, wire.HarnessOmp},
 		{[]string{"/usr/bin/stagent", "task", "run", "0123456789abcdef", "--", "/bin/bash", "-l"}, wire.HarnessOther},
+		// An agent schedule's run: the agent its wrapper starts.
+		{[]string{"/usr/bin/stagent", "schedule", "agent", "--result", "/tmp/r.json", "--", "codex", "exec", "--json", "--", "hi"}, wire.HarnessCodex},
 		{[]string{"/usr/bin/stagent", "run", "--", "claude"}, wire.HarnessOther},
 	} {
 		if got := Command(c.argv); got != c.want {

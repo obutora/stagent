@@ -55,8 +55,10 @@ type dataDir struct {
 // older than ScrollbackDays, then oldest first while the total exceeds
 // ScrollbackTotalMiB. Registered sessions and holders that still answer on
 // their address (e.g. not yet re-registered after a daemon restart) are
-// never touched. A chat message from before the restart whose holder
-// stopped answering without registering is marked resolved.
+// never touched. The output of each schedule's newest keptRunOutputs runs
+// is not deleted for its age, but counts toward the total and goes, oldest
+// first, when it is exceeded. A chat message from before the restart whose
+// holder stopped answering without registering is marked resolved.
 func (d *Daemon) sweepNow() {
 	d.mu.Lock()
 	if d.closed {
@@ -68,6 +70,7 @@ func (d *Daemon) sweepNow() {
 	for id := range d.sessions {
 		live[id] = true
 	}
+	kept := d.keptRunOutputsLocked()
 	notifyCfg := d.eff.Notify
 	unregistered := slices.Collect(maps.Keys(d.chatSent))
 	d.mu.Unlock()
@@ -119,7 +122,7 @@ func (d *Daemon) sweepNow() {
 	cutoff := time.Now().Add(-time.Duration(r.ScrollbackDays) * 24 * time.Hour)
 	limit := int64(r.ScrollbackTotalMiB) << 20
 	for _, dd := range dirs {
-		if !dd.newest.Before(cutoff) && total <= limit {
+		if (!dd.newest.Before(cutoff) || kept[dd.id]) && total <= limit {
 			continue
 		}
 		if d.holderAnswers(dd.id) {

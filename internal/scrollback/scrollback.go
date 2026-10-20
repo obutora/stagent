@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -247,6 +248,36 @@ func readAt(path string, buf []byte, off int64) error {
 		err = nil
 	}
 	return err
+}
+
+// ReadDir reads the scrollback a store left in dir, as Store.Read would,
+// without opening the store (which would empty dir): the daemon reads the
+// output of a session whose holder has exited this way. A directory
+// without segments is an empty stream; a missing one is os.ErrNotExist.
+func ReadDir(dir string, before int64, maxBytes int) (data []byte, start, end, first int64, err error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+	s := &Store{dir: dir, segSize: SegmentSize, err: errClosed}
+	for _, e := range entries {
+		name, ok := strings.CutSuffix(e.Name(), segExt)
+		if !ok || !e.Type().IsRegular() {
+			continue
+		}
+		at, perr := strconv.ParseInt(name, 10, 64)
+		info, ierr := e.Info()
+		if perr != nil || ierr != nil || s.segPath(at) != filepath.Join(dir, e.Name()) {
+			continue
+		}
+		s.segs = append(s.segs, segment{start: at, size: info.Size()})
+	}
+	sort.Slice(s.segs, func(i, j int) bool { return s.segs[i].start < s.segs[j].start })
+	if n := len(s.segs); n > 0 {
+		s.end = s.segs[n-1].end()
+	}
+	s.errAt = s.end
+	return s.Read(before, maxBytes)
 }
 
 // Close closes the current segment; later writes are dropped. The files

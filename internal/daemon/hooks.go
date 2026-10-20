@@ -62,8 +62,10 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 		}
 	case eff.approval:
 		// A request outside stagent sessions (an IDE, `claude -p`, the SDK)
-		// is neither registered nor pushed: nothing here can answer it.
-		if s != nil {
+		// is neither registered nor pushed: nothing here can answer it. Nor
+		// is one of a schedule run's session: nobody watches it, and claude
+		// -p refuses the tool once the hook returns.
+		if s != nil && s.s.ScheduleID == "" {
 			ap = d.newApprovalLocked(s, p.Harness, pl, now)
 			s.track = s.track.hookState(wire.StateNeedsApproval, now)
 			changed = d.recomputeLocked(s, false) || changed
