@@ -3,6 +3,23 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.18.1
+
+### Changed
+
+- The macOS binaries are signed with Developer ID (identifier
+  `com.obutora.stagent`) instead of the Go linker's ad-hoc signature.
+  macOS kept a privacy permission given to an ad-hoc signed stagent (Full
+  Disk Access, files on a removable volume) only for those exact bytes, so
+  each update lost it: a session the GUI login session starts (a task's
+  first session, `session.spawn`) then hung on the permission prompt as
+  soon as it touched an external volume, and a task there stayed at
+  `1/6 fetch` with no stage reported. Give the permission once more after
+  this update; later updates keep it. `scripts/release.sh` signs them
+  (`STAGENT_SIGN_KEY`, `STAGENT_SIGN_CERT`; required by `--publish`) and
+  checks a rebuild against them with both signatures replaced by the same
+  ad-hoc one.
+
 ## 0.18.0
 
 ### Added
