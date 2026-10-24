@@ -68,7 +68,7 @@ const (
 	targetDaemon = "daemon"
 	targetSpawn  = "spawn"
 	targetGitHub = "github"
-	targetRemove = "remove" // task.remove
+	targetRemove = "remove" // task.remove, worktree.remove
 	// targetPreview serves task.preview (git over the source checkout).
 	targetPreview = "preview"
 )
@@ -297,6 +297,16 @@ func (b *Bridge) dispatch(m *wire.Msg) {
 		b.enqueue(targetRemove, m, b.taskRemove)
 	case m.Method == wire.MethodTaskPreview:
 		b.enqueue(targetPreview, m, b.taskPreview)
+	case m.Method == wire.MethodWorktreeList:
+		b.enqueue(targetWorktree, m, serveWorktree(b, b.doWorktreeList))
+	case m.Method == wire.MethodWorktreeWatch:
+		b.enqueue(targetWorktree, m, serveWorktree(b, b.doWorktreeWatch))
+	case m.Method == wire.MethodWorktreeSizes:
+		b.enqueue(targetWorktreeSizes, m, serveWorktree(b, b.doWorktreeSizes))
+	case m.Method == wire.MethodWorktreePRs:
+		b.enqueue(targetWorktreePRs, m, serveWorktree(b, b.doWorktreePRs))
+	case m.Method == wire.MethodWorktreeRemove:
+		b.enqueue(targetRemove, m, serveWorktree(b, b.doWorktreeRemove))
 	case wire.DaemonMethods[m.Method]:
 		b.enqueue(targetDaemon, m, b.forwardDaemon)
 	case b.github && wire.GitHubMethods[m.Method]:
@@ -332,6 +342,7 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	}
 	caps := []string{
 		wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush, wire.CapPushChat, wire.CapPersist,
+		wire.CapWorktrees,
 	}
 	if runtime.GOOS == "windows" {
 		caps = append(caps, wire.CapPersistShell)

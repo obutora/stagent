@@ -126,6 +126,11 @@ process that created its stdin pipe ends — Win32-OpenSSH's session process
 | `task.create` | `{repo, kind, number?, name?, title?, url?, base?, branch?, command[]?, cols, rows, env?{}, in_place?, switch_branch?, setup?}` | `{task, session?, existed}` — see "Creating a task"; empty or absent `command` = a terminal (the login shell; `cmd.exe` on Windows) |
 | `task.preview` | `{repo, worktree_include?[], name?, branch?}` | `{repo, copies[{path, source, bytes}], links[{path}], skipped[{entry, source, reason}], total_bytes, truncated, setup?, orca_error?, name_problem?}` — see "Files to copy" and "Creating a task" |
 | `task.remove` | `{id, force?, stop_sessions?, skip_archive?, dry_run?}` | `{changes[]?, changes_truncated?, unpushed?, sessions[]?, kept_branch?}` — see "Removing a task" |
+| `worktree.list` | `{}` | `{worktree_folder?, watch_folders[], repos[{path, name, default_branch?, github, worktrees[{path, branch?, head?, missing?, locked?, lock_reason?, task_id?, sessions[]?, changes, unpushed, merged}]}], folders[{path, repo}]}` — see "Worktrees" |
+| `worktree.sizes` | `{}` | `{entries[{path, bytes, modified_at?}], total}` — see "Worktrees" |
+| `worktree.prs` | `{}` | `{prs[{path, number, state, url, merged}]}` — see "Worktrees" |
+| `worktree.watch` | `{add?, remove?}` | `{watch_folders[]}` — see "Worktrees" |
+| `worktree.remove` | `{path, force?, stop_sessions?, dry_run?}` | `{changes[]?, changes_truncated?, unpushed?, sessions[]?, kept_branch?, bytes?, entries[{name, bytes, dir}]?, removed_parent?}` — see "Worktrees" |
 
 `host_id` (32 lowercase hex chars) is 128 random bits stagent creates the
 first time it runs (`stagent install`, the bridge's `hello` or the daemon)
@@ -204,12 +209,12 @@ the bridge starts them in the GUI login session so that the agent can use
 the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
-`push_chat`, `persist`, on Windows `persist_shell` and `github`, on
-macOS `host_screen_ios`, and on Linux and macOS `schedules`. `push_chat`
-announces the chat destination (`notify.chat`) and `notify.test`'s
-`channels`: an older stagent stores `notify.chat` like any unknown key
-without sending to it, so an app configures chat destinations only on
-hosts that announce it. `persist` announces everything
+`push_chat`, `persist`, `worktrees`, on Windows `persist_shell` and
+`github`, on macOS `host_screen_ios`, and on Linux and macOS `schedules`.
+`push_chat` announces the chat destination (`notify.chat`) and
+`notify.test`'s `channels`: an older stagent stores `notify.chat` like
+any unknown key without sending to it, so an app configures chat
+destinations only on hosts that announce it. `persist` announces everything
 this document marks with it: `session.spawn` `shell`, attach resume
 (`since`, `offset`, `resumed`, `output.end`), the `hangup` signal,
 input-mode restoring snapshots and sessions changing from `passthrough`
@@ -223,7 +228,9 @@ since 0.11.0) announces the host screen's `ios` kind below: its `list`
 section and `start` of a simulator. `schedules` (Linux and macOS, since
 0.17.0) announces the `schedule.*` methods (see "Schedules"); a stagent
 before it answers them `unknown_method`, and on any other OS the daemon
-answers them `unsupported`.
+answers them `unsupported`. `worktrees` (every OS, since 0.18.0)
+announces the `worktree.*` methods (see "Worktrees"); a stagent before it
+answers them `unknown_method`.
 
 #### Creating a task (`task.create`, `stagent task run`)
 
@@ -503,7 +510,8 @@ The removal:
      link, nothing under it — then `git -C <repo> worktree remove
      [--force] <worktree>` (`--force` with `force`). A worktree git no
      longer lists is pruned (`git worktree prune`) and its directory
-     removed only when empty.
+     removed only when empty; when a git before 2.18 cannot remove a
+     worktree whose directory is gone, it is pruned instead.
   4. `branch`: `git branch -d <branch>` in `repo`. When git refuses (a
      squash merge leaves the branch unmerged for git), `gh pr view
      <branch> --json state,headRefOid` in `repo` (a PR task: `gh pr view
@@ -537,6 +545,130 @@ removal carries on in that session.
 
 Every removal unties the task's sessions, ended ones still listed
 included (`session.updated` without `task_id`).
+
+#### Worktrees (`worktree.*`)
+
+Since 0.18.0 (capability `worktrees`, every OS, #1122, ADR 0016) the
+bridge lists every linked worktree git knows on the host — a task's or
+not: Orca's, `claude --worktree`'s, made by hand — with the other
+folders left in the worktree folder (置き場のほかのフォルダ), and removes
+them (worktree を消す). git and gh run in the login shell's environment
+as for `task.remove`. As with `task.remove` (ADR 0006) the work stays
+off the daemon's and spawn queues: `worktree.list` and `worktree.watch`
+share a queue of their own, `worktree.sizes` and `worktree.prs` have one
+each (a disk walk or gh never holds up the list), and `worktree.remove`
+runs on `task.remove`'s queue, one removal at a time.
+
+The inventory (目録), made again for each call: candidate directories
+are config.json's `worktree_repos`, the task records' `repo` and (not
+`in_place`) `worktree`, `<worktree_folder>/*` and
+`<worktree_folder>/*/*` that have a `.git` (file or directory) directly
+in them, `<watched folder>/*` likewise, and the sessions' (ended ones
+too) `cwd` that exist; names starting with `.` are not matched by `*`.
+Each candidate is taken to the nearest directory at or above it with a
+`.git`; unless that is a source checkout or worktree already found, `git
+worktree list --porcelain` runs there, whose first entry is the source
+checkout. A repository around others (dotfiles kept in git at `~`) so
+hides none inside it. A candidate git fails for is skipped silently. A
+repository without linked worktrees is found (and remembered) but not
+listed, measured or asked gh about.
+
+The other folders (only with `worktree_folder` set): a directory `X`
+directly in the worktree folder that is neither a worktree nor a source
+checkout is `<repo name>` when a repository found has that base name or a
+worktree or source checkout is directly in it — then each directory `Y`
+in it that is neither is `{path: Y, repo: <X's name>}` — else `{path: X,
+repo: ""}`. Files and names starting with `.` are ignored; non-git
+folders outside the worktree folder are never listed.
+
+`worktree.list` changes nothing on the host (it never prunes; `git
+status` runs with `GIT_OPTIONAL_LOCKS=0`) except config.json's
+`worktree_repos`: when the source checkouts found (sorted) differ from
+it, the bridge writes them through the daemon's `config.set`, so a
+repository whose source checkout is gone drops out of both. It answers
+`worktree_folder` (canonical; absent when unset), `watch_folders`
+(config.json's `worktree_watch`), `folders` (path order) and `repos` in
+the order of their source checkout's path: `path` (canonical), `name`
+(its base name), `default_branch` (origin/HEAD, else origin's main or
+master, else — no origin — the local main or master; absent when
+unknown), `github` (a remote's URL is on github.com) and `worktrees` in
+git's order, the source checkout itself not among
+them:
+
+- `path` (canonical), `branch` (absent: detached), `head`.
+- `missing`: its directory is gone (git's `prunable`). It is listed, not
+  pruned.
+- `locked`, `lock_reason` (`git worktree lock --reason`; absent when
+  none).
+- `task_id`: the task (not `in_place`) whose `worktree` it is.
+- `sessions[]`: ids of the live sessions whose `cwd` is inside it, or of
+  `task_id`'s task.
+- `changes`: the number of `task.remove`'s dry-run `changes` lines (0
+  when missing); `unpushed`: commits of `branch` on no remote.
+- `merged`: `head` is an ancestor of `refs/remotes/origin/<default
+  branch>` (else `refs/heads/<default branch>`); false without a default
+  branch.
+
+`worktree.sizes` measures the source checkouts, the worktrees that are
+not missing and the folders: `entries[]` in that order (repositories as
+listed, each source checkout then its worktrees; then the folders),
+`bytes` the disk usage — on Linux and macOS `st_blocks × 512`, a file
+with several hard links counted once; on Windows the files' sizes —
+following no symbolic link or junction (a shared directory's link counts
+as itself), and not counting a directory below that is itself one of
+them (a worktree in `.claude/worktrees/` of the source checkout is not
+in the checkout's bytes); what cannot be read is skipped. `modified_at`
+is the newest modification time in it (RFC 3339, UTC, whole seconds;
+absent when nothing could be read). `total` adds the worktrees and the
+folders, not the source checkouts. Up to 4 are measured at once.
+
+`worktree.prs` asks gh, in the source checkout, `gh pr view <branch>
+--json number,state,url,headRefOid` for every worktree with a branch of
+a repository with `github` (a PR task's worktree by the task's number,
+as `task.remove` asks: gh finds a fork's pull request by number only; up
+to 4 at once; nothing for the others). A branch gh finds nothing for, or
+gh missing or failing, is left out.
+`merged` is `state` `MERGED` with `headRefOid` the worktree's `head`
+(the rule `task.remove` deletes a branch by), so a squash-merged branch
+with no later commit is merged.
+
+`worktree.watch {add}` adds a watched folder (見るフォルダ): `~` expanded,
+made canonical; not an existing directory is `bad_request`. `{remove}`
+removes the same path. Exactly one of them. Either writes
+`worktree_watch` through the daemon's `config.set` and answers
+`{watch_folders}` as stored. Refused with `agent_refused` to a coding
+agent's process tree (ADR 0004).
+
+`worktree.remove {path}` looks `path` (`~` expanded, canonical) up in
+the inventory: not in it is `not_found`; a source checkout or a locked
+worktree is `bad_request` (never removed). Refused with `agent_refused`
+to a coding agent's process tree, a dry run included.
+
+- A task's worktree (`task_id`) is `task.remove {id, force,
+  stop_sessions, dry_run}` as above: archive, the record forgotten
+  (`task.removed`), its result.
+- Another worktree: `dry_run` answers `changes` (at most 200, then
+  `changes_truncated`), `unpushed` and `sessions` (live sessions inside
+  it), as `task.remove`'s. Otherwise `changes` without `force` is
+  `not_clean` and live sessions without `stop_sessions` `busy`; the
+  sessions are stopped as `task.remove` stops a task's (hangup, kill),
+  one still live is `busy`; then `task.remove`'s stages 3 and 4 run
+  without archive: the shared directories' links are unlinked, `git
+  worktree remove [--force]` (a missing worktree goes too, alone; a git
+  before 2.18 falls back to `git worktree prune`), and the branch is
+  deleted only by `git branch -d` or a pull request merged at its commit,
+  else kept and named in `kept_branch`. Remote branches are never
+  touched. A failure is `internal` with its one line.
+- A folder: one with a source checkout or worktree anywhere in it is
+  `bad_request` (it would go with it). `dry_run` answers `bytes`
+  (measured as by `worktree.sizes`) and `entries[]`, its 5 largest
+  entries `{name, bytes, dir}`. Otherwise it is deleted with everything
+  in it (read-only files and directories made writable when the first
+  try fails).
+
+After a removal, when `path`'s parent is `<worktree_folder>/<repo name>`
+(directly in the worktree folder) and empty but for a macOS `.DS_Store`,
+it is removed too and named in `removed_parent`.
 
 #### GitHub screen (Windows only)
 
@@ -1291,6 +1423,15 @@ must be absolute, else `bad_request` "worktree_folder must be an absolute
 path" and nothing is written. `""` removes it, as `null` does. Whether it
 exists does not matter (`task.create` makes it), and changing it never
 moves existing worktrees.
+
+`worktree_watch` (since 0.18.0, #1122) lists the watched folders (見るフォルダ,
+see "Worktrees"): `config.set` expands a leading `~` of each with the
+daemon user's home and stores them cleaned and each once; one that is
+not absolute is `bad_request` and nothing is written. `worktree_repos`
+(since 0.18.0) lists the source checkouts `worktree.list` found; the
+bridge writes it, and `config.set` refuses a path in it that is not
+absolute and clean. For both an empty list removes the key, as `null`
+does. Whether the paths exist does not matter here.
 
 Every push (ntfy, webhook, chat, including `notify.test`) is titled with the
 host it comes from: `notify.host_label`, or the host name when it is empty
@@ -2276,10 +2417,12 @@ turn_complete, exited, terminal, schedule}, lang, skip_when_claude_app_notifies}
 retention {events_days, events_max, scrollback_days,
 scrollback_total_mib, scrollback_session_mib}, idle_after_ms,
 disable_handoff, repos? {<source checkout>: {worktree_include?[]}},
-worktree_folder?`. `repos` (absent when empty) holds the app's patterns
-of files to copy per source checkout (see `config.set` and "Files to
-copy"). `worktree_folder` (absent when unset) is the worktree folder, an
-absolute path (see `config.set`).
+worktree_folder?, worktree_watch?[], worktree_repos?[]`. `repos` (absent
+when empty) holds the app's patterns of files to copy per source checkout
+(see `config.set` and "Files to copy"). `worktree_folder` (absent when
+unset) is the worktree folder, an absolute path (see `config.set`).
+`worktree_watch` and `worktree_repos` (absent when empty) are the watch
+folders and the source checkouts found (see "Worktrees").
 `disable_handoff` (default false) makes
 `stagent run --handoff=auto` — what the shell wrappers run — end the
 program with its terminal unless `STAGENT_HANDOFF` decides otherwise;

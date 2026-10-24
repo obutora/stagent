@@ -114,7 +114,7 @@ func oneLine(s string) string {
 // (canonical) from config.json at configPath. Only the daemon writes that
 // file (config.set); a missing or unreadable one has none.
 func SavedPatterns(configPath, repo string) []string {
-	for key, rc := range savedConfig(configPath).Repos {
+	for key, rc := range SavedConfig(configPath).Repos {
 		if SamePath(key, repo) {
 			return rc.WorktreeInclude
 		}
@@ -126,12 +126,12 @@ func SavedPatterns(configPath, repo string) []string {
 // config.json at configPath, as config.set stored it: absolute and clean.
 // "": none set, or a missing or unreadable file.
 func SavedWorktreeFolder(configPath string) string {
-	return savedConfig(configPath).WorktreeFolder
+	return SavedConfig(configPath).WorktreeFolder
 }
 
-// savedConfig is config.json as stored (defaults not applied); a missing
+// SavedConfig is config.json as stored (defaults not applied); a missing
 // or unreadable one is empty.
-func savedConfig(configPath string) wire.Config {
+func SavedConfig(configPath string) wire.Config {
 	var c wire.Config
 	b, err := os.ReadFile(configPath)
 	if err != nil || json.Unmarshal(b, &c) != nil {

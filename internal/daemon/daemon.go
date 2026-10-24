@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -879,6 +880,12 @@ func (d *Daemon) configSet(patch json.RawMessage) (wire.ConfigResult, error) {
 	if err := d.worktreeFolder(p, merged); err != nil {
 		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "%v", err)
 	}
+	if err := d.worktreeWatch(p, merged); err != nil {
+		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "%v", err)
+	}
+	if err := worktreeRepos(p, merged); err != nil {
+		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "%v", err)
+	}
 	if b, err = json.MarshalIndent(merged, "", "  "); err != nil {
 		return wire.ConfigResult{}, err
 	}
@@ -976,6 +983,63 @@ func (d *Daemon) worktreeFolder(patch any, merged map[string]any) error {
 		return errors.New("worktree_folder must be an absolute path")
 	}
 	merged["worktree_folder"] = filepath.Clean(s)
+	return nil
+}
+
+// worktreeWatch stores the worktree_watch the patch sets (見るフォルダ) in
+// merged as config.json keeps it: each a leading ~ expanded with the
+// daemon user's home, absolute, clean, each once. An empty list removes
+// it, as null does. Whether they exist does not matter here.
+func (d *Daemon) worktreeWatch(patch any, merged map[string]any) error {
+	p, _ := patch.(map[string]any)
+	list, ok := p["worktree_watch"].([]any)
+	if !ok {
+		return nil // absent or null; another type fails to decode
+	}
+	var dirs []any
+	for _, v := range list {
+		s, ok := v.(string)
+		if !ok {
+			return errors.New("worktree_watch must be a list of paths")
+		}
+		s = d.layout.ExpandHome(s)
+		if !filepath.IsAbs(s) {
+			return fmt.Errorf("worktree_watch: %q is not an absolute path", s)
+		}
+		s = filepath.Clean(s)
+		if !slices.ContainsFunc(dirs, func(o any) bool { return task.SamePath(o.(string), s) }) {
+			dirs = append(dirs, s)
+		}
+	}
+	if len(dirs) == 0 {
+		delete(merged, "worktree_watch")
+		return nil
+	}
+	merged["worktree_watch"] = dirs
+	return nil
+}
+
+// worktreeRepos checks the worktree_repos the patch sets: absolute, clean
+// paths (the bridge's canonical source checkouts). An empty list removes
+// it, as null does.
+func worktreeRepos(patch any, merged map[string]any) error {
+	p, _ := patch.(map[string]any)
+	list, ok := p["worktree_repos"].([]any)
+	if !ok {
+		return nil // absent or null; another type fails to decode
+	}
+	for _, v := range list {
+		s, ok := v.(string)
+		if !ok {
+			return errors.New("worktree_repos must be a list of paths")
+		}
+		if err := task.ValidRepoKey(s); err != nil {
+			return fmt.Errorf("worktree_repos: %q: %v", s, err)
+		}
+	}
+	if len(list) == 0 {
+		delete(merged, "worktree_repos")
+	}
 	return nil
 }
 

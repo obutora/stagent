@@ -330,6 +330,14 @@ type Config struct {
 	// <folder>/<checkout name>/<name or number-slug>. Unset: issue and PR
 	// tasks go next to their checkout, named tasks cannot be made.
 	WorktreeFolder string `json:"worktree_folder,omitempty"`
+	// WorktreeWatch are the watch folders (見るフォルダ): absolute, clean
+	// paths (config.set expands a leading ~) whose direct subdirectories
+	// that are worktrees lead worktree.list to their repositories.
+	WorktreeWatch []string `json:"worktree_watch,omitempty"`
+	// WorktreeRepos are the source checkouts worktree.list found
+	// (canonical, sorted); the bridge rewrites them when that changes, a
+	// checkout that is gone dropped.
+	WorktreeRepos []string `json:"worktree_repos,omitempty"`
 }
 
 // RepoConfig is one source checkout's settings.

@@ -11,9 +11,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// isLink reports whether fi (from os.Lstat) is a symbolic link or a
+// IsLink reports whether fi (from os.Lstat) is a symbolic link or a
 // junction: any reparse point, which os.Remove removes as the link itself.
-func isLink(fi fs.FileInfo) bool {
+func IsLink(fi fs.FileInfo) bool {
 	if fi.Mode()&fs.ModeSymlink != 0 {
 		return true
 	}

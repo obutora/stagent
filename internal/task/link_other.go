@@ -7,8 +7,8 @@ import (
 	"os"
 )
 
-// isLink reports whether fi (from os.Lstat) is a symbolic link.
-func isLink(fi fs.FileInfo) bool {
+// IsLink reports whether fi (from os.Lstat) is a symbolic link.
+func IsLink(fi fs.FileInfo) bool {
 	return fi.Mode()&fs.ModeSymlink != 0
 }
 
