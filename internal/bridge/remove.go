@@ -100,7 +100,7 @@ func (b *Bridge) doTaskRemove(p wire.TaskRemoveParams) (*wire.TaskRemoveResult, 
 	// stopPreparing stops them, which fails it (interrupted), and the
 	// removal goes on with the task as it is then.
 	stopPreparing := func(live []string) error {
-		left, err := b.stopAll(ctx, dc, t.ID, live)
+		left, err := b.stopAll(ctx, dc, ofTask(t.ID), live)
 		if err != nil {
 			return err
 		}
@@ -125,7 +125,7 @@ func (b *Bridge) doTaskRemove(p wire.TaskRemoveParams) (*wire.TaskRemoveResult, 
 			if !p.StopSessions {
 				return nil, wire.Errorf(wire.ErrBusy, "%s: task %s is still preparing", method, t.ID)
 			}
-			live, err := liveSessions(ctx, dc, t.ID, nil)
+			live, err := liveSessions(ctx, dc, ofTask(t.ID), nil)
 			if err != nil {
 				return nil, err
 			}
@@ -139,7 +139,7 @@ func (b *Bridge) doTaskRemove(p wire.TaskRemoveParams) (*wire.TaskRemoveResult, 
 		return &wire.TaskRemoveResult{}, call(wire.MethodTaskForget, wire.TaskRemoved{ID: t.ID})
 	}
 
-	live, err := liveSessions(ctx, dc, t.ID, nil)
+	live, err := liveSessions(ctx, dc, ofTask(t.ID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,7 @@ func (b *Bridge) doTaskRemove(p wire.TaskRemoveParams) (*wire.TaskRemoveResult, 
 		if err := progress(wire.TaskStageStop, ""); err != nil {
 			return nil, err
 		}
-		left, err := b.stopAll(ctx, dc, t.ID, live)
+		left, err := b.stopAll(ctx, dc, ofTask(t.ID), live)
 		if err == nil && len(left) > 0 {
 			err = wire.Errorf(wire.ErrBusy, "%s: %d session(s) did not stop", method, len(left))
 		}
@@ -325,16 +325,16 @@ func (b *Bridge) removeInSession(t *wire.Task, force bool, env []string, failed 
 	return nil, failed(cmp.Or(now.Stage, wire.TaskStageArchive), errors.New("stagent task remove ended before finishing (see its session)"))
 }
 
-// stopAll stops the task's sessions ids, then those bound to the task
-// meanwhile, for at most stopRounds rounds, and returns the ones still
-// live.
-func (b *Bridge) stopAll(ctx context.Context, dc *daemonConn, taskID string, ids []string) ([]string, error) {
+// stopAll stops the sessions ids, then those of (see liveSessions) that
+// came meanwhile, for at most stopRounds rounds, and returns the ones
+// still live.
+func (b *Bridge) stopAll(ctx context.Context, dc *daemonConn, of func(wire.Session) bool, ids []string) ([]string, error) {
 	for round := 1; ; round++ {
-		left, err := b.stopSessions(ctx, dc, taskID, ids)
+		left, err := b.stopSessions(ctx, dc, of, ids)
 		if err != nil || len(left) > 0 {
 			return left, err
 		}
-		if ids, err = liveSessions(ctx, dc, taskID, nil); err != nil || len(ids) == 0 || round == stopRounds {
+		if ids, err = liveSessions(ctx, dc, of, nil); err != nil || len(ids) == 0 || round == stopRounds {
 			return ids, err
 		}
 	}
@@ -342,7 +342,7 @@ func (b *Bridge) stopAll(ctx context.Context, dc *daemonConn, taskID string, ids
 
 // stopSessions hangs up the sessions ids, kills those still live after
 // stopHangupWait and returns the ones still live stopKillWait after that.
-func (b *Bridge) stopSessions(ctx context.Context, dc *daemonConn, taskID string, ids []string) ([]string, error) {
+func (b *Bridge) stopSessions(ctx context.Context, dc *daemonConn, of func(wire.Session) bool, ids []string) ([]string, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -357,7 +357,7 @@ func (b *Bridge) stopSessions(ctx context.Context, dc *daemonConn, taskID string
 	await := func(ids []string, d time.Duration) ([]string, error) {
 		deadline := time.Now().Add(d)
 		for {
-			left, err := liveSessions(ctx, dc, taskID, ids)
+			left, err := liveSessions(ctx, dc, of, ids)
 			if err != nil || len(left) == 0 || time.Now().After(deadline) {
 				return left, err
 			}
@@ -377,20 +377,26 @@ func (b *Bridge) stopSessions(ctx context.Context, dc *daemonConn, taskID string
 	return await(left, stopKillWait)
 }
 
-// liveSessions lists the ids of the task's live sessions (agents and kept
-// shells), only among ids when given.
-func liveSessions(ctx context.Context, dc *daemonConn, taskID string, among []string) ([]string, error) {
+// liveSessions lists the ids of the live sessions (agents and kept
+// shells) of reports as its own — a task's (ofTask), a worktree's —, only
+// among ids when given.
+func liveSessions(ctx context.Context, dc *daemonConn, of func(wire.Session) bool, among []string) ([]string, error) {
 	var list wire.SessionsListResult
 	if err := dc.c.Call(ctx, wire.MethodSessionsList, struct{}{}, &list); err != nil {
 		return nil, err
 	}
 	var ids []string
 	for _, s := range list.Sessions {
-		if s.TaskID == taskID && !ended(s) && (among == nil || slices.Contains(among, s.ID)) {
+		if of(s) && !ended(s) && (among == nil || slices.Contains(among, s.ID)) {
 			ids = append(ids, s.ID)
 		}
 	}
 	return ids, nil
+}
+
+// ofTask tells the sessions of task id (Session.task_id).
+func ofTask(id string) func(wire.Session) bool {
+	return func(s wire.Session) bool { return s.TaskID == id }
 }
 
 func ended(s wire.Session) bool {

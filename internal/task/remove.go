@@ -66,7 +66,7 @@ func ShareLinks(repo, worktree string) []string {
 		if e == "" || filepath.IsAbs(rel) || filepath.VolumeName(rel) != "" || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
-		if fi, err := os.Lstat(filepath.Join(worktree, rel)); err == nil && isLink(fi) {
+		if fi, err := os.Lstat(filepath.Join(worktree, rel)); err == nil && IsLink(fi) {
 			links = append(links, filepath.ToSlash(rel))
 		}
 	}
@@ -190,7 +190,13 @@ func (r *prep) removeWorktree(ctx context.Context, force bool) error {
 	if force {
 		args = append(args, "--force")
 	}
-	return r.run(ctx, t.Repo, "git", append(args, t.Worktree)...)
+	err = r.run(ctx, t.Repo, "git", append(args, t.Worktree)...)
+	if err != nil && !IsDir(t.Worktree) {
+		// A git before 2.18 cannot remove a worktree whose directory is
+		// gone; pruning forgets it.
+		return r.run(ctx, t.Repo, "git", "worktree", "prune")
+	}
+	return err
 }
 
 // removeBranch deletes the task's branch in the source checkout when it is

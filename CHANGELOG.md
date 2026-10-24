@@ -3,6 +3,51 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.18.0
+
+### Added
+
+- Worktrees (capability `worktrees`, every OS): the bridge lists every
+  linked worktree git knows on the host, a task's or not (Orca's, `claude
+  --worktree`'s, made by hand), and the other folders left in the
+  worktree folder (`<folder>/*` and `<folder>/<repo name>/*` that are no
+  worktree), and removes them one at a time. Repositories are found from
+  `worktree_repos`, the task records, the worktree folder, the watch
+  folders' worktrees and the sessions' working directories; a worktree
+  inside another checkout (`.claude/worktrees/…`) is its repository's
+  too (#1122).
+- Bridge methods `worktree.list` (each worktree's branch, head, missing,
+  locked and its reason, task, live sessions, uncommitted changes,
+  unpushed commits and whether git sees it merged into the default
+  branch; it never prunes and `git status` takes no optional lock),
+  `worktree.sizes` (disk usage — Unix `st_blocks`, a file linked twice
+  once; Windows the file sizes —, links and junctions never followed, a
+  worktree inside another not counted in it; newest modification time;
+  the total of worktrees and folders), `worktree.prs` (`gh pr view` of
+  each branch of a repository with a github.com remote, a PR task's by
+  its number; `merged` when the pull request was merged at the
+  worktree's own commit), `worktree.watch` (add or remove a watched
+  folder) and `worktree.remove`
+  (a task's worktree is `task.remove`; another one goes by the same
+  rules without archive — `not_clean`, `busy`, `stop_sessions`, the
+  branch kept and named unless nothing is lost, never the remote; a
+  folder is deleted, its dry run giving its size and largest entries;
+  then an empty `<folder>/<repo name>`). The source checkout and a
+  locked worktree are never removed. `worktree.watch` and
+  `worktree.remove` are refused to coding agents' process trees. Each
+  kind has a bridge queue of its own; `worktree.remove` shares
+  `task.remove`'s (#1122).
+- `config.json` gains `worktree_watch` (watched folders; `config.set`
+  expands `~`, requires absolute paths, cleans and dedupes them) and
+  `worktree_repos` (the source checkouts `worktree.list` found, written
+  by the bridge through `config.set` when they change; one that is gone
+  is dropped) (#1122).
+
+### Changed
+
+- `task.remove` falls back to `git worktree prune` when a git before
+  2.18 cannot remove a worktree whose directory is gone.
+
 ## 0.17.0
 
 ### Added
