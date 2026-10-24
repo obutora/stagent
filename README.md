@@ -218,7 +218,10 @@ on the server:
 | `stagent-darwin-amd64` / `stagent-darwin-arm64` | macOS |
 | `stagent-windows-amd64.exe` / `stagent-windows-arm64.exe` | Windows 10 1809+ |
 
-Each release also contains `SHA256SUMS`.
+Each release also contains `SHA256SUMS`. The macOS assets (v0.18.1 and
+later) are signed with Developer ID, identifier `com.obutora.stagent`, so
+a privacy permission macOS gives stagent (Full Disk Access, files on a
+removable volume) stays through updates.
 
 ## Building and verifying a release
 
@@ -231,6 +234,22 @@ in its release notes and compare:
 ```sh
 scripts/release.sh          # writes dist/ and dist/SHA256SUMS
 diff dist/SHA256SUMS <(curl -sL https://github.com/obutora/stagent/releases/download/v0.3.0/SHA256SUMS)
+```
+
+From v0.18.1 the two macOS lines differ there: the release's binaries
+carry the Developer ID signature, yours the Go linker's ad-hoc one. On
+macOS, replace both signatures with the same ad-hoc one and compare:
+
+```sh
+v=v0.18.1
+for a in stagent-darwin-amd64 stagent-darwin-arm64; do
+  curl -sLo "/tmp/$a" "https://github.com/obutora/stagent/releases/download/$v/$a"
+  cp "dist/$a" "/tmp/$a.built"
+  for f in "/tmp/$a" "/tmp/$a.built"; do
+    codesign --remove-signature "$f" && codesign -s - -i com.obutora.stagent "$f"
+  done
+  cmp "/tmp/$a" "/tmp/$a.built" && echo "$a ok"
+done
 ```
 
 Releases are published with `scripts/release.sh --publish`, which commits
