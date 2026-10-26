@@ -15,7 +15,13 @@ func TestRunDirResolution(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	home := t.TempDir()
+	// A home short enough for <home>/.ssh-term/agent/run sockets: macOS's
+	// own temporary directory is too long for sockaddr_un.
+	home, err := os.MkdirTemp("/tmp", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(home) })
 	uid := strconv.Itoa(os.Getuid())
 
 	def, err := resolve(home, false)

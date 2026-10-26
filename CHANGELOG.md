@@ -3,6 +3,20 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.18.2
+
+### Fixed
+
+- A kept shell answers a program's DECRQM query for synchronized output
+  (`CSI ? 2026 $ p`) as supported (reset, or set while the program has it
+  on), also after RIS. The holder's emulator answers terminal queries while
+  no local terminal does, and it reported the mode as not recognised, so a
+  program that wraps large redraws in it wrote them bare: omp redraws its
+  whole transcript (hundreds of KB) on every resize, and the app painted
+  that redraw as it arrived, racing from the top of the transcript to its
+  end whenever the keyboard came up. The raw stream carries the markers to
+  the client, which honours them.
+
 ## 0.18.1
 
 ### Changed

@@ -70,7 +70,18 @@ type Screen struct {
 
 	guard stringGuard // keeps UTF-8 OSC/DCS payloads away from the parser
 	buf   []byte      // scratch for filtered output
+
+	reseed bool // RIS dropped knownModes; written again after the Write
 }
+
+// knownModes makes the emulator track modes vt does not list, so that its
+// DECRQM replies (sent to the program while no local terminal answers) say
+// they are supported. ?2026 is synchronized output: vt ignores it, but the
+// raw stream carries it to the client terminal, which honours it. Reported
+// as not recognised, omp drew its whole-transcript redraw on every resize
+// (500+ KB) without it, and the app painted that redraw as it arrived,
+// racing from the top of the transcript to its end.
+const knownModes = "\x1b[?2026l"
 
 // inputModes are the DEC private modes that change what a terminal sends as
 // input: cursor key form, mouse tracking and its encodings, focus events and
@@ -104,6 +115,7 @@ func New(cols, rows int, respond func([]byte)) *Screen {
 	} else {
 		e.SetScrollbackSize(1)
 	}
+	e.Write([]byte(knownModes)) // before the callbacks: no mode effects
 	s.SetResponder(respond)
 	s.guard.onTitle = func(t string) { s.title = t } // runs inside Write, s.mu held
 	// Callbacks run inside emu.Write, i.e. with s.mu held.
@@ -121,6 +133,7 @@ func New(cols, rows int, respond func([]byte)) *Screen {
 		s.full = true
 		s.input = 0
 		s.win32Input = false
+		s.reseed = true
 		return false
 	})
 	go s.drain()
@@ -204,6 +217,10 @@ func (s *Screen) Write(p []byte) {
 	s.buf = s.guard.filter(s.buf[:0], p)
 	if len(s.buf) > 0 {
 		s.emu.Write(s.buf)
+	}
+	if s.reseed {
+		s.reseed = false
+		s.emu.Write([]byte(knownModes))
 	}
 	if cap(s.buf) > 64<<10 {
 		s.buf = nil // do not pin a burst-sized buffer
