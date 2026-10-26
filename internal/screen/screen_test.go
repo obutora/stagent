@@ -327,6 +327,34 @@ func TestResponderCanBeSetLater(t *testing.T) {
 	}
 }
 
+// Programs ask whether the terminal supports synchronized output before
+// wrapping redraws in it; the client terminal does, so the holder says so,
+// also after a RIS reset the emulator's modes.
+func TestSynchronizedOutputIsReportedSupported(t *testing.T) {
+	replies := make(chan []byte, 4)
+	s := New(20, 5, func(b []byte) { replies <- b })
+	defer s.Close()
+	for _, step := range []struct{ name, out, want string }{
+		{"initially", "\x1b[?2026$p", "\x1b[?2026;2$y"},
+		{"while set", "\x1b[?2026h\x1b[?2026$p", "\x1b[?2026;1$y"},
+		{"after RIS", "\x1bc", ""},
+		{"queried after RIS", "\x1b[?2026$p", "\x1b[?2026;2$y"},
+	} {
+		s.Write([]byte(step.out))
+		if step.want == "" {
+			continue
+		}
+		select {
+		case r := <-replies:
+			if string(r) != step.want {
+				t.Fatalf("%s: DECRQM reply %q, want %q", step.name, r, step.want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: no DECRQM reply", step.name)
+		}
+	}
+}
+
 func TestNoEmulatorScrollbackAccumulates(t *testing.T) {
 	s := New(20, 5, nil)
 	defer s.Close()

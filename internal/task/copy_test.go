@@ -215,16 +215,17 @@ func TestPlanCopiesSharedDirectoriesNestedAndMany(t *testing.T) {
 }
 
 // Many long shared directories are resolved whole: git is not handed one
-// command line too long for the system.
+// command line too long for the system. Each path stays under macOS's
+// PATH_MAX (1024); together they pass Linux's and macOS's ARG_MAX.
 func TestPlanCopiesLongSharedDirectories(t *testing.T) {
 	deep := ""
-	for i := range 14 {
+	for i := range 4 {
 		deep = path.Join(deep, fmt.Sprintf("%02d", i)+strings.Repeat("d", 198))
 	}
 	untracked := map[string]string{}
 	var shared []string
-	for i := range 1000 {
-		d := fmt.Sprintf("%s/s%03d.cache", deep, i)
+	for i := range 3000 {
+		d := fmt.Sprintf("%s/s%04d.cache", deep, i)
 		untracked[d+"/x"] = "x"
 		shared = append(shared, d)
 	}

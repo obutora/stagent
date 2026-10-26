@@ -27,6 +27,17 @@ func gitDir(t *testing.T, dir string) string {
 	return dir
 }
 
+// realTempDir is a fresh temporary directory by its canonical path, as
+// task.register takes paths (macOS's /var is /private/var).
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func (e *scheduleEnv) preview(s wire.Schedule) wire.SchedulePreview {
 	e.t.Helper()
 	var p wire.SchedulePreview
@@ -76,7 +87,7 @@ func TestAgentScheduleCreate(t *testing.T) {
 // apply: codex outside Git, and writing in a checkout that is no task's.
 func TestAgentSchedulePreview(t *testing.T) {
 	e := startScheduleDaemon(t, time.Now(), nil, nil)
-	base := t.TempDir()
+	base := realTempDir(t)
 	repo := gitDir(t, filepath.Join(base, "repo"))
 	worktree := gitDir(t, filepath.Join(base, "repo-7"))
 	outside := filepath.Join(base, "plain")
@@ -117,7 +128,7 @@ func TestAgentSchedulePreview(t *testing.T) {
 // session's task is.
 func TestSchedulePreviewNestedWorktreeIsTheInnerTasks(t *testing.T) {
 	e := startScheduleDaemon(t, time.Now(), nil, nil)
-	base := t.TempDir()
+	base := realTempDir(t)
 	repo := gitDir(t, filepath.Join(base, "repo"))
 	outerWT := gitDir(t, filepath.Join(base, "repo-7"))
 	innerWT := gitDir(t, filepath.Join(outerWT, "wt", "repo-8"))
