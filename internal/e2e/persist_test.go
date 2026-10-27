@@ -224,16 +224,40 @@ func TestAttachResume(t *testing.T) {
 	}
 	last = checkEnds(outs, last)
 
-	// A size change after since: the missed bytes were laid out for
-	// another size, so the client gets a snapshot.
+	// A size change since the client stopped does not stop the resume: the
+	// missed bytes are what a client still attached would have received,
+	// sized or not for its terminal just the same.
 	a.call(t, wire.MethodSessionDetach, wire.SessionRef{ID: id}, nil)
+	input("five")
+	waitScrollback(t, a, id, "<five>")
 	a.call(t, wire.MethodSessionResize, wire.ResizeParams{ID: id, Cols: 100, Rows: 30}, nil)
+	input("six")
+	waitScrollback(t, a, id, "<six>")
 	att, mark = attach(&last)
-	outs = a.waitOutputs(t, id, mark, "<four>")
-	if att.Resumed || !outs[0].Reset || outs[0].End != att.Offset || att.Cols != 100 {
-		t.Fatalf("attach across a resize = %+v, first output reset=%v end=%d", att, outs[0].Reset, outs[0].End)
+	want := last + int64(len("<five><six>"))
+	if !att.Resumed || att.Offset != want || att.Cols != 100 || att.Rows != 30 {
+		t.Fatalf("resume across a resize = %+v, want resumed at %d, 100x30", att, want)
 	}
-	last = att.Offset
+	outs = a.waitOutputs(t, id, mark, "<six>")
+	if outs[0].Reset || string(outs[0].Data) != "<five><six>" || outs[0].End != want {
+		t.Fatalf("first output after a resize = reset %v data %q end %d", outs[0].Reset, outs[0].Data, outs[0].End)
+	}
+	last = want
+
+	// Nor does a size change right at since, with nothing missed (the app
+	// resized, then lost the connection before the program wrote anything).
+	a.call(t, wire.MethodSessionResize, wire.ResizeParams{ID: id, Cols: 90, Rows: 25}, nil)
+	a.call(t, wire.MethodSessionDetach, wire.SessionRef{ID: id}, nil)
+	att, mark = attach(&last)
+	if !att.Resumed || att.Offset != last || att.Cols != 90 {
+		t.Fatalf("resume at a resize = %+v, want resumed at %d, 90 cols", att, last)
+	}
+	input("seven")
+	outs = a.waitOutputs(t, id, mark, "<seven>")
+	if outs[0].Reset || string(outs[0].Data) != "<seven>" {
+		t.Fatalf("first output after resuming at a resize = %+v", outs[0])
+	}
+	last = checkEnds(outs, last)
 
 	// More than 1 MiB missed: snapshot.
 	a.call(t, wire.MethodSessionDetach, wire.SessionRef{ID: id}, nil)

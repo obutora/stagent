@@ -271,6 +271,77 @@ func TestSlowRawClientIsResynchronized(t *testing.T) {
 	waitExit(t, done)
 }
 
+// A raw client resumes after a size change too: the app resizes (the
+// keyboard comes up) and loses the connection before or after the program
+// wrote anything, and the bytes it missed are the ones it would have
+// received attached.
+func TestRawResumeAcrossResize(t *testing.T) {
+	l := isolate(t)
+	id, done := startDetached(t, l, 80, 24, "sh", "-c",
+		`stty -echo; printf ready; while read l; do printf '<%s>' "$l"; done`)
+	c := dialHolder(t, l, id)
+	waitFor := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(testTimeout)
+		for {
+			var sb wire.ScrollbackResult
+			if err := c.call(t, wire.MethodSessionScrollback, wire.ScrollbackParams{ID: id}, &sb); err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(sb.Data, []byte(want)) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("scrollback never showed %q: %q", want, sb.Data)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	call := func(method string, params, result any) {
+		t.Helper()
+		if err := c.call(t, method, params, result); err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+	}
+	waitFor("ready")
+	var att wire.AttachResult
+	call(wire.MethodSessionAttach, wire.AttachParams{ID: id, Mode: wire.AttachRaw}, &att)
+	last := att.Offset
+
+	// Resized, then gone before the program wrote anything: nothing to
+	// replay, so nothing laid out for another size either.
+	call(wire.MethodSessionResize, wire.ResizeParams{ID: id, Cols: 100, Rows: 30}, nil)
+	call(wire.MethodSessionDetach, wire.SessionRef{ID: id}, nil)
+	call(wire.MethodSessionAttach, wire.AttachParams{ID: id, Mode: wire.AttachRaw, Since: &last}, &att)
+	if !att.Resumed || att.Offset != last || att.Cols != 100 || att.Rows != 30 {
+		t.Fatalf("resume at a resize = %+v, want resumed at %d, 100x30", att, last)
+	}
+
+	// Output, a resize and more output while away: all of it replayed.
+	call(wire.MethodSessionDetach, wire.SessionRef{ID: id}, nil)
+	call(wire.MethodSessionInput, wire.InputParams{ID: id, Text: "a", Submit: true}, nil)
+	waitFor("<a>")
+	call(wire.MethodSessionResize, wire.ResizeParams{ID: id, Cols: 90, Rows: 25}, nil)
+	call(wire.MethodSessionInput, wire.InputParams{ID: id, Text: "b", Submit: true}, nil)
+	waitFor("<b>")
+	c.mu.Lock()
+	from := len(c.notes)
+	c.mu.Unlock()
+	call(wire.MethodSessionAttach, wire.AttachParams{ID: id, Mode: wire.AttachRaw, Since: &last}, &att)
+	want := last + int64(len("<a><b>"))
+	if !att.Resumed || att.Offset != want || att.Cols != 90 {
+		t.Fatalf("resume across a resize = %+v, want resumed at %d, 90 cols", att, want)
+	}
+	var first wire.OutputParams
+	json.Unmarshal(c.next(t, &from, wire.NotifyOutput).Params, &first)
+	if first.Reset || string(first.Data) != "<a><b>" || first.End != want {
+		t.Fatalf("first output = reset %v data %q end %d", first.Reset, first.Data, first.End)
+	}
+
+	call(wire.MethodSessionSignal, wire.SignalParams{ID: id, Signal: wire.SignalKill}, nil)
+	waitExit(t, done)
+}
+
 func TestDaemonLinkReportsLifecycleAndReregisters(t *testing.T) {
 	l := isolate(t)
 	d := startFakeDaemon(t, l)

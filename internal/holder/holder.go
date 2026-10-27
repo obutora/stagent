@@ -139,10 +139,6 @@ type Holder struct {
 	// chunk to the scrollback just before fanning it out, so the scrollback
 	// holds every byte before pos.
 	pos int64
-	// sizePos is pos at the last size change (-1: none). Raw bytes from
-	// before it were laid out for another size, so a client cannot resume
-	// across it.
-	sizePos int64
 }
 
 // Run runs a session until its program exits and returns the program's
@@ -168,7 +164,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 	} else if !validID(id) {
 		return ExitUsage, fmt.Errorf("invalid session id %q (want 16 lowercase hex characters)", id)
 	}
-	h := &Holder{o: o, layout: l, id: id, atts: map[*attachment]struct{}{}, focus: map[any]struct{}{}, sizePos: -1}
+	h := &Holder{o: o, layout: l, id: id, atts: map[*attachment]struct{}{}, focus: map[any]struct{}{}}
 	if h.guard = o.Guard; h.guard == nil {
 		h.guard = harness.NewGuard(l)
 	}
@@ -601,7 +597,6 @@ func (h *Holder) applySize(cols, rows int) {
 	}
 	h.scr.Resize(cols, rows)
 	h.sess.Cols, h.sess.Rows = cols, rows
-	h.sizePos = h.pos
 	rp := &wire.ResizeParams{ID: h.id, Cols: cols, Rows: rows}
 	for a := range h.atts {
 		a.pushResize(rp)
