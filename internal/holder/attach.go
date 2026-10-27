@@ -237,14 +237,16 @@ const maxResume = 1 << 20
 
 // missedLocked returns the output a raw client that consumed the stream up
 // to since has missed, if it can be replayed exactly: the bytes are still in
-// the scrollback and were laid out for the current size. Read under h.mu,
-// so the range ends exactly where queued live output will continue.
+// the scrollback. A size change in between does not stop it: they are the
+// bytes the client would have received had it stayed attached, across the
+// same size change. Read under h.mu, so the range ends exactly where queued
+// live output will continue.
 func (h *Holder) missedLocked(since *int64) ([]byte, bool) {
 	if since == nil || h.sb == nil {
 		return nil, false
 	}
 	s := *since
-	if s < 0 || s > h.pos || h.pos-s > maxResume || h.sizePos >= s {
+	if s < 0 || s > h.pos || h.pos-s > maxResume {
 		return nil, false
 	}
 	return h.sb.Range(s, h.pos)

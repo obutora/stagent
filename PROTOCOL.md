@@ -1241,14 +1241,16 @@ continues. A client stores the `end` of the last `output` it fully wrote to
 its terminal and passes it as `since` when it attaches again (after a
 detach, a dropped connection, an app restart). The holder resumes when
 `mode` is `raw`, the session has a scrollback, `since <= P` (P = the
-current position), `P - since <= 1 MiB`, the bytes `[since, P)` are still
-retained and the session size did not change at or after `since`. The
-result then has `resumed: true` and the first `output` is `{reset: false,
-data: bytes [since, P), end: P}` — omitted when `since == P` — so the
-client's terminal continues exactly where it stopped, scrollback included.
-Otherwise `resumed` is false and the first `output` is the usual `reset:
-true` snapshot. Absent `since` never resumes. Screen mode ignores `since`
-and its frames carry no `end`.
+current position), `P - since <= 1 MiB` and the bytes `[since, P)` are
+still retained; a size change after `since` does not matter, since those
+are the bytes the client would have received had it stayed attached
+(holders of stagent 0.18.2 and earlier also require that the session size
+did not change at or after `since`). The result then has `resumed: true`
+and the first `output` is `{reset: false, data: bytes [since, P), end: P}`
+— omitted when `since == P` — so the client's terminal continues exactly
+where it stopped, scrollback included. Otherwise `resumed` is false and
+the first `output` is the usual `reset: true` snapshot. Absent `since`
+never resumes. Screen mode ignores `since` and its frames carry no `end`.
 
 Terminal queries (DA, CPR, DECRQM, OSC 10/11/12/4 colour queries, …) the
 program sends are answered by the holder's emulator whenever the session

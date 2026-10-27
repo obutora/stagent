@@ -3,6 +3,20 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.18.3
+
+### Fixed
+
+- A raw client that attaches again with `since` resumes after a size
+  change too. The holder answered with a snapshot whenever the session
+  had been resized at or after `since`, even with nothing missed: the app
+  resizes the session when the keyboard comes up or goes away, so coming
+  back from the background often found the session resized and lost the
+  byte-exact resume. The missed bytes are the ones the client would have
+  received had it stayed attached, across the same resize (#1247).
+  Sessions started before the update keep their old holder until they
+  are opened again.
+
 ## 0.18.2
 
 ### Fixed
