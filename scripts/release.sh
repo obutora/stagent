@@ -61,6 +61,10 @@ app="$(cd "$here/.." && pwd)"                 # Flutter app root
 dist="$here/dist"
 dart_out="$app/lib/services/agent_bridge/stagent_release.dart"
 repo="obutora/stagent"
+# The public commits carry GitHub's no-reply address, never the git identity
+# of the machine that happens to publish.
+author_name="HagaKun"
+author_email="24934672+obutora@users.noreply.github.com"
 go="${GO:-go}"
 
 version="$(sed -n 's/^const Version = "\(.*\)"$/\1/p' "$here/internal/version/version.go")"
@@ -304,7 +308,9 @@ git -C "$clone" add -A
 if git -C "$clone" diff --cached --quiet; then
   echo "$repo main already holds this source"
 else
-  git -C "$clone" commit -q -m "stagent $tag source"
+  GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" \
+    GIT_COMMITTER_NAME="$author_name" GIT_COMMITTER_EMAIL="$author_email" \
+    git -C "$clone" commit -q -m "stagent $tag source"
 fi
 commit="$(git -C "$clone" rev-parse HEAD)"
 [ -z "$(git -C "$clone" status --porcelain)" ] || die "the clone of $repo has changes outside the commit"

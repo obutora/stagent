@@ -22,7 +22,7 @@ const adbOutput = "* daemon not running; starting now at tcp:5037\n" +
 	"* daemon started successfully\n" +
 	"List of devices attached\n" +
 	"emulator-5556          offline transport_id:7\n" +
-	"192.168.100.19:42283   device product:alioth_global model:M2012K11AG device:alioth transport_id:5\n" +
+	"192.0.2.10:42283       device product:phone model:Phone device:phone transport_id:5\n" +
 	"R58M12345AB            device usb:1-1 product:beyond1 model:SM_G973F device:beyond1 transport_id:3\n" +
 	"adb-R58M-abc._adb-tls-connect._tcp device product:p model:m device:d transport_id:9\n" +
 	"emulator-5554          device product:sdk_gphone64_arm64 model:sdk_gphone64_arm64 device:emu64a transport_id:4\n" +
@@ -35,7 +35,7 @@ const discovery5554 = "emulator.build=16428233\r\n" +
 	"avd.name=Pixel_9_API_36\r\n" +
 	"grpc.jwks=/x/jwks\r\n" +
 	"cmdline=\"/sdk/emulator/qemu/qemu-system-aarch64-headless\" \"-avd\" \"Pixel_9_API_36\"\r\n" +
-	"grpc.token=LkeX/c+Q==\r\n" +
+	"grpc.token=dGVzdA==\r\n" +
 	"grpc.port=8554\r\n"
 
 // writeDiscovery advertises an emulator in dir as the emulator does.
@@ -66,7 +66,7 @@ func TestParseDiscovery(t *testing.T) {
 	if !ok {
 		t.Fatal("not parsed")
 	}
-	want := emulator{serialPort: 5554, avd: "Pixel_9_API_36", grpcPort: 8554, token: "LkeX/c+Q=="}
+	want := emulator{serialPort: 5554, avd: "Pixel_9_API_36", grpcPort: 8554, token: "dGVzdA=="}
 	if e != want || e.serial() != "emulator-5554" {
 		t.Fatalf("got %+v, want %+v", e, want)
 	}
@@ -431,7 +431,7 @@ func TestOpenErrors(t *testing.T) {
 		{wire.HostScreenTarget{Serial: "emulator-5560", AVD: "Silent"}, wire.ErrUnavailable, true}, // adb lists it, its gRPC does not answer
 		{wire.HostScreenTarget{Serial: "emulator-5564"}, wire.ErrUnavailable, true},                // the same, without an AVD to follow
 		{wire.HostScreenTarget{Serial: "emulator-5562"}, wire.ErrNotFound, false},
-		{wire.HostScreenTarget{Serial: "192.168.100.19:4228"}, wire.ErrNotFound, false},
+		{wire.HostScreenTarget{Serial: "192.0.2.10:4228"}, wire.ErrNotFound, false},
 	} {
 		c.target.Kind = wire.HostScreenAndroid
 		_, err := k.Open(context.Background(), c.target)

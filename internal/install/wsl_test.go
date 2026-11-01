@@ -28,7 +28,7 @@ func wslHost(t *testing.T, te *testEnv) string {
 	if runtime.GOOS == "windows" {
 		t.Skip("emulating WSL's .wslconfig needs a Linux path to the profile (wslpath -u), which a Windows host cannot give")
 	}
-	profile := filepath.Join(t.TempDir(), "Users", "obuto")
+	profile := filepath.Join(t.TempDir(), "Users", "u")
 	if err := os.MkdirAll(profile, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -36,8 +36,8 @@ func wslHost(t *testing.T, te *testEnv) string {
 	te.run.respond = func(name string, args []string) (string, error) {
 		switch {
 		case name == "/mnt/c/WINDOWS/system32/cmd.exe":
-			return "'\\\\wsl.localhost\\Ubuntu\\home\\obuto'\r\nCMD.EXE was started with the above path as the current directory.\r\nUNC paths are not supported.  Defaulting to Windows directory.\r\nC:\\Users\\obuto\r\n", nil
-		case name == "wslpath" && strings.Join(args, " ") == `-u C:\Users\obuto`:
+			return "'\\\\wsl.localhost\\Ubuntu\\home\\u'\r\nCMD.EXE was started with the above path as the current directory.\r\nUNC paths are not supported.  Defaulting to Windows directory.\r\nC:\\Users\\u\r\n", nil
+		case name == "wslpath" && strings.Join(args, " ") == `-u C:\Users\u`:
 			return profile + "\n", nil
 		}
 		return "", errors.New("unexpected command " + name)

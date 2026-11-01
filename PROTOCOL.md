@@ -1442,7 +1442,7 @@ host it comes from: `notify.host_label`, or the host name when it is empty
 `<label>: <title>`. A notification about a session tied to a task
 (`Session.task_id`) puts the task first, its number or, for a named
 task, its name: `<label> · #N <title>` (e.g. `開発機 · #493 claude ·
-agent-orchestra-493`), `<label> · <name> <title>`; a digest of several
+app-493`), `<label> · <name> <title>`; a digest of several
 notifications does not. The in-app `notification` event keeps the plain
 title.
 
