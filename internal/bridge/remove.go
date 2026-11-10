@@ -48,7 +48,9 @@ func (b *Bridge) taskRemove(m *wire.Msg) {
 // task remove` in a session of the source checkout and answer when it has
 // finished; without archive remove here (task.Remove). Either way the
 // record goes last (task.forget, naming the kept branch). An in_place or
-// missing task only loses its record (missing: and git worktree prune).
+// missing task only loses its record (missing: and git worktree prune), as
+// does one whose source checkout and worktree are both gone: git has
+// nothing left to remove.
 func (b *Bridge) doTaskRemove(p wire.TaskRemoveParams) (*wire.TaskRemoveResult, error) {
 	const method = wire.MethodTaskRemove
 	if p.ID == "" {
@@ -117,7 +119,10 @@ func (b *Bridge) doTaskRemove(p wire.TaskRemoveParams) (*wire.TaskRemoveResult, 
 		t = now
 		return nil
 	}
-	if t.InPlace || t.State == wire.TaskMissing {
+	// Removed by hand: neither the source checkout nor the worktree is
+	// there, so no git can run and nothing but the record is left.
+	gone := !t.InPlace && !task.IsDir(t.Repo) && !task.IsDir(t.Worktree)
+	if t.InPlace || t.State == wire.TaskMissing || gone {
 		if p.DryRun {
 			return &wire.TaskRemoveResult{}, nil
 		}
@@ -133,7 +138,7 @@ func (b *Bridge) doTaskRemove(p wire.TaskRemoveParams) (*wire.TaskRemoveResult, 
 				return nil, err
 			}
 		}
-		if !t.InPlace {
+		if !t.InPlace && !gone {
 			task.Git(ctx, env, t.Repo, "worktree", "prune") // best effort: the record goes anyway
 		}
 		return &wire.TaskRemoveResult{}, call(wire.MethodTaskForget, wire.TaskRemoved{ID: t.ID})

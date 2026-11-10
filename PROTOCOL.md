@@ -88,6 +88,13 @@ The bridge exits when stdin reaches EOF. On Windows it also exits when the
 process that created its stdin pipe ends — Win32-OpenSSH's session process
 (`sshd -z`) — since stdin may not reach EOF when that process is killed.
 
+On the app's own machine the bridge runs without SSH: the app starts
+`<home>/.ssh-term/agent/bin/stagent bridge` (`stagent.exe` on Windows)
+as a child process, with the path and `bridge` as its argv (no shell),
+and talks to it over the child's stdin/stdout the same way. It ends the
+same way too: at EOF on stdin, and on Windows when the process that
+created its stdin pipe — the app — ends.
+
 ### Versions and compatibility
 
 - The app pins one stagent release (`stagent_release.dart`); that version
@@ -481,7 +488,8 @@ unless `stop_sessions` (see below).
   agents and kept shells).
 
 An `in_place` or `missing` task's dry run is `{}`: its removal only
-forgets the record.
+forgets the record. So is that of a task whose `repo` and `worktree` are
+both gone (removed by hand, in any state), since 0.18.4.
 
 The removal:
 
@@ -492,6 +500,9 @@ The removal:
 - `in_place`: the record is forgotten (`task.forget`), nothing else.
 - `missing`: the record is forgotten and `git worktree prune` runs in
   `repo`; no archive.
+- `repo` and `worktree` both gone: the record is forgotten, nothing else
+  (no git can run there). Before 0.18.4 the `worktree` stage failed on
+  the missing `repo` (`chdir …: no such file or directory`).
 - Otherwise `changes` without `force` is `not_clean`, live sessions
   without `stop_sessions` `busy`, both before anything changes. Then:
   1. `stop` (the task becomes `removing`; another removal already there
@@ -1274,10 +1285,12 @@ code (see "Push notifications"). On Windows, a passthrough session whose
 console closes (the user closes the window it runs in; Windows has no
 handoff) is hung up the same way and recorded as a `hangup` too.
 
-`session.input` `local: true` is what `stagent attach` sends: keyboard
-input of a terminal on the host. It counts as `last_local_input_at`, and
-the focus reports in its `text` (`ESC [ I`, `ESC [ O`) set `focused` for as
-long as its connection lasts. The app never sets it.
+`session.input` `local: true` is what a client relaying a person's typing
+at a terminal sends: `stagent attach`, and the desktop app's terminal tab
+(with the focus reports, when the program turned them on). It counts as
+`last_local_input_at`, and the focus reports in its `text` (`ESC [ I`,
+`ESC [ O`) set `focused` for as long as its connection lasts. Replies and
+approvals sent from the app's chat view never set it.
 
 A passthrough session started with `stagent run --handoff` changes its
 `mode` to `detached` when its local terminal hangs up (see "Command-line
@@ -2031,8 +2044,9 @@ pushed (ntfy, webhook, chat) only when all of these hold:
   bridge restores the app's foreground together with its watch after a
   daemon restart.
 - Nobody present at the session (在席): no keystroke at a terminal on the
-  host (`last_local_input_at`: the passthrough session's own terminal or
-  `stagent attach`) within the last 60 s, nor within the last 10 min while
+  host (`last_local_input_at`: the passthrough session's own terminal,
+  `stagent attach` or the desktop app's terminal tab) within the last
+  60 s, nor within the last 10 min while
   that terminal has the focus (`focused`; terminals that send no focus
   reports count by keystrokes alone), and no file at the holder's
   `$CLAUDE_CLIENT_PRESENCE_FILE` (`presence_file`; it applies to every
@@ -2262,8 +2276,9 @@ session as connected to a terminal when `mode == passthrough || attached`.
 
 `last_local_input_at` (unix ms) is when a terminal on the host last typed
 or pasted anything into the session — the session's own local terminal
-(that of a `passthrough` session, a PC's or an SSH tab's) or a `stagent
-attach` (`session.input` with `local`); it is omitted until one has.
+(that of a `passthrough` session, a PC's or an SSH tab's), a `stagent
+attach` or the desktop app's terminal tab (`session.input` with `local`);
+it is omitted until one has.
 Bytes those terminals send on their own do not count:
 replies to the program's queries (cursor position, device attributes, mode,
 status and window reports, OSC/DCS/APC strings such as color replies and
@@ -2318,7 +2333,7 @@ started as another program (a kept shell): `harness` is that agent,
 | `session_started` | `{harness, command[], cwd, mode}` |
 | `session_ended` | `{exit_code, hung_up?}` — `hung_up`: a client ended it with `session.signal hangup`, or (Windows) the console of a passthrough session closed |
 | `state_changed` | `{from, to, source}` |
-| `notification` | `{title, body, level (info\|warn), reason, count?, session_id?}` — reason `waiting_input\|needs_approval\|turn_complete\|exited\|terminal\|test\|digest`; `session_id` names the session it is about (absent for a digest, `notify.test` and approvals of no session); the generic webhook posts this object with `click_url?` added (see "Click link"; absent without `notify.click_page`) |
+| `notification` | `{title, body, level (info\|warn), reason, count?, session_id?, schedule_id?, run_id?}` — reason `waiting_input\|needs_approval\|turn_complete\|exited\|terminal\|test\|digest\|schedule`; `session_id` names the session it is about (absent for a digest, `notify.test`, a schedule's and approvals of no session); `schedule_id` and `run_id` name the run of the schedule a `schedule` one is about (`run_id` absent when it is about the schedule: stopped after failures); the generic webhook posts this object with `click_url?` added (see "Click link"; absent without `notify.click_page`) |
 | `approval_requested` | `Approval` |
 | `approval_resolved` | `{request_id, by: "cancelled"}` |
 
@@ -2705,6 +2720,20 @@ success (non-zero with `{"error": "..."}` on failure).
 | `stagent wsl-shutdown --json` | (WSL) runs `wsl.exe --shutdown`, which normally ends this command, see below |
 
 Levels are cumulative: `unhook` includes `stop`, `purge` includes `unhook`.
+
+**Placing the binary.** The app puts the binary at `layout.bin`
+(`<home>/.ssh-term/agent/bin/stagent`, `stagent.exe` on Windows) before
+`stagent install`. It writes a temporary file in the same directory,
+checks its size and sha256 against the release, makes it executable
+(0755) and renames it over `layout.bin`. On macOS it removes the
+`com.apple.quarantine` attribute from the file before the rename (an
+absent attribute is fine). On Windows a running `stagent.exe` (the
+daemon, holders) cannot be replaced or deleted but can be renamed: the
+current one is first renamed to `stagent.exe.old-<stamp>`, the new one
+moved in, and then the app deletes the `stagent.exe.old-*` files no
+longer in use; the others are left for a later update. `uninstall --level
+purge` on Windows renames the running binary the same way and reports
+files it could not delete in `failed`.
 
 `--linger` (Linux) turns on lingering, `loginctl --no-ask-password
 enable-linger <uid>`, so the user's service manager — and with it the

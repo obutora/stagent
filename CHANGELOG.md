@@ -3,6 +3,18 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.18.4
+
+### Fixed
+
+- `task.remove` of a task whose source checkout and worktree were both
+  removed by hand only forgets its record, in any state. It ran the
+  worktree stage in the missing source checkout and failed with `git
+  worktree list --porcelain: chdir …: no such file or directory`, so such
+  a task (one that had failed, typically) could never be cleaned up. A
+  task whose worktree is still there without its source checkout is not
+  touched.
+
 ## 0.18.3
 
 ### Fixed

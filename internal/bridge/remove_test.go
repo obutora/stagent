@@ -4,6 +4,8 @@ package bridge
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -124,6 +126,42 @@ func TestTaskRemoveRacedIsBusy(t *testing.T) {
 	}
 	if d.forgot || len(d.stages) != 0 {
 		t.Fatalf("forgot %v, stages %+v", d.forgot, d.stages)
+	}
+}
+
+// A task whose source checkout and worktree were both removed by hand (a
+// failed one here) only loses its record: no stage runs, as git cannot
+// run in a checkout that is gone. With the worktree still there the
+// record stays and the worktree stage fails.
+func TestTaskRemoveGoneCheckout(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "app")
+	tk := wire.Task{ID: "t1", Repo: repo, Worktree: repo + "-7", Branch: "7-x", State: wire.TaskFailed, Stage: wire.TaskStageWorktree}
+	d, a := startRemoveDaemon(t, tk)
+	var res wire.TaskRemoveResult
+	if e := a.call(t, wire.MethodTaskRemove, wire.TaskRemoveParams{ID: "t1", DryRun: true}, &res); e != nil || len(res.Changes)+len(res.Sessions)+res.Unpushed != 0 {
+		t.Fatalf("dry run: %+v, %v", res, e)
+	}
+	if e := a.call(t, wire.MethodTaskRemove, wire.TaskRemoveParams{ID: "t1"}, nil); e != nil {
+		t.Fatal(e)
+	}
+	d.mu.Lock()
+	if !d.forgot || len(d.stages) != 0 {
+		t.Fatalf("forgot %v, stages %+v", d.forgot, d.stages)
+	}
+	d.mu.Unlock()
+
+	if err := os.Mkdir(tk.Worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, a = startRemoveDaemon(t, tk)
+	if e := a.call(t, wire.MethodTaskRemove, wire.TaskRemoveParams{ID: "t1"}, nil); e == nil {
+		t.Fatal("removed a task whose worktree is still there without its checkout")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.forgot {
+		t.Fatal("forgot a task whose worktree is still there")
 	}
 }
 
