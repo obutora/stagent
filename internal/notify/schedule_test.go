@@ -13,10 +13,10 @@ func TestScheduleReplaceKeyAndLinks(t *testing.T) {
 	run := wire.NotificationData{Reason: "schedule", ScheduleID: "00112233aabbccdd", RunID: "ffeeddccbbaa9988"}
 	sched := wire.NotificationData{Reason: "schedule", ScheduleID: "00112233aabbccdd"}
 	session := wire.NotificationData{Reason: "exited", SessionID: "0123456789abcdef"}
-	if k := ReplaceKey(run); k != "schedule_00112233aabbccdd" || !IsScheduleKey(k) || ReplaceKey(sched) != k {
+	if k := ReplaceKey(run); k != "schedule_00112233aabbccdd" || IsSessionKey(k) || ReplaceKey(sched) != k {
 		t.Errorf("ReplaceKey(run) = %q, (schedule) = %q", k, ReplaceKey(sched))
 	}
-	if k := ReplaceKey(session); k != session.SessionID || IsScheduleKey(k) {
+	if k := ReplaceKey(session); k != session.SessionID || !IsSessionKey(k) {
 		t.Errorf("ReplaceKey(session) = %q", k)
 	}
 	if SequenceID(ReplaceKey(run)) != ReplaceKey(run) {

@@ -112,8 +112,12 @@ func slackDest(p []string) (ChatDest, error) {
 	return ChatDest{Service: ServiceSlack, endpoint: "https://hooks.slack.com/services/" + strings.Join(p, "/")}, nil
 }
 
-// discordWarnColor is the embed color of a warn notification (yellow).
-const discordWarnColor = 0xFEE75C
+// discordWarnColor is the embed color of a warn notification (yellow),
+// discordErrorColor of an error one (red).
+const (
+	discordWarnColor  = 0xFEE75C
+	discordErrorColor = 0xED4245
+)
 
 // pushChat sends n to the chat destination rawURL in its service's format,
 // headed by the emoji of n's reason, and names the message it made. When
@@ -137,8 +141,11 @@ func pushChat(ctx context.Context, client *http.Client, rawURL string, n wire.No
 			Color       int    `json:"color,omitempty"`
 		}
 		e := embed{Title: title, Description: n.Body}
-		if n.Level == wire.LevelWarn {
+		switch n.Level {
+		case wire.LevelWarn:
 			e.Color = discordWarnColor
+		case wire.LevelError:
+			e.Color = discordErrorColor
 		}
 		var reply struct {
 			ID string `json:"id"`
@@ -205,26 +212,8 @@ func pushChat(ctx context.Context, client *http.Client, rawURL string, n wire.No
 // (links, mentions): &, < and >.
 var slackEscape = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
 
-// chatEmoji heads a chat message: the emoji of ntfyTags' tag for n's
-// reason, "" for none.
-func chatEmoji(n wire.NotificationData) string {
-	switch n.Reason {
-	case "needs_approval":
-		return "🔒"
-	case "waiting_input":
-		return "⏳"
-	case "turn_complete":
-		return "✅"
-	case "exited":
-		if n.Level == wire.LevelWarn {
-			return "⚠️"
-		}
-		return "🏁"
-	case "digest":
-		return "🔔"
-	}
-	return ""
-}
+// chatEmoji heads a chat message: the emoji of n's mark, "" for none.
+func chatEmoji(n wire.NotificationData) string { return markOf(n).emoji }
 
 // discordLinkRow is Discord's components: one action row holding a link
 // button (style 5) to link.

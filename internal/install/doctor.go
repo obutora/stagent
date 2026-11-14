@@ -32,8 +32,11 @@ type DoctorReport struct {
 	Daemon DaemonReport `json:"daemon"`
 	// Blocked names the stagent location another user owns (ipc.Blocked),
 	// so no daemon or kept shell can work; null when nothing is blocked.
-	Blocked      *wire.Blocked     `json:"blocked"`
-	Harnesses    []HarnessReport   `json:"harnesses"`
+	Blocked   *wire.Blocked   `json:"blocked"`
+	Harnesses []HarnessReport `json:"harnesses"`
+	// StatusLine is the statusLine relay that measures Claude's limit
+	// windows (`integrate --statusline`).
+	StatusLine   StatusLineReport  `json:"statusline"`
 	ShellWrapper ShellReport       `json:"shell_wrapper"`
 	Service      ServiceReport     `json:"service"`
 	Persistence  PersistenceReport `json:"persistence"`
@@ -298,6 +301,8 @@ func (e *env) doctor() *DoctorReport {
 	for _, h := range harness.All {
 		r.Harnesses = append(r.Harnesses, integrations[h.ID].report(e))
 	}
+
+	e.statusLineReport(r)
 
 	r.ShellWrapper.Files = []string{}
 	for _, t := range e.shellTargets() {

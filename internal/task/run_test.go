@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/obutora/stagent/internal/gittest"
+	"github.com/obutora/stagent/internal/stubcmd"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -300,6 +302,76 @@ func TestPrepareSetupFailsThenRetry(t *testing.T) {
 	}
 }
 
+// A worktree whose `git worktree add` was killed (a session stopped while
+// it prepared) is left with no files, locked "initializing". Preparing the
+// task again removes it and adds the worktree anew, whole and unlocked.
+func TestPrepareAgainAfterKilledAdd(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	issue := f.task(t, wire.TaskKindIssue, 11, "11-killed")
+	git(t, f.repo, "branch", "-q", "--no-track", issue.Branch, "origin/main")
+	pr := f.task(t, wire.TaskKindPR, 7, "fork-work")
+	for _, c := range []struct {
+		tk  wire.Task
+		add []string
+	}{
+		{issue, []string{issue.Worktree, issue.Branch}},
+		{pr, []string{"--detach", pr.Worktree}},
+	} {
+		gittest.KilledAdd(t, f.repo, c.add...)
+		if _, out, err := f.prepare(t, Prep{Task: c.tk}); err != nil {
+			t.Fatalf("Prepare %s: %v\n%s", c.tk.Branch, err, out)
+		}
+		if got := readFile(t, filepath.Join(c.tk.Worktree, "a.txt")); got != "a\n" {
+			t.Fatalf("%s: a.txt %q", c.tk.Branch, got)
+		}
+		if got := f.gitOut(t, c.tk.Worktree, "symbolic-ref", "--short", "HEAD"); got != c.tk.Branch {
+			t.Fatalf("worktree on %q, want %s", got, c.tk.Branch)
+		}
+		if got := f.gitOut(t, c.tk.Worktree, "status", "--porcelain"); got != "" {
+			t.Fatalf("%s: status\n%s", c.tk.Branch, got)
+		}
+		if list := f.gitOut(t, f.repo, "worktree", "list", "--porcelain"); strings.Contains(list, "locked") {
+			t.Fatalf("still locked:\n%s", list)
+		}
+	}
+}
+
+// stagent's own git worktree add runs in the C locale, so that the lock
+// it holds while it works has the reason initializing (AddingLock) on a
+// host whose language is not English: git translates it (de:
+// "initialisiere"), and a worktree the add was killed making would then
+// not be told half made.
+func TestPrepareWorktreeAddInCLocale(t *testing.T) {
+	f := newFixture(t, nil)
+	real, err := lookProgram(f.env, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(f.base, "git.log")
+	bin := t.TempDir()
+	stubcmd.Install(t, bin, "git", stubcmd.Rule{Args: "*worktree add *", Log: log, Exec: real}, stubcmd.Rule{Args: "*", Exec: real})
+	path, _ := lookupEnv(f.env, "PATH")
+	f.env = append(slices.Clone(f.env), "PATH="+bin+string(os.PathListSeparator)+path,
+		"LANG=de_DE.UTF-8", "LC_ALL=de_DE.UTF-8", "LC_MESSAGES=de_DE.UTF-8", "LANGUAGE=de")
+	for _, tk := range []wire.Task{f.task(t, wire.TaskKindIssue, 4, "4-here"), f.task(t, wire.TaskKindPR, 7, "fork-work")} {
+		if _, out, err := f.prepare(t, Prep{Task: tk}); err != nil {
+			t.Fatalf("Prepare %s: %v\n%s", tk.Branch, err, out)
+		}
+	}
+	calls := stubcmd.Calls(t, log)
+	if len(calls) != 2 || !slices.Contains(calls[1].Args, "--detach") {
+		t.Fatalf("git worktree add calls %+v", calls)
+	}
+	for _, c := range calls {
+		if all, _ := lookupEnv(c.Env, "LC_ALL"); all != "C" {
+			t.Errorf("git %v ran with LC_ALL=%q", c.Args, all)
+		}
+		if lang, ok := lookupEnv(c.Env, "LANGUAGE"); ok {
+			t.Errorf("git %v ran with LANGUAGE=%q", c.Args, lang)
+		}
+	}
+}
+
 // A non-empty directory that is no worktree of the checkout fails and is
 // kept as it is.
 func TestPrepareForeignDirectory(t *testing.T) {
@@ -314,6 +386,84 @@ func TestPrepareForeignDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tk.Worktree, "notes")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// missingWorktrees adds wts (worktrees on new branches named after their
+// directories) plus another worktree and a locked one, then removes all
+// their directories (a volume taken away).
+func (f *fixture) missingWorktrees(t *testing.T, wts ...string) (other, locked string) {
+	t.Helper()
+	other, locked = filepath.Join(f.base, "other"), filepath.Join(f.base, "locked")
+	all := append(wts, other, locked)
+	for _, p := range all {
+		git(t, f.repo, "worktree", "add", "-q", "-b", filepath.Base(p), p)
+	}
+	git(t, f.repo, "worktree", "lock", locked)
+	for _, p := range all {
+		if err := os.RemoveAll(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return other, locked
+}
+
+// missingTask is a task whose worktree's directory is gone along with
+// another worktree's and a locked one's; its directory is made again
+// empty, as the bridge does before preparing it again.
+func (f *fixture) missingTask(t *testing.T) (tk wire.Task, other, locked string) {
+	t.Helper()
+	tk = f.task(t, wire.TaskKindIssue, 6, "repo-src-6")
+	if err := os.Remove(tk.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	other, locked = f.missingWorktrees(t, tk.Worktree)
+	if err := os.Mkdir(tk.Worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return tk, other, locked
+}
+
+// Preparing again a task whose worktree directory is gone unregisters
+// that worktree alone and makes it again: another worktree whose
+// directory is gone too, and a locked one, stay registered.
+func TestPrepareAgainUnregistersItAlone(t *testing.T) {
+	f := newFixture(t, nil)
+	tk, other, locked := f.missingTask(t)
+	if _, out, err := f.prepare(t, Prep{Task: tk}); err != nil {
+		t.Fatalf("Prepare: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(tk.Worktree, ".git")); err != nil || !f.listed(t, tk.Worktree) {
+		t.Fatalf("the worktree was not made again: %v", err)
+	}
+	if !f.listed(t, other) || !f.listed(t, locked) {
+		t.Fatalf("worktrees pruned:\n%s", f.gitOut(t, f.repo, "worktree", "list"))
+	}
+}
+
+// oldGit puts first on PATH a git that says it is 2.17 and runs the real
+// one for everything else.
+func (f *fixture) oldGit(t *testing.T) {
+	t.Helper()
+	real, err := lookProgram(f.env, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubcmd.Install(t, filepath.Join(f.base, "bin"), "git",
+		stubcmd.Rule{Args: "version", Stdout: "git version 2.17.1\n"}, stubcmd.Rule{Args: "*", Exec: real})
+}
+
+// A git before 2.18 cannot remove one worktree whose directory is gone:
+// preparing again prunes, as before, which still keeps a locked one.
+func TestPrepareAgainOldGitPrunes(t *testing.T) {
+	f := newFixture(t, nil)
+	f.oldGit(t)
+	tk, other, locked := f.missingTask(t)
+	if _, out, err := f.prepare(t, Prep{Task: tk}); err != nil {
+		t.Fatalf("Prepare: %v\n%s", err, out)
+	}
+	if !f.listed(t, tk.Worktree) || f.listed(t, other) || !f.listed(t, locked) {
+		t.Fatalf("worktree list:\n%s", f.gitOut(t, f.repo, "worktree", "list"))
 	}
 }
 

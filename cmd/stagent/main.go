@@ -18,6 +18,7 @@ import (
 	"github.com/obutora/stagent/internal/install"
 	"github.com/obutora/stagent/internal/loginenv"
 	"github.com/obutora/stagent/internal/schedagent"
+	"github.com/obutora/stagent/internal/statusline"
 	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/version"
 )
@@ -39,8 +40,11 @@ const usage = `usage: stagent <command> [args]
                       (JSON lines on stdout)
   hook <harness> [event]
                       entry point for harness hooks (reads the payload on stdin)
+  statusline claude   Claude Code's statusLine (integrate --statusline): runs the
+                      statusLine you had and sends the limit windows to the daemon
   install             create the layout and manifest (after the binary is placed)
   integrate           plan or apply harness hooks, shell wrappers, login service,
+                      Claude's statusLine relay,
                       lingering (Linux), Terminal.app's close confirmation (macOS),
                       keeping WSL running (.wslconfig, WSL)
   uninstall           stop / unhook / purge
@@ -49,9 +53,12 @@ const usage = `usage: stagent <command> [args]
   task run [--switch-branch] [--setup] <id> -- <cmd> [args...]
                       internal (task.create): prepare task <id> in its first
                       session, then run <cmd> there
-  task remove [--force] <id>
+  task remove [--force] [--skip-archive] [--missing] <id>
                       internal (task.remove): archive and remove task <id>
                       in a session of its source checkout
+  task remove-worktree [--force] [--result FILE] <repo> <worktree> [<branch>]
+                      internal (worktree.remove): remove a worktree no task
+                      has in a session of its source checkout
   schedule agent --result FILE -- <agent> [args...]
                       internal (agent schedules): run the agent of a schedule
                       run non-interactively and judge how it went
@@ -83,6 +90,8 @@ func dispatch(args []string) int {
 		return follow.Main(rest)
 	case "hook":
 		return hook.Main(rest)
+	case "statusline":
+		return statusline.Main(rest)
 	case "install", "integrate", "uninstall", "doctor", "wsl-shutdown":
 		return install.Main(cmd, rest)
 	case "__env": // internal: environment probe run through the login shell

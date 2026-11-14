@@ -67,6 +67,9 @@ type app struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
 	notifs []*wire.Msg
+	// hangUp, when set, closes the bridge's stdin and waits until it
+	// exited (startBridgeFor).
+	hangUp func()
 }
 
 type pipeRW struct {

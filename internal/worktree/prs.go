@@ -20,7 +20,7 @@ import (
 func PRs(ctx context.Context, env []string, inv *Inventory, tasks []wire.Task) []wire.WorktreePR {
 	type ref struct {
 		repo  string
-		w     Worktree
+		w     task.Worktree
 		which string // the branch, or a PR task's number
 	}
 	var refs []ref

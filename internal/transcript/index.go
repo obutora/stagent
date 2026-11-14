@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/obutora/stagent/internal/fsutil"
 	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -292,32 +293,9 @@ func (x *Index) save() {
 	if err != nil {
 		return
 	}
-	if err := writeFileAtomic(x.path, b); err == nil {
+	if err := fsutil.WriteFileAtomic(x.path, b); err == nil {
 		x.dirty = false
 	}
-}
-
-// writeFileAtomic writes b to path via a temporary file and rename (0600).
-func writeFileAtomic(path string, b []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	_, werr := f.Write(b)
-	cerr := f.Close()
-	if err := errors.Join(werr, cerr, os.Chmod(tmp, 0o600)); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------

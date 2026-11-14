@@ -81,6 +81,9 @@ func TestAgentRefusedMethods(t *testing.T) {
 		{wire.MethodConfigGet, nil},
 		{wire.MethodDaemonStatus, nil},
 		{wire.MethodConversationsList, wire.ConversationsListParams{}},
+		{wire.MethodUsageGet, wire.UsageGetParams{TZ: "UTC"}},
+		// What `stagent statusline claude` sends, under claude.
+		{wire.MethodUsageReport, wire.UsageReportParams{ConfigDir: "/home/u/.claude", RateLimits: json.RawMessage(`{"five_hour":{"used_percentage":1,"resets_at":4102444800}}`)}},
 		{wire.MethodHookEvent, wire.HookEventParams{Harness: wire.HarnessClaude, Event: "Stop", SessionID: sid, Payload: json.RawMessage(`{"session_id":"conv-1"}`)}},
 	}
 	if schedulesServed {

@@ -66,10 +66,7 @@ var All = []Harness{
 		Packages: []string{"@anthropic-ai/claude-code"},
 		Batch:    Batch{Flags: []string{"-p", "--print"}},
 		TranscriptRoot: func(home string, getenv func(string) string) string {
-			dir := getenv("CLAUDE_CONFIG_DIR")
-			if dir == "" {
-				dir = filepath.Join(home, ".claude")
-			}
+			dir, _ := ClaudeConfigDir(home, getenv)
 			return filepath.Join(dir, "projects")
 		},
 		HookHeldForPrompt: true,
@@ -186,6 +183,17 @@ func Lookup(id string) (Harness, bool) {
 func Known(id string) bool {
 	_, ok := Lookup(id)
 	return ok
+}
+
+// ClaudeConfigDir is the directory Claude Code keeps its files in, the
+// account its limit windows are kept under: $CLAUDE_CONFIG_DIR as a clean
+// path, else ~/.claude. env is the variable as set ("" when unset), which
+// names Claude Code's Keychain item (usage.KeychainService).
+func ClaudeConfigDir(home string, getenv func(string) string) (dir, env string) {
+	if env = getenv("CLAUDE_CONFIG_DIR"); env != "" {
+		return filepath.Clean(env), env
+	}
+	return filepath.Join(home, ".claude"), ""
 }
 
 // Missing lists, in the order of All, the ids of the harnesses a

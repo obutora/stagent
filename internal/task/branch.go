@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"unicode"
@@ -77,8 +76,7 @@ func CurrentBranch(ctx context.Context, env []string, dir string) (string, error
 
 // HasRef reports whether ref names a commit in the checkout repo.
 func HasRef(ctx context.Context, env []string, repo, ref string) bool {
-	_, err := Git(ctx, env, repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	return err == nil
+	return objectOf(ctx, env, repo, ref+"^{commit}") != ""
 }
 
 // CheckBranch fails when name cannot be a branch name.
@@ -147,19 +145,23 @@ func PullRequestRefs(ctx context.Context, env []string, repo string, number int)
 
 // GH runs gh in dir with env (nil: this process's), found on env's PATH,
 // and returns its standard output. A failing gh is an error with its last
-// stderr line.
+// stderr line, or wrapping its *LimitError when ctx's limit stopped it.
 func GH(ctx context.Context, env []string, dir string, args ...string) ([]byte, error) {
 	bin, err := lookProgram(env, "gh")
 	if err != nil {
 		return nil, errors.New("gh not found")
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := command(ctx, bin, args...)
 	cmd.Dir, cmd.Env = dir, env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("gh %s: %s", strings.Join(args[:min(2, len(args))], " "), cmp.Or(lastLine(stderr.String()), err.Error()))
+	if err = exited(err); err != nil {
+		which := strings.Join(args[:min(2, len(args))], " ")
+		if le := limitOf(ctx); le != nil {
+			return nil, fmt.Errorf("gh %s: %w", which, le)
+		}
+		return nil, fmt.Errorf("gh %s: %s", which, cmp.Or(lastLine(stderr.String()), err.Error()))
 	}
 	return out, nil
 }

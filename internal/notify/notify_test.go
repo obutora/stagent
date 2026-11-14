@@ -543,3 +543,32 @@ func TestDigesterFoldsWithinWindow(t *testing.T) {
 		t.Fatalf("an empty window flushed %+v", flushed[2:])
 	}
 }
+
+// Each reason and level heads a push with one mark: the ntfy tag and the
+// chat emoji of the same picture.
+func TestReasonMarks(t *testing.T) {
+	for _, c := range []struct{ reason, level, tag, emoji string }{
+		{"needs_approval", wire.LevelInfo, "lock", "🔒"},
+		{"waiting_input", wire.LevelInfo, "hourglass", "⏳"},
+		{"turn_complete", wire.LevelInfo, "white_check_mark", "✅"},
+		{"exited", wire.LevelInfo, "checkered_flag", "🏁"},
+		{"exited", wire.LevelWarn, "warning", "⚠️"},
+		{wire.ReasonUsageLimit, wire.LevelInfo, "arrows_counterclockwise", "🔄"},
+		{wire.ReasonUsageLimit, wire.LevelWarn, "warning", "⚠️"},
+		{wire.ReasonUsageLimit, wire.LevelError, "no_entry", "⛔"},
+		{"digest", wire.LevelWarn, "bell", "🔔"},
+		{"schedule", wire.LevelInfo, "", ""},
+	} {
+		n := wire.NotificationData{Reason: c.reason, Level: c.level}
+		wantTags := "stagent"
+		if c.tag != "" {
+			wantTags += "," + c.tag
+		}
+		if got := ntfyTags(n); got != wantTags {
+			t.Errorf("ntfyTags(%s, %s) = %q, want %q", c.reason, c.level, got, wantTags)
+		}
+		if got := chatEmoji(n); got != c.emoji {
+			t.Errorf("chatEmoji(%s, %s) = %q, want %q", c.reason, c.level, got, c.emoji)
+		}
+	}
+}

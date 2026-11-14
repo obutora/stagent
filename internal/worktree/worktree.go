@@ -62,20 +62,10 @@ type Repo struct {
 	// GitHub: a remote's URL is on github.com.
 	GitHub bool
 	// Worktrees are its linked worktrees in git's order.
-	Worktrees []Worktree
+	Worktrees []task.Worktree
 }
 
 func (r Repo) listed() bool { return len(r.Worktrees) > 0 }
-
-// Worktree is a linked worktree as `git worktree list` reports it.
-type Worktree struct {
-	Path       string // canonical
-	Branch     string // short name; "" when detached
-	Head       string
-	Missing    bool // its directory is gone (prunable)
-	Locked     bool
-	LockReason string
-}
 
 // Discover finds the repositories of src and their worktrees, without
 // changing anything. Each candidate directory — worktree_repos, the tasks'
@@ -87,7 +77,7 @@ type Worktree struct {
 // around another (dotfiles at ~) so hides none inside it. A candidate git
 // fails for is skipped silently; git not found at all is the error.
 func Discover(ctx context.Context, src Sources) (*Inventory, error) {
-	env := noLocks(src.Env)
+	env := task.NoLocks(src.Env)
 	inv := &Inventory{}
 	if src.Folder != "" {
 		inv.Folder = task.CanonicalPath(src.Folder)
@@ -137,14 +127,13 @@ func Discover(ctx context.Context, src Sources) (*Inventory, error) {
 		if top == "" || inv.known(top) {
 			continue
 		}
-		out, err := task.Git(ctx, env, top, "worktree", "list", "--porcelain")
+		ws, err := task.ListWorktrees(ctx, env, top)
 		if errors.Is(err, exec.ErrNotFound) {
 			return nil, err
 		}
 		if err != nil {
 			continue
 		}
-		ws := parsePorcelain(string(out))
 		if len(ws) == 0 || inv.repo(ws[0].Path) != nil {
 			continue
 		}
@@ -173,45 +162,6 @@ func defaultBranch(ctx context.Context, env []string, repo string) string {
 		}
 	}
 	return ""
-}
-
-// parsePorcelain reads `git worktree list --porcelain` (not -z: git 2.36):
-// blocks of "worktree <path>", "HEAD <sha>", "branch <ref>" or "detached",
-// "bare", "locked [reason]", "prunable [reason]". A worktree whose
-// directory is gone is missing even when an older git does not say
-// prunable.
-func parsePorcelain(out string) []Worktree {
-	var ws []Worktree
-	for line := range strings.Lines(out) {
-		line = strings.TrimRight(line, "\r\n")
-		if p, ok := strings.CutPrefix(line, "worktree "); ok {
-			ws = append(ws, Worktree{Path: task.CanonicalPath(filepath.FromSlash(p))})
-			continue
-		}
-		if len(ws) == 0 {
-			continue
-		}
-		w := &ws[len(ws)-1]
-		key, val, _ := strings.Cut(line, " ")
-		switch key {
-		case "HEAD":
-			w.Head = val
-		case "branch":
-			w.Branch = strings.TrimPrefix(val, "refs/heads/")
-		case "locked":
-			w.Locked, w.LockReason = true, val
-		case "prunable":
-			w.Missing = true
-		}
-	}
-	for i := range ws {
-		if !ws[i].Missing {
-			if _, err := os.Lstat(ws[i].Path); os.IsNotExist(err) {
-				ws[i].Missing = true
-			}
-		}
-	}
-	return ws
 }
 
 // onGitHub reports whether a remote of repo has a github.com URL.
@@ -321,7 +271,7 @@ func hasGit(dir string) bool {
 type Hit struct {
 	Repo *Repo
 	// Worktree is nil for the source checkout itself and for a folder.
-	Worktree *Worktree
+	Worktree *task.Worktree
 	Folder   *wire.WorktreeFolder
 }
 
@@ -359,7 +309,7 @@ func (inv *Inventory) RepoPaths() []string {
 // Holds reports whether a source checkout or worktree found lies in dir.
 func (inv *Inventory) Holds(dir string) bool {
 	for _, r := range inv.Repos {
-		if task.Within(r.Path, dir) || slices.ContainsFunc(r.Worktrees, func(w Worktree) bool { return task.Within(w.Path, dir) }) {
+		if task.Within(r.Path, dir) || slices.ContainsFunc(r.Worktrees, func(w task.Worktree) bool { return task.Within(w.Path, dir) }) {
 			return true
 		}
 	}
@@ -384,10 +334,15 @@ func Inside(s wire.Session, dir string) bool {
 // List describes inv's repositories for worktree.list: each worktree with
 // its task, live sessions (live: cwd inside it, or its task's), changes
 // (task.Changes, the shared directories' links not counted), unpushed
-// commits and whether git sees its head merged into the default branch.
+// commits, whether git sees its head merged into its task's base or the
+// default branch (task.Merged: squash and rebase merges too) and its
+// refusal reasons (task.Refusals, as the removal's dry run tells them). A
+// task's worktree a killed `git worktree add` left half made is shown
+// unlocked and without changes: removing it is the task's 片付け, which
+// takes it despite the add's lock, and nothing in it is the user's.
 // Nothing takes git's optional locks.
 func List(ctx context.Context, env []string, inv *Inventory, tasks []wire.Task, live []wire.Session) []wire.WorktreeRepo {
-	env = noLocks(env)
+	env = task.NoLocks(env)
 	var shown []Repo
 	for _, r := range inv.Repos {
 		if r.listed() {
@@ -419,47 +374,48 @@ func List(ctx context.Context, env []string, inv *Inventory, tasks []wire.Task, 
 			Path: w.Path, Branch: w.Branch, Head: w.Head,
 			Missing: w.Missing, Locked: w.Locked, LockReason: w.LockReason,
 		}
-		if t := TaskOf(tasks, w.Path); t != nil {
-			e.TaskID = t.ID
+		var base string
+		halfMade := false
+		t := TaskOf(tasks, w.Path)
+		if t != nil {
+			e.TaskID, base = t.ID, t.Base
+			if halfMade = w.HalfMade(); halfMade {
+				e.Locked, e.LockReason = false, ""
+			}
 		}
+		e.Refusals, _ = task.Refusals(ctx, env, r.Worktrees, w.Path, t != nil)
 		for i, s := range live {
 			if cwds[i] != "" && task.Within(cwds[i], w.Path) || e.TaskID != "" && s.TaskID == e.TaskID {
 				e.Sessions = append(e.Sessions, s.ID)
 			}
 		}
-		if !w.Missing {
+		if !w.Missing && !halfMade {
 			if changes, err := task.Changes(ctx, env, w.Path, task.ShareLinks(r.Path, w.Path)); err == nil {
 				e.Changes = len(changes)
 			}
 		}
 		e.Unpushed, _ = task.Unpushed(ctx, env, r.Path, w.Branch)
-		e.Merged = merged(ctx, env, r.Path, r.DefaultBranch, w.Head)
+		e.Merged = merged(ctx, env, r.Path, w.Head, base, r.DefaultBranch)
 		repos[refs[k].r].Worktrees[refs[k].w] = e
 	})
 	return repos
 }
 
-// merged reports whether head is an ancestor of the default branch:
-// origin's, else the local branch of that name.
-func merged(ctx context.Context, env []string, repo, def, head string) bool {
-	if def == "" || head == "" {
+// merged reports whether git finds head merged into base (its task's) or
+// def, as the removal does before deleting a branch (task.Merged); a git
+// before 2.38 sees plain merges only.
+func merged(ctx context.Context, env []string, repo, head, base, def string) bool {
+	if head == "" {
 		return false
 	}
-	ref := "refs/remotes/origin/" + def
-	if !task.HasRef(ctx, env, repo, ref) {
-		ref = "refs/heads/" + def
+	var bases []string
+	for _, b := range []string{base, def} {
+		if b != "" && !slices.Contains(bases, b) {
+			bases = append(bases, b)
+		}
 	}
-	_, err := task.Git(ctx, env, repo, "merge-base", "--is-ancestor", head, ref)
-	return err == nil
-}
-
-// noLocks is env (nil: this process's) with git's optional locks off, so
-// git status never writes the index of a worktree an agent works in.
-func noLocks(env []string) []string {
-	if env == nil {
-		env = os.Environ()
-	}
-	return append(slices.Clip(env), "GIT_OPTIONAL_LOCKS=0")
+	ok, _ := task.Merged(ctx, env, repo, head, bases...)
+	return ok
 }
 
 // each runs fn(0..n-1), at most parallel at once.

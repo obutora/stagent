@@ -92,7 +92,11 @@ Coding agents cannot drive the sessions. On Linux and macOS a holder
 refuses every connection from a process that claude, codex or omp started
 (stagent walks the connecting process's parents), and the daemon refuses
 them `config.set`, `presence.set`, `notify.test` and `daemon.shutdown`;
-hooks still report and the session list can still be read. An agent whose
+hooks and the statusLine relay still report, and the session list can
+still be read (the relay's `usage.report` is taken only for a Claude
+configuration directory `integrate --statusline` put it in, within
+bounds, so an agent can at most send false limit windows for that one
+account). An agent whose
 sandboxed commands run without asking could otherwise type into its own
 session — answering its own approval menus — or into another session,
 outside its sandbox ([ADR 0004](../../../docs/adr/0004-refuse-connections-from-agent-descendants.md)).
@@ -189,6 +193,48 @@ wsl-shutdown`, or restarting the PC); WSL, Windows restarts and signing
 out of Windows still end them. `stagent doctor` reports it under
 `persistence.wsl`; lingering is never needed in WSL.
 
+## Usage and limit windows
+
+With the agent features on, the app shows the tokens the coding agents
+spent on the host (使用量) and the limit windows of their subscriptions
+(上限の枠: Claude's and Codex's 5 hours and week). For that:
+
+- `stagent daemon` reads, every 10 s and when the app asks, what is new in
+  the conversation files of claude (`$CLAUDE_CONFIG_DIR` or `~/.claude`,
+  `projects/`, sub-agents included), codex (`$CODEX_HOME` or `~/.codex`,
+  `sessions/`), omp and pi — only the token counts, models, times and
+  working directories, and the `rate_limits` Codex writes in its rollouts.
+  It keeps what it counted in `~/.ssh-term/agent/state/usage-index.json`,
+  the last value of each limit window in `state/usage-limits.json` and
+  what it notified of them (80%, 100%, reset) in
+  `state/usage-alerts.json`. Deleting them only costs a rescan.
+- `stagent integrate --statusline` (offered by the app's host setup) sets
+  the `statusLine` of Claude Code's `settings.json` (`~/.claude`, and
+  `$CLAUDE_CONFIG_DIR` when set) to `stagent statusline claude`, keeping
+  the statusLine you had in the manifest. `unhook` / `uninstall` put
+  yours back as it was, and a statusLine you set afterwards is never
+  overwritten (`stagent doctor` reports it under `statusline`).
+- `stagent statusline claude` is that command: it runs your own
+  statusLine with the same input and returns its output and exit code,
+  and sends the input's `rate_limits` to the daemon at most every 15 s
+  per session (a mark file in `state/statusline/`), spending at most
+  100 ms connecting and never starting a daemon.
+- The private API (非公開 API) is off by default. Only when you turn it on
+  for claude or codex on the app's usage screen (`usage.private_api` in
+  `config.json`), the daemon reads that harness's login token —
+  `.credentials.json` in Claude's configuration directory, or on macOS
+  its Keychain item through `/usr/bin/security find-generic-password`;
+  Codex's `auth.json` — and calls the undocumented usage endpoint over
+  HTTPS (`api.anthropic.com`, `chatgpt.com`), only while the app is in
+  front or its usage screen opens, at most every 15 minutes. The tokens
+  are only read: never refreshed, never written, never logged or put in
+  an error, a file or `doctor`.
+
+Coding agents can read the usage too; of what writes, they can send only
+the relay's report, and only within the bounds told above for agents
+(ADR 0004). The wire format is in
+[PROTOCOL.md](PROTOCOL.md) ("Usage", "Limit windows", "Private API").
+
 ## Installation and removal
 
 The app installs the binary to `~/.ssh-term/agent/bin/stagent` the first time
@@ -251,6 +297,27 @@ for a in stagent-darwin-amd64 stagent-darwin-arm64; do
   cmp "/tmp/$a" "/tmp/$a.built" && echo "$a ok"
 done
 ```
+
+Releases that ship `stagent-windows-*.exe.sig` carry an Authenticode
+signature in their Windows binaries, so those two lines differ as well.
+The `.sig` file is that signature on its own: attach it to your build
+with [jsign](https://ebourg.github.io/jsign/) (`brew install jsign`; no key
+needed) and the result must equal the release's exe byte for byte:
+
+```sh
+v=vX.Y.Z   # the release you are checking
+for a in stagent-windows-amd64.exe stagent-windows-arm64.exe; do
+  base="https://github.com/obutora/stagent/releases/download/$v"
+  curl -sLo "/tmp/$a" "$base/$a"
+  cp "dist/$a" "/tmp/$a.built"
+  curl -sLo "/tmp/$a.built.sig" "$base/$a.sig"
+  jsign --detached "/tmp/$a.built"
+  cmp "/tmp/$a" "/tmp/$a.built" && echo "$a ok"
+done
+```
+
+On Windows, `Get-AuthenticodeSignature .\stagent-windows-amd64.exe` shows
+`Valid` with the signer and a timestamp.
 
 Releases are published with `scripts/release.sh --publish`, which commits
 the exact source it built to this repository, rebuilds that commit and

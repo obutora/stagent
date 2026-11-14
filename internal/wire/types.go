@@ -198,6 +198,8 @@ type StateChangedData struct {
 const (
 	LevelInfo = "info"
 	LevelWarn = "warn"
+	// LevelError: a limit window (上限の枠) used up (since 0.19.0).
+	LevelError = "error"
 )
 
 // NotificationData is Event.Data for notification — what the app shows and
@@ -208,7 +210,8 @@ type NotificationData struct {
 	Level string `json:"level"`
 	// Reason: "waiting_input" | "needs_approval" | "turn_complete" |
 	// "exited" | "terminal" (OSC/BEL from the program) | "test" | "digest" |
-	// "schedule" (a run of a schedule: ScheduleID, RunID).
+	// "schedule" (a run of a schedule: ScheduleID, RunID) | "usage_limit"
+	// (a limit window: Harness, Window, ResetsAt).
 	Reason string `json:"reason"`
 	// Count > 1 for a digest folding several notifications together.
 	Count int `json:"count,omitempty"`
@@ -230,6 +233,19 @@ type NotificationData struct {
 	// Schedules: a digest folding some schedule's notification; its links
 	// carry an empty sc= (the host's schedules). Not part of the event.
 	Schedules bool `json:"-"`
+	// Harness, Window and ResetsAt: a notification of reason
+	// "usage_limit" is about that limit window (上限の枠, a UsageWindow*
+	// id or "<minutes>m") of that agent's account (ConfigDir, not part of
+	// the event), the window ending at ResetsAt (unix ms). It has no
+	// SessionID; ntfy's sequence ID and the chat message it replaces are
+	// the window's with its reset time, and the links carry u=<harness>.
+	Harness   string `json:"harness,omitempty"`
+	Window    string `json:"window,omitempty"`
+	ResetsAt  int64  `json:"resets_at,omitempty"`
+	ConfigDir string `json:"-"`
+	// Usage: a digest folding some usage_limit notification; its links
+	// carry an empty u= (the host's usage screen). Not part of the event.
+	Usage bool `json:"-"`
 }
 
 // Approval is a pending permission request reported by a harness hook. It
@@ -338,6 +354,32 @@ type Config struct {
 	// (canonical, sorted); the bridge rewrites them when that changes, a
 	// checkout that is gone dropped.
 	WorktreeRepos []string `json:"worktree_repos,omitempty"`
+	// Usage configures how the limit windows (上限の枠) are measured.
+	Usage UsageConfig `json:"usage"`
+}
+
+// UsageConfig configures the measuring of the limit windows.
+type UsageConfig struct {
+	// PrivateAPI: also call the harness's undocumented usage API (非公開
+	// API) for its limit windows (default off for both).
+	PrivateAPI UsagePrivateAPI `json:"private_api"`
+}
+
+// UsagePrivateAPI says which harnesses' private API is called.
+type UsagePrivateAPI struct {
+	Claude bool `json:"claude"`
+	Codex  bool `json:"codex"`
+}
+
+// On reports whether the private API is on for harness h.
+func (p UsagePrivateAPI) On(h string) bool {
+	switch h {
+	case HarnessClaude:
+		return p.Claude
+	case HarnessCodex:
+		return p.Codex
+	}
+	return false
 }
 
 // RepoConfig is one source checkout's settings.
@@ -395,6 +437,9 @@ type NotifyReasons struct {
 	// Schedule: the runs of schedules (default true), each as its
 	// Schedule.Notify says.
 	Schedule *bool `json:"schedule,omitempty"`
+	// UsageLimit: a limit window (上限の枠) passing 80% and 100%, and
+	// resetting after 100% (default true).
+	UsageLimit *bool `json:"usage_limit,omitempty"`
 }
 
 // NotifyReasons.Exited values.
@@ -526,6 +571,9 @@ func (c Config) WithDefaults() Config {
 	}
 	if nr.Schedule == nil {
 		nr.Schedule = new(true)
+	}
+	if nr.UsageLimit == nil {
+		nr.UsageLimit = new(true)
 	}
 	if nr.Exited == "" {
 		nr.Exited = ExitedError

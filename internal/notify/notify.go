@@ -26,13 +26,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/obutora/stagent/internal/fsutil"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -176,6 +176,8 @@ func Wants(cfg wire.NotifyConfig, n wire.NotificationData) bool {
 		return on(r.Terminal)
 	case "schedule":
 		return on(r.Schedule)
+	case wire.ReasonUsageLimit:
+		return on(r.UsageLimit)
 	case "exited":
 		return r.Exited == wire.ExitedAll || r.Exited == wire.ExitedError && n.Level == wire.LevelWarn
 	}
@@ -509,7 +511,7 @@ func (s *Sender) record(channel string, err error) {
 	}
 	b, err := json.Marshal(s.failures)
 	if err == nil {
-		err = writeFileAtomic(s.path, b)
+		err = fsutil.WriteFileAtomic(s.path, b)
 	}
 	if err != nil {
 		s.logf("notify: last errors: %v", err)
@@ -542,26 +544,6 @@ func LoadFailures(path string) (map[string]wire.NotifyFailure, error) {
 		f = map[string]wire.NotifyFailure{}
 	}
 	return f, nil
-}
-
-// writeFileAtomic writes b to path via a temporary file and rename, 0600.
-func writeFileAtomic(path string, b []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	_, werr := f.Write(b)
-	cerr := f.Close()
-	if err := errors.Join(werr, cerr, os.Chmod(tmp, 0o600)); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
 }
 
 // SequenceID is the ntfy sequence ID of session sessionID's
@@ -645,6 +627,8 @@ func clearNtfy(ctx context.Context, client *http.Client, c wire.NtfyConfig, sess
 
 func ntfyPriority(n wire.NotificationData) string {
 	switch {
+	case n.Level == wire.LevelError:
+		return "urgent"
 	case n.Level == wire.LevelWarn || n.Reason == "needs_approval":
 		return "high"
 	default:
@@ -652,25 +636,39 @@ func ntfyPriority(n wire.NotificationData) string {
 	}
 }
 
-func ntfyTags(n wire.NotificationData) string {
-	tags := []string{"stagent"}
-	switch n.Reason {
-	case "needs_approval":
-		tags = append(tags, "lock")
-	case "waiting_input":
-		tags = append(tags, "hourglass")
-	case "turn_complete":
-		tags = append(tags, "white_check_mark")
-	case "exited":
-		if n.Level == wire.LevelWarn {
-			tags = append(tags, "warning")
-		} else {
-			tags = append(tags, "checkered_flag")
-		}
-	case "digest":
-		tags = append(tags, "bell")
+// mark is the picture a push of a reason and level is headed with: its
+// ntfy tag and the chat emoji of the same picture.
+type mark struct{ tag, emoji string }
+
+// reasonMarks are the marks by reason, then level; level "" is any level
+// not listed. A reason not listed has none.
+var reasonMarks = map[string]map[string]mark{
+	"needs_approval": {"": {"lock", "🔒"}},
+	"waiting_input":  {"": {"hourglass", "⏳"}},
+	"turn_complete":  {"": {"white_check_mark", "✅"}},
+	"exited":         {wire.LevelWarn: {"warning", "⚠️"}, "": {"checkered_flag", "🏁"}},
+	wire.ReasonUsageLimit: {
+		wire.LevelError: {"no_entry", "⛔"},
+		wire.LevelWarn:  {"warning", "⚠️"},
+		"":              {"arrows_counterclockwise", "🔄"},
+	},
+	"digest": {"": {"bell", "🔔"}},
+}
+
+// markOf is n's mark (zero: none).
+func markOf(n wire.NotificationData) mark {
+	byLevel := reasonMarks[n.Reason]
+	if m, ok := byLevel[n.Level]; ok {
+		return m
 	}
-	return strings.Join(tags, ",")
+	return byLevel[""]
+}
+
+func ntfyTags(n wire.NotificationData) string {
+	if m := markOf(n); m.tag != "" {
+		return "stagent," + m.tag
+	}
+	return "stagent"
 }
 
 // pushWebhook posts n as JSON with click_url (the open page, PageURL)

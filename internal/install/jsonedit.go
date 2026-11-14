@@ -27,6 +27,9 @@ type jnode struct {
 	keys []string // object keys (decoded)
 	rkey [][]byte // object keys (source text)
 	vals []*jnode // object values / array elements
+	// src is the value's source text as parsed (scalars too); edits do
+	// not update it.
+	src []byte
 }
 
 // jdoc is a parsed JSON file with its formatting conventions.
@@ -99,6 +102,13 @@ func (p *jparser) ws() {
 
 // value parses one value; the input is known to be valid JSON.
 func (p *jparser) value() *jnode {
+	start := p.i
+	n := p.parse()
+	n.src = p.b[start:p.i]
+	return n
+}
+
+func (p *jparser) parse() *jnode {
 	switch p.b[p.i] {
 	case '{':
 		n := &jnode{kind: jObject}

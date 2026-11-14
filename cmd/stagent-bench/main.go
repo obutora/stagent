@@ -8,8 +8,11 @@
 // daemon/holder memory (PSS) and CPU (Linux /proc), idle CPU, bytes sent to the app,
 // attach-to-first-frame latency, output-to-client latency (timestamps are
 // embedded in the stream) and conversations.list over 1,000 transcripts.
+// With -usage-mb it also writes that many MiB of Claude transcripts and
+// measures the daemon's first usage scan and usage.get over them.
 //
 //	go run ./cmd/stagent-bench -n 50 -k 1 -speed 10
+//	go run ./cmd/stagent-bench -n 1 -k 0 -usage-mb 1024
 package main
 
 import (
@@ -55,6 +58,7 @@ type config struct {
 	window      time.Duration
 	idleSettle  time.Duration
 	convs       int
+	usageMB     int
 	stagent     string
 	keep        bool
 }
@@ -75,6 +79,7 @@ func benchMain(args []string) int {
 	fs.DurationVar(&c.window, "window", 5*time.Second, "measurement window per phase")
 	fs.DurationVar(&c.idleSettle, "idle-settle", 5*time.Second, "wait after output stops before the idle window (> idle_after_ms)")
 	fs.IntVar(&c.convs, "conversations", 1000, "synthetic stored conversations for conversations.list")
+	fs.IntVar(&c.usageMB, "usage-mb", 0, "MiB of synthetic Claude transcripts for the usage scan (0: skip)")
 	fs.StringVar(&c.stagent, "stagent", "", "stagent binary (default: go build ./cmd/stagent)")
 	fs.BoolVar(&c.keep, "keep", false, "keep the temporary STAGENT_HOME")
 	fs.Parse(args)
@@ -185,6 +190,16 @@ type results struct {
 	daemonRSSMax  int64
 	holderRSSMax  int64
 	measuredProcs bool
+
+	// usage scan (-usage-mb): the tree written, the first scan (from the
+	// bridge start until usage.get stops reporting scanning) and
+	// usage.get afterwards, with nothing changed.
+	usageBytes   int64
+	usageReqs    int
+	usageScan    time.Duration
+	usageWarm    []time.Duration
+	usageCounted int64
+	usageDays    int
 }
 
 func run(c config) (*results, error) {
@@ -216,9 +231,17 @@ func run(c config) (*results, error) {
 	if c.stagent, err = filepath.Abs(c.stagent); err != nil {
 		return nil, err
 	}
+	res := &results{c: c, ptyBps: streamRate(c.fixture, c.chunk, c.rate, c.speed, c.cols, c.rows)}
 	fmt.Fprintf(os.Stderr, "writing %d synthetic conversations…\n", c.convs)
 	if err := writeConversations(home, c.convs); err != nil {
 		return nil, err
+	}
+	if c.usageMB > 0 {
+		fmt.Fprintf(os.Stderr, "writing %d MiB of Claude transcripts…\n", c.usageMB)
+		if res.usageReqs, err = writeUsageTree(home, c.usageMB); err != nil {
+			return nil, err
+		}
+		res.usageBytes = dirSize(filepath.Join(home, ".claude"))
 	}
 	for k, v := range map[string]string{paths.EnvHome: home, daemonclient.EnvExe: c.stagent, "HOME": home} {
 		os.Setenv(k, v)
@@ -227,8 +250,6 @@ func run(c config) (*results, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	res := &results{c: c, ptyBps: streamRate(c.fixture, c.chunk, c.rate, c.speed, c.cols, c.rows)}
 
 	// The bridge, exactly as the app runs it.
 	bridge := exec.Command(c.stagent, "bridge")
@@ -246,6 +267,7 @@ func run(c config) (*results, error) {
 	}
 	defer logf.Close()
 	bridge.Stderr = logf
+	bridgeStart := time.Now()
 	if err := bridge.Start(); err != nil {
 		return nil, err
 	}
@@ -276,6 +298,13 @@ func run(c config) (*results, error) {
 	var watch wire.WatchResult
 	if err := call(wire.MethodWatch, wire.WatchParams{}, &watch); err != nil {
 		return nil, err
+	}
+
+	if c.usageMB > 0 {
+		fmt.Fprintln(os.Stderr, "usage scan…")
+		if err := measureUsage(res, call, bridgeStart); err != nil {
+			return nil, err
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "spawning %d sessions…\n", c.n)
@@ -526,6 +555,10 @@ func (r *results) print(w io.Writer) bool {
 		ms(pct(r.firstRaw, 50)), ms(pct(r.firstRaw, 100)), ms(pct(r.firstScreen, 50)), ms(pct(r.firstScreen, 100)))
 	fmt.Fprintf(w, "conversations.list (%d files): cold %s, cached p50 %s max %s, %d returned\n\n",
 		c.convs, ms(r.convCold), ms(pct(r.convWarm, 50)), ms(pct(r.convWarm, 100)), r.convCount)
+	if c.usageMB > 0 {
+		fmt.Fprintf(w, "usage scan (%.0f MiB of Claude transcripts, %d requests written): first scan %s; usage.get unchanged p50 %s max %s; %d requests counted in %d day rows\n\n",
+			float64(r.usageBytes)/(1<<20), r.usageReqs, ms(r.usageScan), ms(pct(r.usageWarm, 50)), ms(pct(r.usageWarm, 100)), r.usageCounted, r.usageDays)
+	}
 
 	type check struct {
 		name, value, target string
@@ -553,6 +586,10 @@ func (r *results) print(w io.Writer) bool {
 	}
 	warm := pct(r.convWarm, 50)
 	add(fmt.Sprintf("conversations.list %d (cached)", c.convs), ms(warm), "≤ 200 ms", warm <= 200*time.Millisecond && r.convCount > 0, false)
+	if c.usageMB > 0 {
+		warm := pct(r.usageWarm, 100)
+		add("usage.get unchanged (max)", ms(warm), "≤ 200 ms", warm <= 200*time.Millisecond && r.usageCounted >= int64(r.usageReqs), false)
+	}
 	if un := r.phase("unattached"); un != nil {
 		limit := max(1024, 0.01*r.ptyBps*float64(c.n))
 		add("unattached app traffic", bps(un.appBps), "≤ "+bps(limit)+" (1% of PTY)", un.appBps <= limit, false)

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -24,21 +25,13 @@ func previewGUILogin(res *wire.SchedulePreview, s wire.Schedule) {
 	if !macHost || s.Kind != wire.ScheduleKindAgent || s.Harness != wire.HarnessClaude {
 		return
 	}
-	creds := filepath.Join(claudeConfigDir(), ".credentials.json")
+	dir, _ := harness.ClaudeConfigDir(os.Getenv("HOME"), os.Getenv)
+	creds := filepath.Join(dir, ".credentials.json")
 	if _, err := os.Stat(creds); err == nil {
 		return
 	}
 	res.Warnings = append(res.Warnings, wire.ScheduleWarning{Code: wire.WarnClaudeGUILogin,
 		Message: "there is no " + creds + ": claude reads its login from the keychain, which runs cannot while nobody is logged in to this Mac's desktop"})
-}
-
-// claudeConfigDir is where claude keeps its files: $CLAUDE_CONFIG_DIR, or
-// ~/.claude.
-func claudeConfigDir() string {
-	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
-		return dir
-	}
-	return filepath.Join(os.Getenv("HOME"), ".claude")
 }
 
 // runOutsideGUILocked records that pending run p's holder was started

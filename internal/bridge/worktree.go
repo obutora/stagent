@@ -209,8 +209,11 @@ func (b *Bridge) doWorktreeWatch(p wire.WorktreeWatchParams) (*wire.WorktreeWatc
 // looked up in the inventory. A task's worktree is 片付け (doTaskRemove);
 // another worktree is removed by the same rules without archive; a folder
 // of the worktree folder is deleted. Then an empty <worktree folder>/<repo
-// name> it was in goes too. The source checkout and a locked worktree are
-// never removed (bad_request). A coding agent's process tree removes
+// name> it was in goes too — for a worktree in the removal's session, so
+// that it goes after the bridge has. The source checkout is never removed
+// (bad_request); a worktree's refusals (task.Refusals: a locked one
+// included, but for a task's worktree a killed `git worktree add` left
+// half made) refuse it (refused). A coding agent's process tree removes
 // nothing, not even a dry run (ADR 0004).
 func (b *Bridge) doWorktreeRemove(p wire.WorktreeRemoveParams) (*wire.WorktreeRemoveResult, error) {
 	const method = wire.MethodWorktreeRemove
@@ -239,64 +242,70 @@ func (b *Bridge) doWorktreeRemove(p wire.WorktreeRemoveParams) (*wire.WorktreeRe
 		return nil, wire.Errorf(wire.ErrNotFound, "%s: %s is no worktree or folder this host knows", method, path)
 	case hit.Folder != nil:
 		res, err = removeFolder(ctx, h.inv, hit.Folder.Path, p.DryRun)
+		if err == nil && !p.DryRun {
+			res.RemovedParent = task.RemoveEmptyParent(h.inv.Folder, path)
+		}
 	case hit.Worktree == nil:
 		return nil, wire.Errorf(wire.ErrBadRequest, "%s: %s is a source checkout", method, path)
-	case hit.Worktree.Locked:
-		return nil, wire.Errorf(wire.ErrBadRequest, "%s: %s is locked: %s", method, path, hit.Worktree.LockReason)
 	default:
 		if t := worktree.TaskOf(h.tasks, hit.Worktree.Path); t != nil {
 			var tr *wire.TaskRemoveResult
-			tr, err = b.doTaskRemove(wire.TaskRemoveParams{ID: t.ID, Force: p.Force, StopSessions: p.StopSessions, DryRun: p.DryRun})
+			var parent string
+			tr, parent, err = b.doTaskRemove(wire.TaskRemoveParams{ID: t.ID, Force: p.Force, StopSessions: p.StopSessions, DryRun: p.DryRun}, h.inv.Folder)
 			if err == nil {
 				res = &wire.WorktreeRemoveResult{
-					Changes: tr.Changes, ChangesTruncated: tr.ChangesTruncated, Unpushed: tr.Unpushed,
-					Sessions: tr.Sessions, KeptBranch: tr.KeptBranch,
+					Refusals: tr.Refusals, Changes: tr.Changes, ChangesTruncated: tr.ChangesTruncated, Unpushed: tr.Unpushed,
+					Sessions: tr.Sessions, KeptBranch: tr.KeptBranch, RemovedParent: parent,
 				}
 			}
 		} else {
-			res, err = b.removeWorktree(ctx, h, env, hit.Repo.Path, *hit.Worktree, p)
+			res, err = b.removeWorktree(ctx, h, env, *hit.Repo, *hit.Worktree, p)
 		}
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !p.DryRun {
-		res.RemovedParent = removeEmptyParent(h.inv.Folder, path)
-	}
 	return res, nil
 }
 
-// removeWorktree removes worktree w of the source checkout repo, which no
-// task has: a dry run reports what is in the way (as task.remove's);
-// otherwise changes need force (not_clean) and live sessions inside it
-// stop_sessions (busy), then those are stopped as task.remove stops a
-// task's and task.Remove runs without archive — the shared directories'
-// links, git worktree remove, the branch only when nothing is lost; never
-// the remote.
-func (b *Bridge) removeWorktree(ctx context.Context, h *hostWorktrees, env []string, repo string, w worktree.Worktree, p wire.WorktreeRemoveParams) (*wire.WorktreeRemoveResult, error) {
+// removeWorktree removes worktree w of repository r, which no task has: a
+// dry run reports what is in the way (as task.remove's); otherwise its
+// refusals refuse it whatever the flags (refused), changes need force
+// (not_clean) and live sessions inside it stop_sessions (busy), then
+// those are stopped as task.remove stops a task's and the removal runs
+// without archive in a session (removeWorktreeInSession) — the shared
+// directories' links, git worktree remove, the branch only when nothing is
+// lost; never the remote.
+func (b *Bridge) removeWorktree(ctx context.Context, h *hostWorktrees, env []string, r worktree.Repo, w task.Worktree, p wire.WorktreeRemoveParams) (*wire.WorktreeRemoveResult, error) {
 	const method = wire.MethodWorktreeRemove
 	inside := func(s wire.Session) bool { return worktree.Inside(s, w.Path) }
 	live, err := liveSessions(ctx, h.dc, inside, nil)
 	if err != nil {
 		return nil, err
 	}
+	refusals, err := task.Refusals(ctx, env, r.Worktrees, w.Path, false)
+	if err != nil {
+		return nil, wire.Errorf(wire.ErrInternal, "%s: %s", method, oneLine(err.Error()))
+	}
 	var changes []string
 	if !w.Missing {
-		if changes, err = task.Changes(ctx, env, w.Path, task.ShareLinks(repo, w.Path)); err != nil {
+		if changes, err = task.Changes(ctx, env, w.Path, task.ShareLinks(r.Path, w.Path)); err != nil {
 			return nil, wire.Errorf(wire.ErrInternal, "%s: %s", method, oneLine(err.Error()))
 		}
 	}
 	if p.DryRun {
-		res := &wire.WorktreeRemoveResult{Changes: changes, Sessions: live}
+		res := &wire.WorktreeRemoveResult{Refusals: refusals, Changes: changes, Sessions: live}
 		if len(changes) > wire.TaskRemoveChangesMax {
 			res.Changes, res.ChangesTruncated = changes[:wire.TaskRemoveChangesMax], true
 		}
-		if res.Unpushed, err = task.Unpushed(ctx, env, repo, w.Branch); err != nil {
+		if res.Unpushed, err = task.Unpushed(ctx, env, r.Path, w.Branch); err != nil {
 			return nil, wire.Errorf(wire.ErrInternal, "%s: %s", method, oneLine(err.Error()))
 		}
 		return res, nil
 	}
 	switch {
+	case len(refusals) > 0:
+		return nil, refusedError(method, w.Path, refusals)
 	case len(changes) > 0 && !p.Force:
 		return nil, wire.Errorf(wire.ErrNotClean, "%s: %d uncommitted change(s) in %s", method, len(changes), w.Path)
 	case len(live) > 0 && !p.StopSessions:
@@ -309,18 +318,44 @@ func (b *Bridge) removeWorktree(ctx context.Context, h *hostWorktrees, env []str
 	if len(left) > 0 {
 		return nil, wire.Errorf(wire.ErrBusy, "%s: %d session(s) did not stop", method, len(left))
 	}
-	kept, err := task.Remove(ctx, task.Removal{
-		Task:  wire.Task{Repo: repo, Kind: wire.TaskKindName, Branch: w.Branch, Worktree: w.Path},
-		Force: p.Force, Env: env,
-	})
-	if err != nil {
-		var se *task.StageError
-		if errors.As(err, &se) {
-			err = se.Err
-		}
-		return nil, wire.Errorf(wire.ErrInternal, "%s", oneLine(err.Error()))
+	return b.removeWorktreeInSession(r.Path, w, p.Force, h.inv.Folder, env)
+}
+
+// removeWorktreeInSession runs `stagent task remove-worktree` for w in a
+// new session whose cwd is repo (runRemoval), as removeInSession runs a
+// task's removal: it goes on when the bridge goes, the empty parent in
+// the worktree folder included.
+func (b *Bridge) removeWorktreeInSession(repo string, w task.Worktree, force bool, folder string, env []string) (*wire.WorktreeRemoveResult, error) {
+	const method = wire.MethodWorktreeRemove
+	var flags []string
+	if force {
+		flags = append(flags, "--force")
 	}
-	return &wire.WorktreeRemoveResult{KeptBranch: kept}, nil
+	if folder != "" {
+		flags = append(flags, "--folder", folder)
+	}
+	operands := []string{repo, w.Path}
+	if w.Branch != "" {
+		operands = append(operands, w.Branch)
+	}
+	_, r, err := b.runRemoval("remove-worktree", flags, operands, repo, env, nil, nil, func(err error) error {
+		var we *wire.Error
+		if errors.As(err, &we) {
+			return we
+		}
+		return wire.Errorf(wire.ErrInternal, "%s: %s", method, oneLine(err.Error()))
+	})
+	switch {
+	case err != nil:
+		return nil, err
+	case r == nil:
+		return nil, wire.Errorf(wire.ErrInternal, "%s: stagent task remove-worktree ended before finishing (see its session)", method)
+	case len(r.Refusals) > 0:
+		return nil, refusedError(method, w.Path, r.Refusals)
+	case r.Error != "":
+		return nil, wire.Errorf(wire.ErrInternal, "%s", oneLine(r.Error))
+	}
+	return &wire.WorktreeRemoveResult{KeptBranch: r.KeptBranch, RemovedParent: r.RemovedParent}, nil
 }
 
 // removeFolder removes a folder of the worktree folder that is no
@@ -340,23 +375,6 @@ func removeFolder(ctx context.Context, inv *worktree.Inventory, path string, dry
 		return nil, wire.Errorf(wire.ErrInternal, "%s: %s", wire.MethodWorktreeRemove, oneLine(err.Error()))
 	}
 	return &wire.WorktreeRemoveResult{}, nil
-}
-
-// removeEmptyParent removes the directory path was in when that is
-// <folder>/<repo name> — directly in the worktree folder — and empty now
-// but for macOS Finder's .DS_Store, and returns it ("" otherwise).
-func removeEmptyParent(folder, path string) string {
-	parent := filepath.Dir(path)
-	if folder == "" || !task.SamePath(filepath.Dir(parent), folder) {
-		return ""
-	}
-	if ents, err := os.ReadDir(parent); err == nil && len(ents) == 1 && ents[0].Name() == ".DS_Store" && ents[0].Type().IsRegular() {
-		os.Remove(filepath.Join(parent, ".DS_Store"))
-	}
-	if os.Remove(parent) != nil {
-		return "" // not empty, or gone already
-	}
-	return parent
 }
 
 // orEmpty is s, or an empty list for nil (JSON [] rather than null).

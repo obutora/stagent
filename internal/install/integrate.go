@@ -37,12 +37,13 @@ type integrateOpts struct {
 	terminal        bool
 	executionPolicy bool
 	wslKeepRunning  bool
+	statusLine      bool
 	remove          []string
 }
 
 // Removable integration names for --remove: the harnesses of the registry,
 // then stagent's own integrations.
-var removeIDs = append(harness.IDs(), "shell-wrapper", "service", "linger", "terminal", wslKeepRunningID)
+var removeIDs = append(harness.IDs(), "shell-wrapper", "service", "linger", "terminal", wslKeepRunningID, statusLineID)
 
 func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	for _, h := range o.harness {
@@ -50,7 +51,7 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 			return nil, errors.New("cannot both add and remove " + h)
 		}
 	}
-	if o.shellWrapper && slices.Contains(o.remove, "shell-wrapper") || o.service && slices.Contains(o.remove, "service") || o.linger && slices.Contains(o.remove, "linger") || o.terminal && slices.Contains(o.remove, "terminal") || o.wslKeepRunning && slices.Contains(o.remove, wslKeepRunningID) {
+	if o.shellWrapper && slices.Contains(o.remove, "shell-wrapper") || o.service && slices.Contains(o.remove, "service") || o.linger && slices.Contains(o.remove, "linger") || o.terminal && slices.Contains(o.remove, "terminal") || o.wslKeepRunning && slices.Contains(o.remove, wslKeepRunningID) || o.statusLine && slices.Contains(o.remove, statusLineID) {
 		return nil, errors.New("cannot both add and remove the same integration")
 	}
 	var changes []*Change
@@ -111,6 +112,9 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 	if o.wslKeepRunning {
 		one(wslKeepRunningID)(e.wslAddChange())
 	}
+	if o.statusLine {
+		e.statusLineAddChanges(one)
+	}
 	var removed []*target
 	for _, id := range o.remove {
 		ts := e.targetsFor(id)
@@ -129,7 +133,7 @@ func (e *env) integrate(o integrateOpts) (*IntegrateResult, error) {
 			one(id)(e.wslRemoveChange())
 		}
 	}
-	if len(o.harness)+len(o.remove) > 0 || o.shellWrapper || o.service {
+	if len(o.harness)+len(o.remove) > 0 || o.shellWrapper || o.service || o.statusLine {
 		if !exists(e.l.Bin) {
 			e.note(noteBinaryMissing, "The stagent binary is not installed at {path} yet; hooks and wrappers stay inactive until it is.", "path", e.l.Bin)
 		}
@@ -206,8 +210,11 @@ func (e *env) targetsFor(id string) []*target {
 	if hi, ok := integrations[id]; ok {
 		return hi.targets(e)
 	}
-	if id == "shell-wrapper" {
+	switch id {
+	case "shell-wrapper":
 		return e.shellTargets()
+	case statusLineID:
+		return e.statusLineTargets()
 	}
 	return nil
 }
@@ -219,7 +226,8 @@ func (e *env) allTargets() []*target {
 	for _, h := range harness.All {
 		ts = append(ts, integrations[h.ID].targets(e)...)
 	}
-	return append(ts, e.shellTargets()...)
+	ts = append(ts, e.shellTargets()...)
+	return append(ts, e.statusLineTargets()...)
 }
 
 // touchManifest refreshes the layout facts recorded in the manifest.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -104,8 +105,8 @@ func (inv *Inventory) repoAt(t *testing.T, path string) Repo {
 	return Repo{}
 }
 
-func worktreesByPath(r Repo) map[string]Worktree {
-	m := map[string]Worktree{}
+func worktreesByPath(r Repo) map[string]task.Worktree {
+	m := map[string]task.Worktree{}
 	for _, w := range r.Worktrees {
 		m[w.Path] = w
 	}
@@ -285,6 +286,55 @@ func TestListMergedWithoutRemote(t *testing.T) {
 		if want := w.Path == done; w.Merged != want {
 			t.Fatalf("%s merged %v, want %v", w.Path, w.Merged, want)
 		}
+	}
+}
+
+// A worktree whose branch was squash-merged is merged too — into the
+// default branch, or into its task's base — as git sees it when the
+// removal decides whether a branch may go; one with a commit after the
+// merge is not. Telling leaves no object behind in the repository.
+func TestListMergedSquash(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	app := f.repo(t, "app")
+	squashed := filepath.Join(f.base, "wt", "squashed")
+	more := filepath.Join(f.base, "wt", "more")
+	task := filepath.Join(f.base, "wt", "task")
+	for _, w := range []string{squashed, more, task} {
+		name := filepath.Base(w)
+		f.worktree(t, app, w, name)
+		writeFile(t, filepath.Join(w, name+".txt"), name+"\n")
+		f.git(t, w, "add", name+".txt")
+		f.git(t, w, "commit", "-q", "-m", "work")
+	}
+	for _, b := range []string{"squashed", "more"} {
+		f.git(t, app, "merge", "-q", "--squash", b)
+		f.git(t, app, "commit", "-q", "-m", "squash "+b)
+	}
+	writeFile(t, filepath.Join(more, "more.txt"), "more\nafter\n")
+	f.git(t, more, "commit", "-q", "-am", "after the merge")
+	f.git(t, app, "switch", "-q", "-c", "release", "origin/main")
+	f.git(t, app, "merge", "-q", "--squash", "task")
+	f.git(t, app, "commit", "-q", "-m", "squash task")
+	f.git(t, app, "switch", "-q", "main")
+	objects := f.git(t, app, "count-objects")
+	inv, err := Discover(ctx, Sources{Env: f.env, Repos: []string{app}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := []wire.Task{{ID: "t1", Repo: app, Worktree: task, Branch: "task", Base: "release"}}
+	repos := List(ctx, f.env, inv, tasks, nil)
+	if len(repos) != 1 || len(repos[0].Worktrees) != 3 {
+		t.Fatalf("repos %+v", repos)
+	}
+	want := map[string]bool{squashed: true, more: false, task: true}
+	for _, w := range repos[0].Worktrees {
+		if w.Merged != want[w.Path] {
+			t.Fatalf("%s merged %v, want %v", w.Path, w.Merged, want[w.Path])
+		}
+	}
+	if after := f.git(t, app, "count-objects"); after != objects {
+		t.Fatalf("objects %q, were %q", after, objects)
 	}
 }
 

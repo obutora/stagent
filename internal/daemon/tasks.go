@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/obutora/stagent/internal/fsutil"
 	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -26,7 +28,8 @@ import (
 const (
 	// defaultPrepareGrace is how long a preparing task waits for its
 	// prepared session to register (after task.register, or after a daemon
-	// restart for its holder to come back) before it counts as interrupted.
+	// restart for its holder to come back) before it counts as interrupted,
+	// and a removal handed to a session for that session to register.
 	defaultPrepareGrace = 30 * time.Second
 	// worktreeCheckTimeout bounds the git calls of one task.list.
 	worktreeCheckTimeout = 10 * time.Second
@@ -59,7 +62,7 @@ func loadTasks(path string) ([]*wire.Task, error) {
 func (d *Daemon) saveTasksLocked() error {
 	b, err := json.MarshalIndent(tasksFile{Tasks: d.tasks}, "", "  ")
 	if err == nil {
-		err = writeFileAtomic(d.layout.Tasks, b)
+		err = fsutil.WriteFileAtomic(d.layout.Tasks, b)
 	}
 	return err
 }
@@ -80,10 +83,14 @@ type tasksSnapshot struct {
 	tasks        []wire.Task
 	prepAt       map[string]time.Time
 	removingFrom map[string]string
+	removers     map[string]remover
 }
 
 func (d *Daemon) snapshotTasksLocked() tasksSnapshot {
-	return tasksSnapshot{tasks: d.taskListLocked(), prepAt: maps.Clone(d.prepAt), removingFrom: maps.Clone(d.removingFrom)}
+	return tasksSnapshot{
+		tasks: d.taskListLocked(), prepAt: maps.Clone(d.prepAt),
+		removingFrom: maps.Clone(d.removingFrom), removers: maps.Clone(d.removers),
+	}
 }
 
 // commitTasksLocked stores the tasks an RPC changed. When tasks.json
@@ -98,7 +105,7 @@ func (d *Daemon) commitTasksLocked(snap tasksSnapshot) error {
 	for i := range snap.tasks {
 		d.tasks[i] = &snap.tasks[i]
 	}
-	d.prepAt, d.removingFrom = snap.prepAt, snap.removingFrom
+	d.prepAt, d.removingFrom, d.removers = snap.prepAt, snap.removingFrom, snap.removers
 	return wire.Errorf(wire.ErrInternal, "tasks: %v", err)
 }
 
@@ -131,22 +138,41 @@ func (d *Daemon) taskListLocked() []wire.Task {
 }
 
 // ---------------------------------------------------------------------------
-// Interrupted preparations
+// Interrupted preparations and removals
 
 // preparingLocked puts t in preparing as of now and arranges the check
 // that its prepared session registers.
 func (d *Daemon) preparingLocked(t *wire.Task, now time.Time) {
 	t.State, t.Stage, t.Error = wire.TaskPreparing, "", ""
+	d.dropSetupLocked(t)
 	d.prepAt[t.ID] = now
 	d.scheduleReviewLocked(now.Add(d.opts.PrepareGrace))
 }
 
+// remover is who carries a removal on: the connection that started it
+// (the bridge stopping the task's sessions, a `stagent task remove` run by
+// hand) until it is handed to a session (task.progress with session_id:
+// the session `stagent task remove` runs in, as of at).
+type remover struct {
+	conn    *connState
+	session string
+	at      time.Time
+}
+
 // reviewTasksLocked fails (error interrupted) every preparing task whose
 // prepared session ended, or did not register within PrepareGrace of the
-// task's preparation (or of the daemon's start). It is run by task.list,
-// watch, task.register, at a session's end and by a timer.
+// task's preparation (or of the daemon's start), and ends every removal
+// whose remover went (removerGoneLocked). It is run by task.list, watch,
+// task.register, at a session's end, when a connection closes and by a
+// timer.
 func (d *Daemon) reviewTasksLocked(now time.Time) {
 	for _, t := range d.tasks {
+		if t.State == wire.TaskRemoving {
+			if d.removerGoneLocked(t.ID, now) {
+				d.interruptRemovalLocked(t)
+			}
+			continue
+		}
 		if t.State != wire.TaskPreparing {
 			continue
 		}
@@ -161,9 +187,48 @@ func (d *Daemon) reviewTasksLocked(now time.Time) {
 			}
 		}
 		t.State, t.Error = wire.TaskFailed, wire.TaskErrInterrupted
+		d.dropSetupLocked(t)
 		delete(d.prepAt, t.ID)
 		d.taskChangedLocked(t)
 	}
+}
+
+// removerGoneLocked tells whether the remover of removing task id went:
+// its connection closed, or its session ended or did not register within
+// PrepareGrace of the hand-off.
+func (d *Daemon) removerGoneLocked(id string, now time.Time) bool {
+	r, ok := d.removers[id]
+	switch {
+	case !ok:
+		return true
+	case r.session == "":
+		_, open := d.conns[r.conn]
+		return !open
+	}
+	if s := d.sessions[r.session]; s != nil {
+		return s.ended
+	}
+	if due := r.at.Add(d.opts.PrepareGrace); now.Before(due) {
+		d.scheduleReviewLocked(due)
+		return false
+	}
+	return true
+}
+
+// interruptRemovalLocked ends removing task t whose remover went: it is
+// back where the removal started (ready), with error interrupted, keeping
+// the stage it got to.
+func (d *Daemon) interruptRemovalLocked(t *wire.Task) {
+	d.endRemovalLocked(t, wire.TaskErrInterrupted)
+	d.taskChangedLocked(t)
+}
+
+// endRemovalLocked takes removing task t back where its removal started
+// (ready after a restart), with error msg, forgetting who carried it on.
+func (d *Daemon) endRemovalLocked(t *wire.Task, msg string) {
+	t.State, t.Error = cmp.Or(d.removingFrom[t.ID], wire.TaskReady), msg
+	delete(d.removingFrom, t.ID)
+	delete(d.removers, t.ID)
 }
 
 // scheduleReviewLocked runs reviewTasksLocked at (or before) at.
@@ -268,7 +333,10 @@ func (d *Daemon) taskRegister(p wire.TaskRegisterParams) (wire.TaskRegisterResul
 // ---------------------------------------------------------------------------
 // task.progress
 
-func (d *Daemon) taskProgress(p wire.TaskProgressParams) error {
+// taskProgress reports a stage of task p.ID from connection cs. A removal
+// is carried on by cs when cs starts it, and by session p.SessionID once a
+// removal stage names one (see remover).
+func (d *Daemon) taskProgress(cs *connState, p wire.TaskProgressParams) error {
 	creating, removing := false, false
 	switch p.Stage {
 	case wire.TaskStageFetch, wire.TaskStageCopy, wire.TaskStageSetup, wire.TaskStageAgent:
@@ -290,6 +358,8 @@ func (d *Daemon) taskProgress(p wire.TaskProgressParams) error {
 	snap := d.snapshotTasksLocked()
 	switch {
 	case t.State == wire.TaskPreparing && creating:
+		// Reported again: whatever setup it waited on is behind it.
+		d.dropSetupLocked(t)
 		switch {
 		case msg != "":
 			t.State, t.Stage, t.Error = wire.TaskFailed, p.Stage, msg
@@ -310,20 +380,27 @@ func (d *Daemon) taskProgress(p wire.TaskProgressParams) error {
 		return wire.Errorf(wire.ErrBusy, "task %s is being removed", p.ID)
 	case t.State == wire.TaskRemoving && removing,
 		t.State != wire.TaskRemoving && t.State != wire.TaskPreparing && (p.Stage == wire.TaskStageStop || p.Stage == wire.TaskStageArchive):
-		if t.State != wire.TaskRemoving {
+		starting := t.State != wire.TaskRemoving
+		if starting {
 			d.removingFrom[t.ID] = t.State
 		}
-		if msg != "" {
-			// Back to where removing started (ready after a restart),
-			// naming the stage that failed.
-			back := d.removingFrom[t.ID]
-			if back == "" {
-				back = wire.TaskReady
-			}
-			delete(d.removingFrom, t.ID)
-			t.State, t.Stage, t.Error = back, p.Stage, msg
-		} else {
+		switch {
+		case msg != "":
+			// Back to where removing started, naming the stage that
+			// failed.
+			d.endRemovalLocked(t, msg)
+			t.Stage = p.Stage
+		case p.SessionID != "":
+			// Handed to the session it goes on in.
 			t.State, t.Stage, t.Error = wire.TaskRemoving, p.Stage, ""
+			now := time.Now()
+			d.removers[t.ID] = remover{session: p.SessionID, at: now}
+			d.scheduleReviewLocked(now.Add(d.opts.PrepareGrace))
+		default:
+			t.State, t.Stage, t.Error = wire.TaskRemoving, p.Stage, ""
+			if starting {
+				d.removers[t.ID] = remover{conn: cs}
+			}
 		}
 	default:
 		return wire.Errorf(wire.ErrBadRequest, "task.progress: task %s is %s, stage %s does not apply", p.ID, t.State, p.Stage)
@@ -346,9 +423,11 @@ func (d *Daemon) taskForget(p wire.TaskRemoved) error {
 		return wire.Errorf(wire.ErrNotFound, "task %s", id)
 	}
 	snap := d.snapshotTasksLocked()
+	d.dropSetupLocked(d.tasks[i])
 	d.tasks = slices.Delete(d.tasks, i, i+1)
 	delete(d.prepAt, id)
 	delete(d.removingFrom, id)
+	delete(d.removers, id)
 	if err := d.commitTasksLocked(snap); err != nil {
 		return err
 	}
@@ -367,13 +446,15 @@ func (d *Daemon) taskForget(p wire.TaskRemoved) error {
 
 // taskList answers task.list. A ready task whose worktree directory is
 // gone, or that `git worktree list` of its checkout no longer lists,
-// becomes missing.
+// becomes missing. A missing task whose worktree is back — the directory
+// with its .git there, and git still listing it — is ready again (a
+// volume reconnected); one git no longer lists stays missing.
 func (d *Daemon) taskList() wire.TaskListResult {
 	d.mu.Lock()
 	d.reviewTasksLocked(time.Now())
 	var check []wire.Task
 	for _, t := range d.tasks {
-		if t.State == wire.TaskReady {
+		if t.State == wire.TaskReady || t.State == wire.TaskMissing {
 			check = append(check, *t)
 		}
 	}
@@ -386,11 +467,19 @@ func (d *Daemon) taskList() wire.TaskListResult {
 		err   error
 	}
 	listed := map[string]listing{}
-	var missing []string
+	var missing, back []string
 	for _, t := range check {
+		wasMissing := t.State == wire.TaskMissing
 		if !task.IsDir(t.Worktree) {
-			missing = append(missing, t.ID)
+			if !wasMissing {
+				missing = append(missing, t.ID)
+			}
 			continue
+		}
+		if wasMissing {
+			if _, err := os.Lstat(filepath.Join(t.Worktree, ".git")); err != nil {
+				continue
+			}
 		}
 		l, ok := listed[t.Repo]
 		if !ok {
@@ -400,9 +489,15 @@ func (d *Daemon) taskList() wire.TaskListResult {
 		var gerr *task.GitError
 		switch {
 		case l.err == nil:
-			if !slices.ContainsFunc(l.paths, func(p string) bool { return task.SamePath(p, t.Worktree) }) {
+			has := slices.ContainsFunc(l.paths, func(p string) bool { return task.SamePath(p, t.Worktree) })
+			switch {
+			case wasMissing && has:
+				back = append(back, t.ID)
+			case !wasMissing && !has:
 				missing = append(missing, t.ID)
 			}
+		case wasMissing:
+			// Not known to be back: the task stays missing.
 		case errors.As(l.err, &gerr) && ctx.Err() == nil:
 			// git answered that the checkout is no repository (any more).
 			missing = append(missing, t.ID)
@@ -418,6 +513,12 @@ func (d *Daemon) taskList() wire.TaskListResult {
 	for _, id := range missing {
 		if t := d.taskLocked(id); t != nil && t.State == wire.TaskReady {
 			t.State = wire.TaskMissing
+			d.taskChangedLocked(t)
+		}
+	}
+	for _, id := range back {
+		if t := d.taskLocked(id); t != nil && t.State == wire.TaskMissing {
+			t.State = wire.TaskReady
 			d.taskChangedLocked(t)
 		}
 	}

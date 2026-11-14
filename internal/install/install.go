@@ -50,7 +50,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 	fs := flag.NewFlagSet("stagent "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print compact JSON")
-	var plan, apply, shellWrapper, service, linger, terminal, executionPolicy, wslKeepRunning, uploads *bool
+	var plan, apply, shellWrapper, service, linger, terminal, executionPolicy, wslKeepRunning, statusLine, uploads *bool
 	var harnesses, remove, level *string
 	switch cmd {
 	case "integrate":
@@ -63,6 +63,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		terminal = fs.Bool("terminal", false, "add stagent to the processes Terminal.app does not ask about before closing a window (macOS)")
 		executionPolicy = fs.Bool("execution-policy", false, "set the execution policy RemoteSigned for the current user in each PowerShell that would not run its profile (Windows)")
 		wslKeepRunning = fs.Bool("wsl-keep-running", false, "keep WSL running when no Windows terminal or SSH connection uses it: [general] instanceIdleTimeout=-1 in .wslconfig (WSL; applies once WSL restarts)")
+		statusLine = fs.Bool("statusline", false, "show Claude Code's statusLine through `stagent statusline claude`, which measures the limit windows and runs the statusLine you had (settings.json of ~/.claude and $CLAUDE_CONFIG_DIR)")
 		remove = fs.String("remove", "", "comma-separated integrations to remove: "+strings.Join(removeIDs, ",")+" (linger, terminal, wsl-keep-running: only what stagent turned on or added)")
 	case "uninstall":
 		level = fs.String("level", "", "stop | unhook | purge")
@@ -100,7 +101,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		if *plan && *apply {
 			return fail(2, errors.New("--plan and --apply are mutually exclusive"))
 		}
-		o := integrateOpts{apply: *apply, shellWrapper: *shellWrapper, service: *service, linger: *linger, terminal: *terminal, executionPolicy: *executionPolicy, wslKeepRunning: *wslKeepRunning}
+		o := integrateOpts{apply: *apply, shellWrapper: *shellWrapper, service: *service, linger: *linger, terminal: *terminal, executionPolicy: *executionPolicy, wslKeepRunning: *wslKeepRunning, statusLine: *statusLine}
 		var err error
 		if o.harness, err = parseList(*harnesses, harness.IDs()); err != nil {
 			return fail(2, err)
@@ -108,7 +109,7 @@ func mainWith(cmd string, args []string, stdout, stderr io.Writer, e *env) int {
 		if o.remove, err = parseList(*remove, removeIDs); err != nil {
 			return fail(2, err)
 		}
-		if len(o.harness) == 0 && len(o.remove) == 0 && !o.shellWrapper && !o.service && !o.linger && !o.terminal && !o.executionPolicy && !o.wslKeepRunning {
+		if len(o.harness) == 0 && len(o.remove) == 0 && !o.shellWrapper && !o.service && !o.linger && !o.terminal && !o.executionPolicy && !o.wslKeepRunning && !o.statusLine {
 			for _, h := range harness.All {
 				if e.findHarness(h.ID) != "" {
 					o.harness = append(o.harness, h.ID)

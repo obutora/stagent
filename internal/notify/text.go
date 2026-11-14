@@ -42,6 +42,17 @@ const (
 	PhraseScheduleAutoStopped  // %d: failures in a row
 	PhraseScheduleGUILogin     // %s: the agent
 	PhraseDigestSchedule       // %d: count
+	// The bodies of a limit window's notifications (reason usage_limit),
+	// the window in their titles and the digest title of several.
+	PhraseLimitUsed           // %d: the share passed (80, 100), %s: the reset time
+	PhraseLimitReset          //
+	PhraseWindowFiveHour      //
+	PhraseWindowSevenDay      //
+	PhraseWindowSevenDayModel // %s: the model ("Opus")
+	PhraseWindowDays          // %d: days
+	PhraseWindowHours         // %d: hours
+	PhraseWindowMinutes       // %d: minutes
+	PhraseDigestUsageLimit    // %d: count
 	phraseCount
 )
 
@@ -76,6 +87,16 @@ var phrases = map[string][phraseCount]string{
 		PhraseScheduleAutoStopped:  "Stopped after %d failures in a row",
 		PhraseScheduleGUILogin:     "%s could not authenticate: nobody is logged in to the GUI",
 		PhraseDigestSchedule:       "%d schedule notifications",
+
+		PhraseLimitUsed:           "%d%% used · resets at %s",
+		PhraseLimitReset:          "Reset",
+		PhraseWindowFiveHour:      "5h",
+		PhraseWindowSevenDay:      "Week",
+		PhraseWindowSevenDayModel: "Week (%s)",
+		PhraseWindowDays:          "%dd",
+		PhraseWindowHours:         "%dh",
+		PhraseWindowMinutes:       "%dm",
+		PhraseDigestUsageLimit:    "%d limit window notifications",
 	},
 	wire.LangJa: {
 		PhraseWaitingInput:        "入力待ち",
@@ -107,6 +128,16 @@ var phrases = map[string][phraseCount]string{
 		PhraseScheduleAutoStopped:  "%d 回続けて失敗したので止めました",
 		PhraseScheduleGUILogin:     "GUI にログインしていないので %s が認証できませんでした",
 		PhraseDigestSchedule:       "定期実行の通知 %d 件",
+
+		PhraseLimitUsed:           "%d%% を使いました · %s にリセット",
+		PhraseLimitReset:          "リセットされました",
+		PhraseWindowFiveHour:      "5時間",
+		PhraseWindowSevenDay:      "週",
+		PhraseWindowSevenDayModel: "週（%s）",
+		PhraseWindowDays:          "%d日",
+		PhraseWindowHours:         "%d時間",
+		PhraseWindowMinutes:       "%d分",
+		PhraseDigestUsageLimit:    "上限の枠の通知 %d 件",
 	},
 	wire.LangKo: {
 		PhraseWaitingInput:        "입력 대기",
@@ -138,6 +169,16 @@ var phrases = map[string][phraseCount]string{
 		PhraseScheduleAutoStopped:  "%d번 연속 실패하여 중지했습니다",
 		PhraseScheduleGUILogin:     "GUI에 로그인하지 않아 %s이(가) 인증하지 못했습니다",
 		PhraseDigestSchedule:       "예약 실행 알림 %d개",
+
+		PhraseLimitUsed:           "%d%% 사용 · %s에 초기화",
+		PhraseLimitReset:          "초기화되었습니다",
+		PhraseWindowFiveHour:      "5시간",
+		PhraseWindowSevenDay:      "주간",
+		PhraseWindowSevenDayModel: "주간(%s)",
+		PhraseWindowDays:          "%d일",
+		PhraseWindowHours:         "%d시간",
+		PhraseWindowMinutes:       "%d분",
+		PhraseDigestUsageLimit:    "사용 한도 알림 %d개",
 	},
 	wire.LangZh: {
 		PhraseWaitingInput:        "等待输入",
@@ -169,6 +210,16 @@ var phrases = map[string][phraseCount]string{
 		PhraseScheduleAutoStopped:  "连续失败 %d 次，已停止",
 		PhraseScheduleGUILogin:     "未登录 GUI，%s 无法认证",
 		PhraseDigestSchedule:       "%d 条定时运行通知",
+
+		PhraseLimitUsed:           "已使用 %d%% · %s 重置",
+		PhraseLimitReset:          "已重置",
+		PhraseWindowFiveHour:      "5 小时",
+		PhraseWindowSevenDay:      "每周",
+		PhraseWindowSevenDayModel: "每周（%s）",
+		PhraseWindowDays:          "%d 天",
+		PhraseWindowHours:         "%d 小时",
+		PhraseWindowMinutes:       "%d 分钟",
+		PhraseDigestUsageLimit:    "%d 条用量上限通知",
 	},
 }
 

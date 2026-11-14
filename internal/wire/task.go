@@ -18,6 +18,11 @@ const (
 	MethodTaskRemove = "task.remove"
 	// Served by the daemon: every task, in the order they were created.
 	MethodTaskList = "task.list" // → TaskListResult
+	// Served by the daemon, refused to coding agents' process trees (ADR
+	// 0004): run or skip the scripts.setup a preparing task waits on
+	// (TaskSetupParams → {}); running it approves that content for the
+	// source checkout (ADR 0023).
+	MethodTaskSetup = "task.setup"
 
 	// Local IPC only (daemon), refused to coding agents' process trees
 	// (ADR 0004).
@@ -33,6 +38,11 @@ const (
 	// task.forget deletes a task's record (TaskRemoved → {}): its sessions
 	// lose their task_id. The last step of task.remove.
 	MethodTaskForget = "task.forget"
+	// task.await_setup is `stagent task run` waiting for the app to run
+	// or skip a scripts.setup that is neither the source checkout's nor
+	// approved (TaskAwaitSetupParams → TaskAwaitSetupResult, answered once
+	// task.setup decides).
+	MethodTaskAwaitSetup = "task.await_setup"
 
 	// Notifications (daemon → app), like unwrapped.updated.
 	NotifyTaskUpdated = "task.updated" // Task: added or changed
@@ -51,7 +61,7 @@ const (
 	TaskPreparing = "preparing" // `stagent task run` is preparing it
 	TaskReady     = "ready"     // its agent (or terminal) was started
 	TaskFailed    = "failed"    // a stage failed, or the prepared session went away (interrupted)
-	TaskMissing   = "missing"   // its worktree directory or git's registration of it is gone
+	TaskMissing   = "missing"   // its worktree directory or git's registration of it is gone; ready again when both are back
 	TaskRemoving  = "removing"  // task.remove is under way
 )
 
@@ -97,6 +107,38 @@ type Task struct {
 	// SessionID is the session that prepares the task. Sessions are tied
 	// to tasks by Session.TaskID, not by this.
 	SessionID string `json:"session_id,omitempty"`
+	// SetupPending (preparing, stage setup): the worktree's scripts.setup
+	// is neither the source checkout's nor approved, and preparation waits
+	// for task.setup to run or skip it (ADR 0023).
+	SetupPending *TaskSetup `json:"setup_pending,omitempty"`
+}
+
+// TaskSetup is a scripts.setup waiting for the user: its text and its
+// hash (hex SHA-256 of the text), which task.setup names.
+type TaskSetup struct {
+	Script string `json:"script"`
+	Hash   string `json:"hash"`
+}
+
+// TaskSetupParams decides the scripts.setup task ID waits on, named by
+// its Hash: Run runs it (and approves that content for the task's source
+// checkout, kept in <root>/state/setup-approvals.json), else it is
+// skipped and the agent starts without it.
+type TaskSetupParams struct {
+	ID   string `json:"id"`
+	Hash string `json:"hash"`
+	Run  bool   `json:"run,omitempty"`
+}
+
+// TaskAwaitSetupParams is the scripts.setup `stagent task run` waits on.
+type TaskAwaitSetupParams struct {
+	ID     string `json:"id"`
+	Script string `json:"script"`
+}
+
+// TaskAwaitSetupResult: Run, run the script; else skip it.
+type TaskAwaitSetupResult struct {
+	Run bool `json:"run"`
 }
 
 // TaskRef names a task.
@@ -113,7 +155,10 @@ type TaskListResult struct {
 // with an error from the task's prepared session (SessionID) fails a
 // ready task too: the agent did not start. Stage stop or archive starts
 // removing it (stop again while removing: busy); an error while removing
-// takes it back to where it was, keeping the error and the stage.
+// takes it back to where it was, keeping the error and the stage. The
+// connection that starts a removal carries it on until a removal stage
+// with SessionID hands it to that session; when the one carrying it goes
+// first, the task is back where it was with error interrupted.
 type TaskProgressParams struct {
 	ID        string `json:"id"`
 	Stage     string `json:"stage"`
@@ -186,16 +231,18 @@ type TaskCreateResult struct {
 }
 
 // TaskRemoved is task.forget's params and the task.removed notification.
-// KeptBranch is the task's branch that task.remove left: not merged, or
-// gh could not tell (omitted: deleted, or none).
+// KeptBranch is the task's branch that task.remove left: neither git nor
+// gh found it merged, it moved after they did, or no git could run in its
+// source checkout (omitted: deleted, or none).
 type TaskRemoved struct {
 	ID         string `json:"id"`
 	KeptBranch string `json:"kept_branch,omitempty"`
 }
 
 // TaskRemoveParams is task.remove (片付け). DryRun only reports what is in
-// the way; otherwise uncommitted changes need Force (not_clean) and live
-// sessions StopSessions (busy). SkipArchive leaves scripts.archive out.
+// the way; otherwise a refusal reason refuses it whatever the flags
+// (refused), uncommitted changes need Force (not_clean) and live sessions
+// StopSessions (busy). SkipArchive leaves scripts.archive out.
 type TaskRemoveParams struct {
 	ID           string `json:"id"`
 	Force        bool   `json:"force,omitempty"`
@@ -204,18 +251,45 @@ type TaskRemoveParams struct {
 	DryRun       bool   `json:"dry_run,omitempty"`
 }
 
-// TaskRemoveResult: a dry run reports Changes (the worktree's `git status
-// --porcelain` lines: tracked changes and untracked files not ignored, at
-// most TaskRemoveChangesMax, then ChangesTruncated), Unpushed (commits of
-// the branch on no remote) and Sessions (ids of the task's live
-// sessions). A removal reports KeptBranch.
+// TaskRemoveResult: a dry run reports Refusals (why it cannot be removed
+// at all), Changes (the worktree's `git status --porcelain` lines: tracked
+// changes and untracked files not ignored, at most TaskRemoveChangesMax,
+// then ChangesTruncated), Unpushed (commits of the branch on no remote)
+// and Sessions (ids of the task's live sessions). A removal reports
+// KeptBranch.
 type TaskRemoveResult struct {
-	Changes          []string `json:"changes,omitempty"`
-	ChangesTruncated bool     `json:"changes_truncated,omitempty"`
-	Unpushed         int      `json:"unpushed,omitempty"`
-	Sessions         []string `json:"sessions,omitempty"`
-	KeptBranch       string   `json:"kept_branch,omitempty"`
+	Refusals         []RemoveRefusal `json:"refusals,omitempty"`
+	Changes          []string        `json:"changes,omitempty"`
+	ChangesTruncated bool            `json:"changes_truncated,omitempty"`
+	Unpushed         int             `json:"unpushed,omitempty"`
+	Sessions         []string        `json:"sessions,omitempty"`
+	KeptBranch       string          `json:"kept_branch,omitempty"`
 }
 
 // TaskRemoveChangesMax caps TaskRemoveResult.Changes.
 const TaskRemoveChangesMax = 200
+
+// RemoveRefusal is one reason a worktree is not removed (確認に並ぶ断る
+// 理由): unlike changes and sessions neither force nor stop_sessions
+// overrides it; the user deals with it first. Kind says which (a
+// RefusalKind; an app shows one it does not know by name, still refused),
+// Paths what it is about (canonical).
+type RemoveRefusal struct {
+	Kind  string   `json:"kind"`
+	Paths []string `json:"paths,omitempty"`
+}
+
+// Refusal kinds.
+const (
+	// RefusalNestedWorktrees: other worktrees git lists lie inside it
+	// (`claude --worktree`'s .claude/worktrees/*), Paths; removing it
+	// would take them, their changes included, even when ignored.
+	RefusalNestedWorktrees = "nested_worktrees"
+	// RefusalSubmodules: it has submodules (Paths, those in its index),
+	// which git worktree remove refuses whatever the flags; the user
+	// removes them (or the worktree) by hand.
+	RefusalSubmodules = "submodules"
+	// RefusalLocked: the user locked it (git worktree lock); the lock of
+	// a killed git worktree add is none. They unlock it first.
+	RefusalLocked = "locked"
+)

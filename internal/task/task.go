@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/obutora/stagent/internal/wire"
@@ -45,22 +46,33 @@ func (e *GitError) Error() string {
 func (e *GitError) Unwrap() error { return e.Err }
 
 // Git runs git in dir with env (nil: this process's environment) and
-// returns its standard output. git is looked up in env's PATH. On Windows
-// every call gets -c core.longpaths=true. A git that cannot be found is an
-// error wrapping exec.ErrNotFound; one that fails is a *GitError.
+// returns its standard output, running it again while it fails on a lock
+// another git holds (retryLocked). git is looked up in env's PATH. On
+// Windows every call gets -c core.longpaths=true. A git that cannot be
+// found is an error wrapping exec.ErrNotFound; one that fails is a
+// *GitError, wrapping a *LimitError when ctx's limit stopped it.
 func Git(ctx context.Context, env []string, dir string, args ...string) ([]byte, error) {
 	bin, err := lookProgram(env, "git")
 	if err != nil {
 		return nil, err
 	}
 	args = gitArgs(args)
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = dir
-	cmd.Env = env
+	var out []byte
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	err = retryLocked(ctx, func() (string, error) {
+		stderr.Reset()
+		cmd := command(ctx, bin, args...)
+		cmd.Dir = dir
+		cmd.Env = env
+		cmd.Stderr = &stderr
+		var err error
+		out, err = cmd.Output()
+		return stderr.String(), exited(err)
+	}, nil)
 	if err != nil {
+		if le := limitOf(ctx); le != nil {
+			return out, &GitError{Args: args, Err: le}
+		}
 		line, _, _ := strings.Cut(strings.TrimSpace(stderr.String()), "\n")
 		return out, &GitError{Args: args, Stderr: strings.TrimSpace(line), Err: err}
 	}
@@ -101,11 +113,17 @@ func lookupEnv(env []string, key string) (string, bool) {
 	val, found := "", false
 	for _, kv := range env {
 		k, v, ok := strings.Cut(kv, "=")
-		if ok && (k == key || runtime.GOOS == "windows" && strings.EqualFold(k, key)) {
+		if ok && envKey(k, key) {
 			val, found = v, true
 		}
 	}
 	return val, found
+}
+
+// envKey reports whether the environment variable name k is key
+// (case-insensitively on Windows).
+func envKey(k, key string) bool {
+	return k == key || runtime.GOOS == "windows" && strings.EqualFold(k, key)
 }
 
 // Canonical returns the canonical path (正の形) of the source checkout
@@ -191,44 +209,138 @@ func Worktrees(ctx context.Context, env []string, repo string) ([]string, error)
 
 // Worktree is one entry of `git worktree list`.
 type Worktree struct {
-	Path   string // canonical
-	Branch string // short name; "" when detached (or bare)
+	Path       string // canonical
+	Branch     string // short name; "" when detached (or bare)
+	Head       string
+	Missing    bool // its directory is gone (prunable)
+	Locked     bool
+	LockReason string
 }
 
+// AddingLock is the reason of the lock `git worktree add` holds on the
+// worktree it is making until its checkout is done. stagent runs its own
+// add in the C locale, where git does not translate it.
+const AddingLock = "initializing"
+
+// HalfMade reports whether w is a worktree `git worktree add` was killed
+// making (作りかけ: a session stopped, a crash, power lost): still locked
+// by the add, nothing or part of its files checked out.
+func (w Worktree) HalfMade() bool { return w.Locked && w.LockReason == AddingLock }
+
 // ListWorktrees lists the worktrees `git worktree list` knows for the
-// checkout repo, its main worktree first.
+// checkout repo, its main worktree first. An error means git could not
+// answer: not found (wrapping exec.ErrNotFound) or failing, e.g. because
+// repo is gone.
 func ListWorktrees(ctx context.Context, env []string, repo string) ([]Worktree, error) {
 	// Not -z (git 2.36): older gits are still common on servers.
 	out, err := Git(ctx, env, repo, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
 	}
+	return parseWorktrees(string(out)), nil
+}
+
+// parseWorktrees reads `git worktree list --porcelain`: blocks of
+// "worktree <path>", "HEAD <sha>", "branch <ref>" or "detached", "bare",
+// "locked [reason]", "prunable [reason]". A worktree whose directory is
+// gone is missing even when an older git does not say prunable.
+func parseWorktrees(out string) []Worktree {
 	var ws []Worktree
-	for line := range strings.Lines(string(out)) {
+	for line := range strings.Lines(out) {
 		line = strings.TrimRight(line, "\r\n")
 		if p, ok := strings.CutPrefix(line, "worktree "); ok {
 			ws = append(ws, Worktree{Path: CanonicalPath(filepath.FromSlash(p))})
-		} else if b, ok := strings.CutPrefix(line, "branch "); ok && len(ws) > 0 {
-			ws[len(ws)-1].Branch = strings.TrimPrefix(b, "refs/heads/")
+			continue
+		}
+		if len(ws) == 0 {
+			continue
+		}
+		w := &ws[len(ws)-1]
+		switch key, val, _ := strings.Cut(line, " "); key {
+		case "HEAD":
+			w.Head = val
+		case "branch":
+			w.Branch = strings.TrimPrefix(val, "refs/heads/")
+		case "locked":
+			w.Locked, w.LockReason = true, val
+		case "prunable":
+			w.Missing = true
 		}
 	}
-	return ws, nil
+	for i := range ws {
+		if !ws[i].Missing {
+			if _, err := os.Lstat(ws[i].Path); os.IsNotExist(err) {
+				ws[i].Missing = true
+			}
+		}
+	}
+	return ws
 }
 
-// Listed reports whether worktree (canonical) is a worktree of the
-// checkout repo. An error means git could not answer: not found (wrapping
-// exec.ErrNotFound) or failing, e.g. because repo is gone.
-func Listed(ctx context.Context, env []string, repo, worktree string) (bool, error) {
-	ws, err := Worktrees(ctx, env, repo)
-	if err != nil {
-		return false, err
-	}
-	for _, w := range ws {
-		if SamePath(w, worktree) {
-			return true, nil
+// FindWorktree is the entry of ws at worktree (canonical), nil when there
+// is none.
+func FindWorktree(ws []Worktree, worktree string) *Worktree {
+	for i := range ws {
+		if SamePath(ws[i].Path, worktree) {
+			return &ws[i]
 		}
 	}
-	return false, nil
+	return nil
+}
+
+// WorktreeAt is the entry of the checkout repo's worktree list at worktree
+// (canonical), nil when git does not list it. An error means git could not
+// answer, as for ListWorktrees.
+func WorktreeAt(ctx context.Context, env []string, repo, worktree string) (*Worktree, error) {
+	ws, err := ListWorktrees(ctx, env, repo)
+	if err != nil {
+		return nil, err
+	}
+	return FindWorktree(ws, worktree), nil
+}
+
+// halfMadeRemoveArgs are the git arguments that remove the worktree at dir
+// a killed `git worktree add` left half made: `worktree remove -f -f`, the
+// second -f past the add's lock.
+func halfMadeRemoveArgs(dir string) []string {
+	return []string{"worktree", "remove", "-f", "-f", dir}
+}
+
+// UnregisterArgs are the git arguments that unregister the worktree at
+// dir, whose directory is gone, and no other worktree: `worktree remove
+// <dir>` on git 2.18 and later. An older git cannot remove a worktree
+// whose directory is gone, so `worktree prune` stands in, unregistering
+// every such worktree of the repository. Neither touches a locked
+// worktree: remove refuses it, prune skips it.
+func UnregisterArgs(ctx context.Context, env []string, dir string) []string {
+	if gitBefore(ctx, env, 2, 18) {
+		return []string{"worktree", "prune"}
+	}
+	return []string{"worktree", "remove", dir}
+}
+
+// gitBefore reports whether env's git says it is older than major.minor
+// ("git version 2.54.0 (Apple Git-157)", "git version 2.45.1.windows.1").
+// A git whose version cannot be read counts as new.
+func gitBefore(ctx context.Context, env []string, major, minor int) bool {
+	out, err := Git(ctx, env, "", "version")
+	if err != nil {
+		return false
+	}
+	f := strings.Fields(string(out))
+	if len(f) < 3 {
+		return false
+	}
+	v := strings.SplitN(f[2], ".", 3)
+	if len(v) < 2 {
+		return false
+	}
+	ma, err1 := strconv.Atoi(v[0])
+	mi, err2 := strconv.Atoi(v[1])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return ma < major || ma == major && mi < minor
 }
 
 // IsDir reports whether p is an existing directory.

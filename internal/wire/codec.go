@@ -73,6 +73,10 @@ const (
 	// schedule.run_now: the schedule's previous run is still running;
 	// schedule.remove: its running run did not stop.
 	ErrBusy = "busy"
+	// ErrRefused: task.remove or worktree.remove found a refusal reason
+	// (RemoveRefusal), which neither force nor stop_sessions overrides;
+	// the message names it.
+	ErrRefused = "refused"
 	// ErrInUse: another number's in_place task uses that source checkout.
 	ErrInUse = "in_use"
 	// ErrPasteByHand: host_screen.input could not paste a text into an

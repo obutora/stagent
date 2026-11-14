@@ -12,6 +12,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/obutora/stagent/internal/fsutil"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -283,7 +284,7 @@ func (s *Sender) saveChatRefs() {
 	b, err := json.Marshal(refs)
 	s.mu.Unlock()
 	if err == nil {
-		err = writeFileAtomic(s.chatPath, b)
+		err = fsutil.WriteFileAtomic(s.chatPath, b)
 	}
 	if err != nil {
 		s.logf("notify: chat messages: %v", err)

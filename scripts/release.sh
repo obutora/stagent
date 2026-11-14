@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Build the six stagent release binaries, write SHA256SUMS and, inside the
-# SSH Term app tree, regenerate the app's pinned release constants
-# (lib/services/agent_bridge/stagent_release.dart: version, download URL,
-# sha256 and size of every asset).
+# SSH Term app tree, the pinned release (../stagent-release.json: version,
+# download URL, name, sha256 and size of every asset), then regenerate the
+# app's Dart constants from it (tool/stagent_release_dart.sh). The JSON lives
+# outside this directory so it never reaches the public repository; SSH Term
+# Desktop reads the same file in its build.rs.
 #
-#   scripts/release.sh                      build into dist/ (and regenerate the Dart file)
+#   scripts/release.sh                      build into dist/ (and rewrite the pinned JSON and Dart file)
 #   scripts/release.sh --publish            additionally publish v<version> to
 #                                           github.com/obutora/stagent (needs gh)
 #   scripts/release.sh --publish --dry-run  every publish step except pushing
@@ -37,6 +39,23 @@
 # SHA256SUMS and the app's pins are of the signed files. --publish requires
 # them. The rebuild check compares the darwin binaries with their
 # signatures replaced by the same ad-hoc one.
+#
+# The Windows assets can carry an Authenticode signature (Smart App Control
+# blocks an unsigned stagent.exe without reputation). Only with
+# STAGENT_WIN_SIGN_KEYSTORE set, jsign signs both exes with an RFC 3161
+# timestamp from STAGENT_WIN_SIGN_TSA (default DigiCert's) on any OS, and
+# osslsigncode checks each signature and its timestamp against
+# STAGENT_WIN_SIGN_CAFILE (default: the system's roots). The keystore is
+# whatever jsign takes as --keystore for STAGENT_WIN_SIGN_STORETYPE
+# (default PKCS12: a .p12/.pfx file; an OV key on a token or cloud HSM uses
+# its own type), with STAGENT_WIN_SIGN_STOREPASS, STAGENT_WIN_SIGN_ALIAS and
+# STAGENT_WIN_SIGN_CERTFILE (the certificate chain) when it needs them.
+# Each signature is also written as dist/<exe>.sig, which jsign attaches
+# to a fresh build to give the released exe byte for byte; the rebuild
+# check then compares the exes with their signatures removed (jsign remove)
+# and the PE checksum the signing set back to the Go linker's zero. Without
+# the keystore the exes stay unsigned, --publish included, and the rebuild
+# check compares them as they are. JSIGN and OSSLSIGNCODE name the tools.
 set -euo pipefail
 
 publish=0
@@ -59,7 +78,7 @@ die() { echo "release.sh: $*" >&2; exit 1; }
 here="$(cd "$(dirname "$0")/.." && pwd)"     # stagent module root
 app="$(cd "$here/.." && pwd)"                 # Flutter app root
 dist="$here/dist"
-dart_out="$app/lib/services/agent_bridge/stagent_release.dart"
+release_json="$app/stagent-release.json"
 repo="obutora/stagent"
 # The public commits carry GitHub's no-reply address, never the git identity
 # of the machine that happens to publish.
@@ -84,6 +103,23 @@ if [ -n "$sign_key" ] || [ -n "$sign_cert" ]; then
   [ "$(uname -s)" = Darwin ] || die "signing the macOS binaries needs macOS (codesign)"
 elif [ "$publish" = 1 ]; then
   die "--publish signs the macOS binaries: set STAGENT_SIGN_KEY and STAGENT_SIGN_CERT (see the top of this script)"
+fi
+
+win_keystore="${STAGENT_WIN_SIGN_KEYSTORE:-}"
+win_storetype="${STAGENT_WIN_SIGN_STORETYPE:-PKCS12}"
+win_alias="${STAGENT_WIN_SIGN_ALIAS:-}"
+win_certfile="${STAGENT_WIN_SIGN_CERTFILE:-}"
+win_tsa="${STAGENT_WIN_SIGN_TSA:-http://timestamp.digicert.com}"
+win_cafile="${STAGENT_WIN_SIGN_CAFILE:-}"
+jsign="${JSIGN:-jsign}"
+osslsigncode="${OSSLSIGNCODE:-osslsigncode}"
+
+if [ -n "$win_keystore" ]; then
+  command -v "$jsign" >/dev/null 2>&1 || die "signing the Windows binaries needs jsign (brew install jsign)"
+  command -v "$osslsigncode" >/dev/null 2>&1 || die "checking the Windows signatures needs osslsigncode (brew install osslsigncode)"
+  [ "$win_storetype" != PKCS12 ] || [ -f "$win_keystore" ] || die "STAGENT_WIN_SIGN_KEYSTORE: no file $win_keystore"
+  [ -z "$win_certfile" ] || [ -f "$win_certfile" ] || die "STAGENT_WIN_SIGN_CERTFILE: no file $win_certfile"
+  [ -z "$win_cafile" ] || [ -f "$win_cafile" ] || die "STAGENT_WIN_SIGN_CAFILE: no file $win_cafile"
 fi
 
 work="$(mktemp -d)"
@@ -193,8 +229,47 @@ adhoc_form() {
   codesign --sign - --identifier "$sign_id" "$2"
 }
 
+# sign_windows <dir>: signs the windows exes in dir with
+# STAGENT_WIN_SIGN_KEYSTORE and an RFC 3161 timestamp, writes each
+# signature as <exe>.sig too, and checks signature and timestamp.
+sign_windows() {
+  local dir="$1" name opts out
+  opts=(--keystore "$win_keystore" --storetype "$win_storetype" --tsmode RFC3161 --tsaurl "$win_tsa" --alg SHA-256)
+  [ -z "${STAGENT_WIN_SIGN_STOREPASS:-}" ] || opts+=(--storepass env:STAGENT_WIN_SIGN_STOREPASS)
+  [ -z "$win_alias" ] || opts+=(--alias "$win_alias")
+  [ -z "$win_certfile" ] || opts+=(--certfile "$win_certfile")
+  for name in stagent-windows-amd64.exe stagent-windows-arm64.exe; do
+    echo "  sign  $name"
+    rm -f "$dir/$name.sig"
+    # The first run writes the signature to <exe>.sig only; the second
+    # attaches that file, exactly as a rebuild of the release would.
+    "$jsign" "${opts[@]}" --detached "$dir/$name" >/dev/null || die "$name: jsign could not sign it"
+    [ -s "$dir/$name.sig" ] || die "$name: jsign wrote no detached signature"
+    "$jsign" --detached "$dir/$name" >/dev/null || die "$name: jsign could not attach $name.sig"
+    out="$("$osslsigncode" verify ${win_cafile:+-CAfile "$win_cafile"} -in "$dir/$name" 2>&1)" ||
+      die "$name: the signature does not verify:
+$out"
+    printf '%s\n' "$out" | grep -q '^Signature verification: ok' || die "$name: the signature does not verify:
+$out"
+    printf '%s\n' "$out" | grep -q 'Timestamp time:' || die "$name: the signature has no timestamp:
+$out"
+  done
+}
+
+# unsigned_form <exe> <out>: the exe without its Authenticode signature and
+# with the PE checksum, which signing fills in, back to the linker's zero,
+# so a fresh build and a signed asset compare equal.
+unsigned_form() {
+  local pe
+  cp "$1" "$2"
+  "$jsign" remove "$2" >/dev/null 2>&1 || die "jsign could not remove the signature of $1"
+  pe="$(od -An -t u4 -j 60 -N 4 "$2" | tr -d ' ')"   # e_lfanew (little endian, as on every host we run on)
+  printf '\0\0\0\0' | dd of="$2" bs=1 seek=$((pe + 88)) conv=notrunc 2>/dev/null
+}
+
 # same_build <fresh build dir> <dist dir>: whether every binary built again
-# equals dist/'s (the darwin ones in adhoc_form).
+# equals dist/'s (the darwin ones in adhoc_form, the windows ones in
+# unsigned_form when they were signed).
 same_build() {
   local t name ok=0
   for t in $targets; do
@@ -204,11 +279,22 @@ same_build() {
         adhoc_form "$1/$name" "$work/fresh-$name"
         adhoc_form "$2/$name" "$work/dist-$name"
         cmp -s "$work/fresh-$name" "$work/dist-$name" || { echo "differs: $name" >&2; ok=1; } ;;
+      stagent-windows-*)
+        if [ -n "$win_keystore" ]; then
+          unsigned_form "$1/$name" "$work/fresh-$name"
+          unsigned_form "$2/$name" "$work/dist-$name"
+          cmp -s "$work/fresh-$name" "$work/dist-$name" || { echo "differs: $name" >&2; ok=1; }
+        else
+          cmp -s "$1/$name" "$2/$name" || { echo "differs: $name" >&2; ok=1; }
+        fi ;;
       *) cmp -s "$1/$name" "$2/$name" || { echo "differs: $name" >&2; ok=1; } ;;
     esac
   done
   return "$ok"
 }
+
+# Sourced (scripts/release_test.sh), this script only defines the above.
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 # Refuse what --publish cannot publish before spending time on the build.
 if [ "$publish" = 1 ]; then
@@ -231,58 +317,32 @@ if [ -n "$sign_key" ]; then
 else
   echo "  macOS binaries left ad-hoc signed (STAGENT_SIGN_KEY / STAGENT_SIGN_CERT not set): not for a release"
 fi
+if [ -n "$win_keystore" ]; then
+  sign_windows "$dist"
+else
+  echo "  Windows binaries left unsigned (STAGENT_WIN_SIGN_KEYSTORE not set)"
+fi
 sums "$dist"
 
 # The public source repository has no app next to it; there SHA256SUMS is
 # the whole output.
 if [ -f "$app/pubspec.yaml" ]; then
-tmp="$(mktemp "${dart_out}.XXXXXX")"
+tmp="$(mktemp "${release_json}.XXXXXX")"
 {
-  cat <<'EOF'
-// GENERATED by stagent/scripts/release.sh — do not edit.
-// ignore_for_file: lines_longer_than_80_chars
-
-/// Release of the stagent server binary this app installs.
-EOF
-  printf "const String stagentVersion = '%s';\n\n" "$version"
-  cat <<'EOF'
-/// Base URL of the release assets (`<base>/<asset name>`).
-const String stagentReleaseBaseUrl =
-EOF
-  printf "    '%s';\n\n" "$base_url"
-  cat <<'EOF'
-/// Expected sha256 (lowercase hex) of each release asset, keyed `<os>-<arch>`.
-const Map<String, String> stagentSha256 = {
-EOF
+  printf '{\n  "version": "%s",\n  "base_url": "%s",\n  "assets": {\n' "$version" "$base_url"
+  sep=""
   for t in $targets; do
     key="${t%/*}-${t#*/}"
-    sum="$(awk -v n="$(asset "$key")" '$2 == n { print $1 }' "$dist/SHA256SUMS")"
-    printf "  '%s': '%s',\n" "$key" "$sum"
+    name="$(asset "$key")"
+    sum="$(awk -v n="$name" '$2 == n { print $1 }' "$dist/SHA256SUMS")"
+    printf '%s    "%s": { "name": "%s", "sha256": "%s", "size": %s }' "$sep" "$key" "$name" "$sum" "$(size "$dist/$name")"
+    sep=$',\n'
   done
-  cat <<'EOF'
-};
-
-/// Size in bytes of each release asset, keyed `<os>-<arch>`.
-const Map<String, int> stagentSize = {
-EOF
-  for t in $targets; do
-    key="${t%/*}-${t#*/}"
-    printf "  '%s': %s,\n" "$key" "$(size "$dist/$(asset "$key")")"
-  done
-  cat <<'EOF'
-};
-
-/// File name of the release asset for [assetKey] (`<os>-<arch>`).
-String stagentAssetName(String assetKey) =>
-    assetKey.startsWith('windows-') ? 'stagent-$assetKey.exe' : 'stagent-$assetKey';
-
-/// Download URL of the release asset for [assetKey].
-String stagentAssetUrl(String assetKey) =>
-    '$stagentReleaseBaseUrl/${stagentAssetName(assetKey)}';
-EOF
+  printf '\n  }\n}\n'
 } > "$tmp"
-mv "$tmp" "$dart_out"
-echo "wrote $dist/SHA256SUMS and $dart_out"
+mv "$tmp" "$release_json"
+"$app/tool/stagent_release_dart.sh" "$release_json"
+echo "wrote $dist/SHA256SUMS, $release_json and the app's Dart constants"
 else
 echo "wrote $dist/SHA256SUMS"
 fi
@@ -327,10 +387,12 @@ if [ -n "$(git -C "$clone" ls-remote origin "refs/tags/$tag")" ]; then
   remote_tag="$(git -C "$clone" rev-parse "refs/tags/$tag^{commit}")"
   [ "$remote_tag" = "$commit" ] || die "$repo already has tag $tag at $remote_tag, not at $commit"
 fi
+win_note="the Windows ones unsigned"
+[ -z "$win_keystore" ] || win_note="the Windows ones with Authenticode, their signatures also attached as .sig"
 notes="$changes
 
 ---
-stagent $version — server binary for SSH Term. Built from this tag ($commit) with $go_version via scripts/release.sh (reproducible: CGO_ENABLED=0, -trimpath, no VCS stamp, empty build id; the macOS binaries then signed with Developer ID, identifier $sign_id); verify downloads against SHA256SUMS, the macOS ones as README.md says."
+stagent $version — server binary for SSH Term. Built from this tag ($commit) with $go_version via scripts/release.sh (reproducible: CGO_ENABLED=0, -trimpath, no VCS stamp, empty build id; the macOS binaries then signed with Developer ID, identifier $sign_id, $win_note); verify downloads against SHA256SUMS, the signed ones as README.md says."
 
 if [ "$dry_run" = 1 ]; then
   git -C "$clone" log -1 --stat --format='%H %s' | tail -n 20

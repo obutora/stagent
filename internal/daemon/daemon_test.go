@@ -74,7 +74,9 @@ func startDaemonAt(t *testing.T, cfg wire.Config, opts Options) *testEnv {
 		t.Fatal(err)
 	}
 	opts.Layout = l
-	opts.Logf = t.Logf
+	if opts.Logf == nil {
+		opts.Logf = t.Logf
+	}
 	d, err := New(opts)
 	if err != nil {
 		t.Fatal(err)

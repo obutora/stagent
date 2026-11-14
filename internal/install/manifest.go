@@ -88,6 +88,10 @@ type ConfigEntry struct {
 	CreatedContainers []string   `json:"created_containers,omitempty"`
 	TOMLEdits         []TOMLEdit `json:"toml_edits,omitempty"`
 	ModifiedAt        int64      `json:"modified_at"`
+	// Original is the source text of the user's element ours took the
+	// place of (Claude's statusLine), put back by removal; absent when
+	// there was none. A string, so that it is kept byte for byte.
+	Original string `json:"original,omitempty"`
 }
 
 // TOMLEdit records a line-level change to Codex's config.toml.

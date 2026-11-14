@@ -99,6 +99,8 @@ func (b *Bridge) doTaskCreate(p wire.TaskCreateParams) (*wire.TaskCreateResult, 
 		return nil, upstreamError(err, wire.Errorf(wire.ErrUnavailable, "daemon: %v", err))
 	}
 	b.rewatch(dc)
+	// task.list also settles missing: a task whose worktree went away is
+	// missing, one whose worktree is back is ready again.
 	var list wire.TaskListResult
 	if err := dc.c.Call(ctx, wire.MethodTaskList, struct{}{}, &list); err != nil {
 		return nil, err

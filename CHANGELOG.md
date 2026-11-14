@@ -3,6 +3,265 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.19.0
+
+### Added
+
+- A task's `scripts.setup` runs only when it is the source checkout's own
+  or its content was approved for that checkout (ADR 0023). The script
+  comes from the task's branch, a fork's PR included, so whoever made the
+  PR could run anything on the host. A different one stops preparation
+  before setup: the terminal shows the script, the task waits at stage
+  `setup` with `setup_pending {script, hash}`, and the app's new
+  `task.setup {id, hash, run}` runs it — approving that content (its
+  SHA-256) for the checkout in `state/setup-approvals.json`, written by
+  the daemon only, so the next task with it is not asked about — or skips
+  it and starts the agent. A changed script is asked about again.
+  `task.setup` and the waiting `task.await_setup` are refused to coding
+  agents' process trees (ADR 0004) (#1546).
+- `STAGENT_GIT_TIMEOUT_SCALE` in the login shell's environment (a
+  positive number: `5` is five times as long) lengthens the new time
+  limits of git and gh for a repository too large for them (LFS) (#1541).
+- Usage (使用量): the daemon counts the tokens Claude Code spent on the
+  host from its transcripts (sub-agent runs included) in the background
+  and answers `usage.get {tz?, from?, to?}` with them by calendar day of
+  the app's time zone × harness × model × project (input, output, cache
+  reads, 5-minute and 1-hour cache writes, requests) and the 20
+  conversations that spent the most. A streamed response counts once with
+  its largest counts, lines a resumed conversation copied count once, the
+  `<synthetic>` model and an unfinished last line do not count. Only what
+  the transcripts gained is read: `state/usage-index.json` keeps how far
+  each file was read and what it counted, so a restart reads nothing
+  again; a file that shrank or was replaced is read again. Until the
+  first scan since the start finishes `usage.get` says `scanning: true`;
+  watchers get `usage.changed` when new usage was counted, at most every
+  30 s. `usage.get` is served to coding agents' process trees.
+  `stagent-bench -usage-mb` measures the scan (#1557). The scan merges
+  every 4096 lines and keeps its progress when stopped, so a long file
+  is never held whole.
+  Codex, omp and pi are counted too (`counted`; #1558). Codex: each
+  `token_count`'s `last_token_usage` from the rollouts in
+  `<CODEX_HOME>/sessions` (older rollouts with only `total_token_usage`:
+  the difference from the previous total, a total that went back being
+  the new baseline), the cached input taken out of the input and counted
+  as cache reads, the model of the `turn_context`; `info: null` lines are
+  no requests. omp and pi: each assistant message's `usage`, its 1-hour
+  cache writes, and the cost the agent wrote (`cost.total`), summed as
+  the new `agent_cost` (US dollars) of `days[]` and `sessions[]`. Copilot
+  CLI writes no input tokens and is not counted (#1558).
+- `usage.report` (the statusLine relay, which runs under claude and so is
+  served to coding agents) is taken only for a Claude configuration
+  directory the manifest records the relay in, given as a clean absolute
+  path, with bounded sizes, shares 0–100 and reset times within 8 days;
+  it no longer carries `harness` and `source`. ADR 0004 states this
+  exception. A measurement older than the one kept for the same window
+  no longer replaces it (a restarted daemon re-reading an old rollout).
+  `CLAUDE_CONFIG_DIR` with a trailing `/` is the same account. A private
+  API call in flight when the key is turned off records nothing. The
+  100% notification reads "100% used · resets at …", and the weekly
+  window of a model is titled "Claude Week (Opus)" (#1556).
+- Limit windows (上限の枠): `stagent integrate --statusline` makes Claude
+  Code's statusLine `stagent statusline claude` in `~/.claude/settings.json`
+  and `$CLAUDE_CONFIG_DIR/settings.json`, keeping the user's statusLine in
+  the manifest (its other keys stay in place). The relay runs that
+  statusLine with the same input and environment and returns its output
+  and exit code (nothing without one), and sends the input's
+  `rate_limits` to the daemon as `usage.report` — at most every 15 s per
+  session (marks in `state/statusline/`), a 100 ms connect at most, never
+  holding the statusLine back or starting a daemon. The daemon keeps the
+  5-hour and 7-day windows per configuration directory in
+  `state/usage-limits.json` (share, reset time, source `statusline`,
+  measured time; a lower share of the same window and an older window
+  are dropped, a missing window keeps its value) and returns them in
+  `usage.get`'s new `limits[]`; a window past its reset comes back as
+  `reset: true` without its share, and a change sends `usage.changed`.
+  `--remove statusline` and `uninstall --level unhook` put the user's
+  statusLine back byte for byte; one the user put in place of the relay is
+  left alone, and `doctor`'s new `statusline` (`installed`, `replaced`,
+  `user_status_line`, `files[]`) and `problems` report that the limit
+  windows cannot be measured until the next `--statusline` relays it.
+  Changes of two integrations to one file in one run (Claude's hooks and
+  statusLine) no longer overwrite each other (#1559).
+- Usage counts long prompts apart, for long-context prices (推定コスト in
+  the app): each `days[]` row gains `long_context[]`, the part of the row
+  whose requests had a prompt (input + cache reads + cache writes) over
+  100K, 200K and 272K tokens, one entry per threshold with any. The
+  thresholds are fixed in stagent; the app keeps the price table. The
+  index's version went up, so every transcript is read again once
+  (#1561).
+- Codex's limit windows: the usage scan reads the `rate_limits` of the
+  rollouts' `token_count` events (also `info: null` ones) — `primary` and
+  `secondary`, each with `used_percent` (or `used_percentage`), the reset
+  (`resets_at` in unix seconds, or `resets_in_seconds` from the event) and
+  the length (`window_minutes` or `limit_window_seconds`): 300 minutes
+  (±1) is `five_hour`, 10080 (±1) `seven_day`, another length
+  `<minutes>m`, no length primary 5 hours and secondary weekly. Per
+  `CODEX_HOME`, the newest event of all rollouts gives the account's
+  windows (source `codex_rollout`, `measured_at` the event time) under
+  the same rules as the statusLine's; a line with null or empty
+  `rate_limits` changes nothing. Accounts in `limits[]` gain `plan`
+  (Codex `plan_type`). The usage index version goes to 4, so every
+  transcript is read once again (#1560).
+- Limit window notifications (reason `usage_limit`): whenever a window's
+  value is taken and at every usage scan, a window passing 80% is
+  notified once (level `warn`) and passing 100% once (level `error`, new)
+  per window and reset time, and a window that reached 100% once more
+  when it resets (`info`); values measured more than an hour before are
+  not compared, and what was notified is kept in
+  `state/usage-alerts.json`, so a restart notifies nothing again. Title
+  `Claude 5h` (pushes `<label> · Claude 5h`), body a fixed phrase with the
+  reset time ("80% used · resets at 14:20"); the event carries `harness`,
+  `window` and `resets_at`. New `notify.reasons.usage_limit` (default
+  true); ntfy's sequence ID is the window and its reset time, links carry
+  `u=<harness>` (the app's usage screen), level `error` pushes urgent on
+  ntfy and red on Discord, and a digest takes the most serious level of
+  what it folds (#1562).
+- The private API (非公開 API) for the limit windows, off by default:
+  `config.json`'s `usage.private_api.{claude,codex}` (set with
+  `config.set`, refused to agents) makes the daemon also call Claude's
+  `/api/oauth/usage` (token from the macOS Keychain item `Claude
+  Code-credentials[-<sha256 of CLAUDE_CONFIG_DIR, 8 digits>]`, else
+  `.credentials.json`) and Codex's `wham/usage` (`auth.json`), only while
+  the app watches in the foreground, at most once per 15 minutes, or when
+  the usage screen opens (`usage.get` `refresh_limits`) 5 minutes after
+  the last call. Values are recorded with source `private_api` (Claude's
+  weekly windows of a model `seven_day_<model>` and `extra_usage` too).
+  Failures wait 30 s × 2^n up to 15 minutes, a 429 its `Retry-After`, a
+  401/403 or a missing token an hour, and become each window's `error`
+  (`{code, message, at, retry_at}`) in `usage.get`, the last value kept.
+  Tokens are read only: never refreshed, written, logged or shown in
+  `doctor` (#1563).
+
+### Changed
+
+- `task.remove` and `worktree.remove` delete a squash- or rebase-merged
+  branch without gh too: when `git branch -d` refuses, git looks for the
+  branch's changes in the task's `base` or the default branch (`git
+  merge-tree --write-tree`; when the base changed the same lines since,
+  `git cherry`, or the base's commit that touched exactly the branch's
+  files), fetching the bases — only them: `git fetch origin <base>` of
+  the task's `base` and the default branch — when neither git nor gh
+  finds it merged, so a merge done on GitHub is seen without gh. A
+  branch on GitHub with no gh, on another forge, or offline but merged
+  locally goes; one with a commit after the merge stays, named in
+  `kept_branch`. A git before 2.38 decides as before (`git branch -d`,
+  then gh). Remote branches are still never pushed or deleted, and the
+  task's own branch is never fetched (#1544).
+- `worktree.list`'s `merged` is the same check, against the task's
+  `base` for a task's worktree, so the worktree screen's merged mark and
+  its select merged and clean pick what the removal would delete. It
+  writes nothing to the repository: merge-tree's objects go to a
+  temporary object directory (#1544).
+- `worktree.remove` of a locked worktree is `refused`, its dry run
+  listing the refusal `locked`, as `task.remove`'s; it was `bad_request`.
+  Another tool's half-made worktree, whose `git worktree add` may still
+  be at work, is refused the same way. An app before 0.19.0 shows either
+  as the host's message (#1543).
+
+### Fixed
+
+- A branch found merged is deleted only at the commit that was checked
+  (`git update-ref -d refs/heads/<branch> <commit>`), and never while it
+  is checked out in a worktree: one that moved in the meantime stays,
+  named in `kept_branch`. `git branch -D` deleted it at whatever commit
+  it had reached (#1544).
+- Cleaning up a `missing` task handles its branch as every removal does,
+  deleting it when no commit would be lost and otherwise naming it in
+  `kept_branch`; a task whose source checkout is gone names its branch
+  as kept. Both left the branch without a word (#1544).
+- 片付け's confirm no longer misses what git settings or submodules hide,
+  and no longer takes the index lock (#1543). `task.remove`'s and
+  `worktree.remove`'s `changes` (and `worktree.list`'s count) run `git
+  status --untracked-files=all --ignore-submodules=none` with
+  `GIT_OPTIONAL_LOCKS=0`: new files count with
+  `status.showUntrackedFiles=no`, each listed, and changes inside a
+  submodule count whatever its ignore setting. A worktree with
+  submodules, which `git worktree remove` refuses, and a task's worktree
+  the user locked are refused before any session stops, listed in the dry
+  run as the new refusal kinds `submodules` and `locked`; they failed on
+  git's error after the sessions had stopped.
+- A `missing` task is `ready` again once its worktree is back: on
+  `task.list` (and so on `task.create` of it) the daemon finds the
+  worktree directory there with its `.git` and `git worktree list` of the
+  source checkout still listing it. A task went missing while an external
+  volume was unplugged or a network folder was out of sight, and stayed
+  so for good. One git no longer lists stays missing, and cleaning up a
+  missing task is unchanged (#1545).
+- Unregistering a worktree whose directory is gone touches that worktree
+  alone: `task.remove` of a missing task (and the worktree screen's
+  `worktree.remove` of its worktree), its `worktree` stage, and preparing
+  a task again run `git worktree remove <worktree>` instead of `git
+  worktree prune` on the whole repository. Pruning also unregistered the
+  repository's other worktrees on a volume taken away at the time (a
+  task's or another tool's, such as Orca's), which did not come back as
+  worktrees once the volume was back. Locked worktrees are never touched.
+  A git before 2.18, which cannot remove a worktree whose directory is
+  gone, still prunes (#1542).
+- A task's worktree a killed `git worktree add` left half made (the
+  preparing session stopped by 片付け, a crash, power lost: no files,
+  locked with reason `initializing`) no longer blocks the task (#1539).
+  `task.create` again removes it (`git worktree remove -f -f`) and adds
+  the worktree anew, where it took it as it was and got the task ready
+  with no files; `task.remove` takes it without `force` or archive, where
+  git refused the locked worktree; `worktree.list` shows it unlocked and
+  without changes, and `worktree.remove` removes it as the task's. Never
+  while the task's preparing session is alive. Another tool's half-made
+  worktree and a worktree the user locked stay untouched. stagent runs
+  its own `git worktree add` in the C locale (`LC_ALL=C`, no `LANGUAGE`),
+  so the add's lock reason is `initializing` on a host in another
+  language too: git translates it, and a half-made worktree was then
+  taken for one the user locked, blocking the task as before.
+- A worktree that holds other worktrees git lists (`claude --worktree`'s
+  `.claude/worktrees/*`) is no longer removed: `task.remove` and
+  `worktree.remove` refuse it with the new error `refused`, whatever
+  `force` and `stop_sessions` say, so an app that skips the dry run is
+  refused too, and `stagent task remove` checks again before archive.
+  Their dry runs list it in the new `refusals[]` (`{kind:
+  "nested_worktrees", paths}`), the reasons no flag overrides, and
+  `worktree.list` gives each worktree its `refusals`. When the outer
+  worktree ignored the inner one, `git worktree remove`, even without
+  `--force`, deleted it with the inner worktree and its uncommitted
+  changes, and the dry run showed none of it. Once the inner worktrees are
+  removed the outer one is cleaned up as before (#1538). `worktree.list`'s
+  `refusals` carry every kind the dry run lists (`submodules` and
+  `locked` too, from the same check), so the app's select merged and
+  clean no longer picks a worktree that would be refused (#1543). A
+  refusal `stagent task remove` finds after the bridge's check (the
+  worktree locked while the sessions stopped) is answered `refused` too,
+  not `internal`.
+- Preparing and removing a task no longer wait for good on a git or gh
+  that does not answer (0.18.1 stayed at `fetch` behind a macOS
+  permission prompt). As Orca does, each command that can hang has a time
+  limit: 120 s for `git fetch`, `gh issue develop`, `gh pr checkout` and
+  the `gh pr view` asking whether a removed branch's pull request was
+  merged, 180 s for `git worktree add`, 30 s for the `git status` before a
+  removal. A fetch over its limit is skipped, with a line in the terminal
+  saying so; `gh pr checkout` and `git worktree add` fail their stage
+  ("timed out after …"), and `task.create` prepares the task again; the
+  `git status` fails the removal before anything is removed.
+  `scripts.setup` and `scripts.archive` have no limit: the terminal shows
+  them and ^C stops them. A git command that fails because another git
+  in the repository holds a lock (`index.lock`, …) runs again after 50,
+  150 and 400 ms (#1541).
+- 片付け finishes when the app's SSH connection drops in the middle of
+  it. Without `scripts.archive` the bridge removed the worktree itself, so
+  the connection closing stopped git halfway, the failure never reached
+  the daemon and the task stayed `removing` — `task.remove` again `busy`
+  — until the daemon restarted. Now every removal, a missing task's
+  included (`--missing`), runs `stagent task remove` in a session of the
+  source checkout, as one with archive did (ADR 0006): the worktree, the
+  branch and the record go even after the
+  bridge has exited, and an app that connects again gets `task.removed`
+  with the kept branch. The daemon knows who carries a removal on — the
+  bridge's connection while it stops the task's sessions, then that
+  session (`task.progress` with `session_id`) — and takes the task back
+  to `ready` (`error: "interrupted"`) as soon as it goes, so it can be
+  removed again without a restart. `worktree.remove` of a worktree no
+  task has runs the same way, in a session running `stagent task
+  remove-worktree`. The empty `<worktree folder>/<repo name>` a
+  `worktree.remove` leaves (`removed_parent`) is removed in that session
+  too, so it no longer stays behind when the connection drops (#1540).
+
 ## 0.18.4
 
 ### Fixed

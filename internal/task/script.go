@@ -73,7 +73,7 @@ func PlanScript(goos string, s Script, git string) (ScriptPlan, error) {
 	}
 	text := strings.ReplaceAll(s.Text, "\r\n", "\n")
 	if strings.HasPrefix(strings.TrimLeft(text, " \t\n\ufeff"), "#!") {
-		bash := gitBash(git)
+		bash := GitBash(git)
 		if bash == "" {
 			return ScriptPlan{}, fmt.Errorf("the script starts with #! and needs Git for Windows' bash.exe, which is not next to git (%s)", cmp.Or(git, "git not found"))
 		}
@@ -142,11 +142,11 @@ func cmdRunner(script string) string {
 	return b.String()
 }
 
-// gitBash finds Git for Windows' bash.exe from git's path (…\Git\cmd\
+// GitBash finds Git for Windows' bash.exe from git's path (…\Git\cmd\
 // git.exe, …\Git\bin\git.exe or …\Git\mingw64\bin\git.exe): bin\bash.exe
 // or usr\bin\bash.exe under the installation. "" when there is none —
 // System32's bash.exe is WSL's, not Git Bash.
-func gitBash(git string) string {
+func GitBash(git string) string {
 	if git == "" {
 		return ""
 	}

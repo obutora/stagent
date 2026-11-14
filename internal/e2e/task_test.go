@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/gittest"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -240,5 +241,81 @@ func TestNamedTaskEndToEnd(t *testing.T) {
 	}
 	if got := preview(); got != wire.TaskNameTask {
 		t.Fatalf("name_problem of a taken name %q, want task", got)
+	}
+}
+
+// A task whose `git worktree add` was killed (the worktree left with no
+// files, locked "initializing"; the task failed) is prepared again by
+// task.create: the half-made worktree is removed and added anew, whole,
+// and the task gets ready.
+func TestTaskCreateAfterKilledAdd(t *testing.T) {
+	a, _, _, home := startPersistBridge(t)
+	gitIn := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed := filepath.Join(home, "seed")
+	gitIn(home, "init", "-q", "-b", "main", seed)
+	orca := "scripts:\n  setup: test -f \"$ORCA_ROOT_PATH/ok\"\n"
+	if err := os.WriteFile(filepath.Join(seed, "orca.yaml"), []byte(orca), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(seed, "add", "orca.yaml")
+	gitIn(seed, "commit", "-q", "-m", "init")
+	gitIn(home, "clone", "-q", "--bare", seed, "origin.git")
+	gitIn(home, "clone", "-q", "origin.git", "app")
+	repo := filepath.Join(home, "app")
+	place := filepath.Join(home, "wt", "app", "half-made")
+	a.call(t, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{"worktree_folder":"~/wt"}`)}, nil)
+
+	create := func() wire.TaskCreateResult {
+		var res wire.TaskCreateResult
+		a.call(t, wire.MethodTaskCreate, wire.TaskCreateParams{
+			Repo: repo, Kind: wire.TaskKindName, Name: "half-made",
+			Command: []string{"sh", "-c", "exec sleep 60"}, Cols: 80, Rows: 24,
+		}, &res)
+		if res.Existed || res.Session == nil || res.Task.Worktree != place {
+			t.Fatalf("task.create = %+v", res)
+		}
+		id := res.Session.ID
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			a.Call(ctx, wire.MethodSessionSignal, wire.SignalParams{ID: id, Signal: wire.SignalKill}, nil)
+		})
+		return res
+	}
+	first := create()
+	a.waitFor(t, "task failed at setup", func(m *wire.Msg) bool {
+		return taskUpdated(m, func(tk wire.Task) bool {
+			return tk.ID == first.Task.ID && tk.State == wire.TaskFailed && tk.Stage == wire.TaskStageSetup
+		})
+	})
+	// What a session killed in the middle of the worktree stage leaves.
+	gitIn(repo, "worktree", "remove", "--force", place)
+	gittest.KilledAdd(t, repo, place, "half-made")
+
+	if err := os.WriteFile(filepath.Join(repo, "ok"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := create()
+	if second.Task.ID != first.Task.ID {
+		t.Fatalf("retry made task %s, want %s", second.Task.ID, first.Task.ID)
+	}
+	a.waitFor(t, "task ready", func(m *wire.Msg) bool {
+		return taskUpdated(m, func(tk wire.Task) bool { return tk.ID == first.Task.ID && tk.State == wire.TaskReady })
+	})
+	if _, err := os.Stat(filepath.Join(place, "orca.yaml")); err != nil {
+		t.Fatalf("worktree not checked out: %v", err)
+	}
+	if list := gitIn(repo, "worktree", "list", "--porcelain"); strings.Contains(list, "locked") {
+		t.Fatalf("still locked:\n%s", list)
 	}
 }

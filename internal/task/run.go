@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -35,6 +35,13 @@ type Prep struct {
 	Out   io.Writer
 	// Stage is told each stage as it starts (task.progress).
 	Stage func(stage string)
+	// SetupApprovals is the file of the scripts.setup contents the user
+	// approved (paths.Layout.SetupApprovals; "": none).
+	SetupApprovals string
+	// AskSetup is asked, with the script, when the worktree's
+	// scripts.setup is neither the source checkout's nor approved for it
+	// (ADR 0023): true runs it, false skips it. nil: it is skipped.
+	AskSetup func(ctx context.Context, script string) (bool, error)
 }
 
 // StageError is the stage that failed and why.
@@ -58,11 +65,11 @@ func Prepare(ctx context.Context, p Prep) error {
 		p.Out = io.Discard
 	}
 	r := &prep{Prep: p}
+	if !p.Task.InPlace || p.Setup {
+		r.readBaseSetup(ctx)
+	}
 	for _, s := range r.stages() {
-		if p.Stage != nil {
-			p.Stage(s.name)
-		}
-		fmt.Fprintf(p.Out, "\n[stagent] %s\n", s.name)
+		r.announce(s.name)
 		if err := s.run(ctx); err != nil {
 			if !p.Task.InPlace {
 				removeIfEmpty(p.Task.Worktree)
@@ -80,6 +87,32 @@ type stage struct {
 
 type prep struct {
 	Prep
+	// baseSetup is the source checkout's scripts.setup as preparation
+	// found it (hasBase: known), which the task's may be without
+	// approval.
+	baseSetup string
+	hasBase   bool
+}
+
+// readBaseSetup reads the source checkout's scripts.setup before any
+// stage changes the checkout. An in_place task that switches branch and
+// is on its branch already (prepared again) has none: the checkout's
+// orca.yaml is then the branch's.
+func (r *prep) readBaseSetup(ctx context.Context) {
+	t := r.Task
+	if t.InPlace && r.SwitchBranch {
+		if cur, err := CurrentBranch(ctx, r.Env, t.Repo); err != nil || cur == t.Branch {
+			return
+		}
+	}
+	o, err := LoadOrca(t.Repo)
+	if err != nil {
+		return
+	}
+	r.hasBase = true
+	if o != nil {
+		r.baseSetup = o.Setup
+	}
 }
 
 // stages lists what preparing the task runs. An in_place task has no
@@ -102,8 +135,19 @@ func (r *prep) logf(format string, args ...any) {
 	fmt.Fprintf(r.Out, "[stagent] "+format+"\n", args...)
 }
 
-// run runs a git or gh command for the terminal to see. Its error is the
-// command's last stderr line.
+// announce tells Stage (when set) and the terminal that stage name starts.
+func (r *prep) announce(name string) {
+	if r.Stage != nil {
+		r.Stage(name)
+	}
+	fmt.Fprintf(r.Out, "\n[stagent] %s\n", name)
+}
+
+// run runs a git or gh command for the terminal to see, again while it
+// fails on a lock another git holds (retryLocked). Its error is the
+// command's last stderr line (the one naming the lock when that is what
+// it failed on), or its *LimitError when ctx's limit (runLimited) stopped
+// it.
 func (r *prep) run(ctx context.Context, dir, name string, args ...string) error {
 	bin, err := lookProgram(r.Env, name)
 	if err != nil {
@@ -112,13 +156,19 @@ func (r *prep) run(ctx context.Context, dir, name string, args ...string) error 
 	if name == "git" {
 		args = gitArgs(args)
 	}
-	fmt.Fprintf(r.Out, "$ %s %s\n", name, strings.Join(args, " "))
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir, cmd.Env = dir, r.Env
 	var tail tailWriter
-	cmd.Stdout = r.Out
-	cmd.Stderr = io.MultiWriter(r.Out, &tail)
-	if err := cmd.Run(); err != nil {
+	err = retryLocked(ctx, func() (string, error) {
+		fmt.Fprintf(r.Out, "$ %s %s\n", name, strings.Join(args, " "))
+		tail = tailWriter{}
+		cmd := command(ctx, bin, args...)
+		cmd.Dir, cmd.Env = dir, r.Env
+		cmd.Stdout = r.Out
+		cmd.Stderr = io.MultiWriter(r.Out, &tail)
+		return string(tail.b), exited(cmd.Run())
+	}, func(wait time.Duration) {
+		r.logf("a lock another git holds is in the way; trying again in %s", wait)
+	})
+	if err != nil {
 		sub := ""
 		for _, a := range args {
 			if !strings.HasPrefix(a, "-") && a != "core.longpaths=true" {
@@ -126,12 +176,22 @@ func (r *prep) run(ctx context.Context, dir, name string, args ...string) error 
 				break
 			}
 		}
-		if msg := lastLine(string(tail.b)); msg != "" {
+		if le := limitOf(ctx); le != nil {
+			return fmt.Errorf("%s%s: %w", name, sub, le)
+		}
+		if msg := failureLine(string(tail.b)); msg != "" {
 			return fmt.Errorf("%s%s: %s", name, sub, msg)
 		}
 		return fmt.Errorf("%s%s: %v", name, sub, err)
 	}
 	return nil
+}
+
+// runLimited is run within the time limit (see limitNetwork).
+func (r *prep) runLimited(ctx context.Context, limit time.Duration, dir, name string, args ...string) error {
+	ctx, cancel := withLimit(ctx, r.Env, limit)
+	defer cancel()
+	return r.run(ctx, dir, name, args...)
 }
 
 // tailWriter keeps the last 4 KiB written to it.
@@ -150,13 +210,19 @@ func (r *prep) has(ctx context.Context, ref string) bool {
 }
 
 // fetch updates origin's base branch. Failing to (offline, no origin) is
-// only logged: the branch is then made from what the checkout has.
+// only logged: the branch is then made from what the checkout has. So is
+// a fetch over its time limit, skipped.
 func (r *prep) fetch(ctx context.Context) error {
 	args := []string{"fetch", "origin"}
 	if r.Task.Base != "" {
 		args = append(args, r.Task.Base)
 	}
-	if err := r.run(ctx, r.Task.Repo, "git", args...); err != nil {
+	err := r.runLimited(ctx, limitNetwork, r.Task.Repo, "git", args...)
+	var le *LimitError
+	switch {
+	case errors.As(err, &le):
+		r.logf("fetch timed out after %s: skipped, continuing with what the checkout has (%s lengthens the limit)", le.Limit, EnvGitTimeoutScale)
+	case err != nil:
 		r.logf("fetch failed (%v); continuing with what the checkout has", err)
 	}
 	return nil
@@ -201,20 +267,20 @@ func (r *prep) branch(ctx context.Context) error {
 			r.logf("%s is checked out already", t.Branch)
 			return nil
 		}
-		return r.run(ctx, t.Repo, "gh", "pr", "checkout", strconv.Itoa(t.Number), "--branch", t.Branch)
+		return r.runLimited(ctx, limitNetwork, t.Repo, "gh", "pr", "checkout", strconv.Itoa(t.Number), "--branch", t.Branch)
 	}
 	return r.prCheckout(ctx)
 }
 
 func (r *prep) issueBranch(ctx context.Context) error {
 	t := r.Task
-	err := r.run(ctx, t.Repo, "gh", "issue", "develop", strconv.Itoa(t.Number), "--base", t.Base, "--name", t.Branch)
+	err := r.runLimited(ctx, limitNetwork, t.Repo, "gh", "issue", "develop", strconv.Itoa(t.Number), "--base", t.Base, "--name", t.Branch)
 	if err != nil {
 		r.logf("gh issue develop failed (%v): %s is made locally from %s, not on GitHub", err, t.Branch, t.Base)
 	} else if !r.has(ctx, "refs/remotes/origin/"+t.Branch) {
 		// gh fetches the branch only where the checkout's remote is the
 		// issue's repository.
-		r.run(ctx, t.Repo, "git", "fetch", "origin", "+refs/heads/"+t.Branch+":refs/remotes/origin/"+t.Branch)
+		r.runLimited(ctx, limitNetwork, t.Repo, "git", "fetch", "origin", "+refs/heads/"+t.Branch+":refs/remotes/origin/"+t.Branch)
 	}
 	return r.localBranch(ctx)
 }
@@ -259,7 +325,7 @@ func (r *prep) prCheckout(ctx context.Context) error {
 	}
 	switch {
 	case w == nil:
-		if err := r.run(ctx, t.Repo, "git", "worktree", "add", "--detach", t.Worktree); err != nil {
+		if err := r.addWorktree(ctx, "--detach", t.Worktree); err != nil {
 			return err
 		}
 	case w.Branch == t.Branch:
@@ -268,7 +334,7 @@ func (r *prep) prCheckout(ctx context.Context) error {
 	case w.Branch != "":
 		return fmt.Errorf("%s is a worktree on branch %s, not %s", t.Worktree, w.Branch, t.Branch)
 	}
-	return r.run(ctx, t.Worktree, "gh", "pr", "checkout", strconv.Itoa(t.Number), "--branch", t.Branch)
+	return r.runLimited(ctx, limitNetwork, t.Worktree, "gh", "pr", "checkout", strconv.Itoa(t.Number), "--branch", t.Branch)
 }
 
 // worktree adds the task's worktree on its branch in the (empty) task
@@ -287,7 +353,35 @@ func (r *prep) worktree(ctx context.Context) error {
 		r.logf("using the worktree %s on %s", t.Worktree, t.Branch)
 		return nil
 	}
-	return r.run(ctx, t.Repo, "git", "worktree", "add", t.Worktree, t.Branch)
+	return r.addWorktree(ctx, t.Worktree, t.Branch)
+}
+
+// addWorktree runs `git worktree add <args…>` in the source checkout,
+// within its time limit, in the C locale (LC_ALL=C, no LANGUAGE): the lock
+// git holds on the new worktree until its checkout is done then has the
+// reason initializing (AddingLock), which git otherwise translates, so
+// that a worktree the add was killed making is told half made whatever
+// the host's language.
+func (r *prep) addWorktree(ctx context.Context, args ...string) error {
+	c := *r
+	c.Env = cLocale(r.Env)
+	return c.runLimited(ctx, limitWorktreeAdd, r.Task.Repo, "git", append([]string{"worktree", "add"}, args...)...)
+}
+
+// cLocale is env (nil: this process's) in the C locale: LC_ALL=C, without
+// LANGUAGE, which GNU gettext would otherwise prefer.
+func cLocale(env []string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if !envKey(k, "LC_ALL") && !envKey(k, "LANGUAGE") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, "LC_ALL=C")
 }
 
 func cmpOrDetached(branch string) string {
@@ -300,7 +394,12 @@ func cmpOrDetached(branch string) string {
 // place looks at the task's directory: the repository's worktree there,
 // if any. Otherwise the directory must be empty (it is made when absent)
 // and the task's branch not checked out in another worktree. A worktree
-// git still lists without its directory is pruned first.
+// git still lists there without its .git is unregistered first, alone
+// (UnregisterArgs), its directory removed when empty; one a killed `git
+// worktree add` left half made is removed (git worktree remove -f -f: it
+// is still locked by the add) to be added anew. Only this task's
+// preparation makes its worktree, and the daemon runs one at a time, so
+// the add that left it is gone.
 func (r *prep) place(ctx context.Context) (*Worktree, error) {
 	t := r.Task
 	dir := CanonicalPath(t.Worktree)
@@ -312,10 +411,21 @@ func (r *prep) place(ctx context.Context) (*Worktree, error) {
 		if !SamePath(w.Path, dir) {
 			continue
 		}
+		if w.HalfMade() {
+			r.logf("%s was left half made by a git worktree add that was stopped; making it again", t.Worktree)
+			if err := r.run(ctx, t.Repo, "git", halfMadeRemoveArgs(t.Worktree)...); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
 			return &w, nil
 		}
-		if err := r.run(ctx, t.Repo, "git", "worktree", "prune"); err != nil {
+		removeIfEmpty(dir)
+		if IsDir(dir) {
+			break // not empty: refused below
+		}
+		if err := r.run(ctx, t.Repo, "git", UnregisterArgs(ctx, r.Env, dir)...); err != nil {
 			return nil, err
 		}
 	}
@@ -355,7 +465,9 @@ func (r *prep) copy(ctx context.Context) error {
 }
 
 // setup runs scripts.setup of the orca.yaml in the task's place. No file
-// or no script is nothing to do; a broken orca.yaml fails.
+// or no script is nothing to do; a broken orca.yaml fails. A script that
+// is neither the source checkout's nor approved for it runs only when
+// AskSetup says so (ADR 0023).
 func (r *prep) setup(ctx context.Context) error {
 	t := r.Task
 	o, err := LoadOrca(t.Worktree)
@@ -366,11 +478,39 @@ func (r *prep) setup(ctx context.Context) error {
 		r.logf("no scripts.setup in %s", OrcaFile)
 		return nil
 	}
+	if !r.hasBase || o.Setup != r.baseSetup {
+		if !SetupApproved(r.SetupApprovals, t.Repo, SetupHash(o.Setup)) {
+			run, err := r.askSetup(ctx, o.Setup)
+			if err != nil {
+				return err
+			}
+			if !run {
+				r.logf("scripts.setup skipped")
+				return nil
+			}
+		}
+	}
 	err = RunScript(ctx, Script{Text: o.Setup, Dir: t.Worktree, Root: t.Repo, Env: r.Env, Stdin: r.Stdin, Stdout: r.Out, Stderr: r.Out})
 	if err != nil {
 		return fmt.Errorf("scripts.setup: %w", err)
 	}
 	return nil
+}
+
+// askSetup shows the terminal the script it asks AskSetup about.
+func (r *prep) askSetup(ctx context.Context, script string) (bool, error) {
+	r.logf("this scripts.setup differs from the source checkout's and was not approved:")
+	for line := range strings.Lines(script) {
+		fmt.Fprintf(r.Out, "    %s", line)
+	}
+	if !strings.HasSuffix(script, "\n") {
+		fmt.Fprintln(r.Out)
+	}
+	if r.AskSetup == nil {
+		return false, nil
+	}
+	r.logf("waiting for the app: approve and run it, or skip it")
+	return r.AskSetup(ctx, script)
 }
 
 func isEmptyDir(dir string) (bool, error) {

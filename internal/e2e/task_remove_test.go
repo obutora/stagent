@@ -33,12 +33,14 @@ cat "$f"
 // removeEnv is a bridge with a source checkout (repo) whose orca.yaml
 // shares node_modules and archives with a script that fails while
 // $ORCA_ROOT_PATH/fail-archive exists, and the gh stub on the login PATH.
+// bin and home start more bridges for it (startBridgeFor).
 type removeEnv struct {
-	a     *app
-	d     *rpc.Client
-	repo  string
-	ghBin string
-	gitIn func(dir string, args ...string) string
+	a         *app
+	d         *rpc.Client
+	repo      string
+	ghBin     string
+	gitIn     func(dir string, args ...string) string
+	bin, home string
 }
 
 const removeOrca = `worktree:
@@ -52,12 +54,13 @@ scripts:
 
 func newRemoveEnv(t *testing.T) *removeEnv {
 	t.Helper()
-	a, l, _, home := startPersistBridge(t)
+	a, l, bin, home := startPersistBridge(t)
+	e := &removeEnv{a: a, bin: bin, home: home}
 	home, err := filepath.EvalSymlinks(home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &removeEnv{a: a, repo: filepath.Join(home, "app"), ghBin: filepath.Join(home, "stub-bin")}
+	e.repo, e.ghBin = filepath.Join(home, "app"), filepath.Join(home, "stub-bin")
 	e.gitIn = func(dir string, args ...string) string {
 		t.Helper()
 		cmd := exec.Command("git", args...)
@@ -207,6 +210,162 @@ func code(we *wire.Error) string {
 	return we.Code
 }
 
+// holdGit puts a git first on the login PATH that, while the file hold
+// exists, waits in `git worktree remove` (creating the file held once
+// there) and then gives up when the removal that ran it is gone; it is
+// git otherwise.
+func (e *removeEnv) holdGit(t *testing.T) (hold, held string) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold, held = filepath.Join(e.ghBin, "hold"), filepath.Join(e.ghBin, "held")
+	writeFile(t, filepath.Join(e.ghBin, "git"), fmt.Sprintf(`#!/bin/sh
+if [ "$1 $2" = "worktree remove" ] && [ -f '%s' ]; then
+  : > '%s'
+  while [ -f '%s' ]; do sleep 0.05; done
+  kill -0 $PPID 2>/dev/null || exit 1
+fi
+exec '%s' "$@"
+`, hold, held, hold, real))
+	if err := os.Chmod(filepath.Join(e.ghBin, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, hold, "")
+	t.Cleanup(func() { os.Remove(hold) })
+	return hold, held
+}
+
+// goCall calls method on the bridge without waiting for the answer.
+func (e *removeEnv) goCall(method string, params any) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), waitLong)
+		defer cancel()
+		e.a.Call(ctx, method, params, nil)
+	}()
+}
+
+// waitFile waits until the file p exists.
+func waitFile(t *testing.T, p string) {
+	t.Helper()
+	deadline := time.Now().Add(waitLong)
+	for {
+		if _, err := os.Stat(p); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", p)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Closing the bridge (the app's SSH connection) in the middle of a
+// removal does not stop it: the worktree goes, the unpushed branch is
+// kept and the record forgotten after the bridge has exited, and the app
+// connecting again is told so (task.removed naming the kept branch).
+func TestTaskRemoveOutlivesTheBridge(t *testing.T) {
+	e := newRemoveEnv(t)
+	tk := e.task(t, 5, false)
+	e.gitIn(tk.Worktree, "commit", "-q", "--allow-empty", "-m", "work")
+	hold, held := e.holdGit(t)
+
+	e.goCall(wire.MethodTaskRemove, wire.TaskRemoveParams{ID: tk.ID, SkipArchive: true})
+	waitFile(t, held)
+	e.a.hangUp()
+	again := startBridgeFor(t, e.bin, e.home)
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	var kept string
+	again.waitFor(t, "task.removed", taskRemoved(tk.ID, &kept))
+	if kept != "5-fix" {
+		t.Fatalf("task.removed kept_branch %q, want 5-fix", kept)
+	}
+	if _, err := os.Lstat(tk.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree still there: %v", err)
+	}
+	if list := e.gitIn(e.repo, "worktree", "list", "--porcelain"); strings.Contains(list, tk.Worktree) {
+		t.Fatalf("worktree still listed:\n%s", list)
+	}
+	e.gitIn(e.repo, "rev-parse", "--verify", "refs/heads/5-fix")
+	if ts := e.tasks(t); len(ts) != 0 {
+		t.Fatalf("tasks after removal: %+v", ts)
+	}
+}
+
+// The session a removal goes on in dying in the middle of it ends the
+// removal without a daemon restart: the task is ready again (error
+// interrupted, at the stage it got to) and can be removed again.
+func TestTaskRemoveInterruptedWhenItsSessionDies(t *testing.T) {
+	e := newRemoveEnv(t)
+	tk := e.task(t, 6, false)
+	hold, held := e.holdGit(t)
+
+	e.goCall(wire.MethodTaskRemove, wire.TaskRemoveParams{ID: tk.ID, SkipArchive: true})
+	waitFile(t, held)
+	var removal wire.Session
+	e.a.waitFor(t, "the removal's session", func(m *wire.Msg) bool {
+		return m.Method == wire.NotifySessionUpdated && json.Unmarshal(m.Params, &removal) == nil &&
+			slices.Contains(removal.Command, "remove") && removal.Cwd == e.repo
+	})
+	e.a.call(t, wire.MethodSessionSignal, wire.SignalParams{ID: removal.ID, Signal: wire.SignalKill}, nil)
+	got := e.a.waitFor(t, "task interrupted", func(m *wire.Msg) bool {
+		var u wire.Task
+		return m.Method == wire.NotifyTaskUpdated && json.Unmarshal(m.Params, &u) == nil && u.ID == tk.ID &&
+			u.State == wire.TaskReady && u.Error == wire.TaskErrInterrupted
+	})
+	var u wire.Task
+	json.Unmarshal(got.Params, &u)
+	if u.Stage != wire.TaskStageWorktree {
+		t.Fatalf("interrupted task %+v, want stage worktree", u)
+	}
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	if _, we := e.remove(t, wire.TaskRemoveParams{ID: tk.ID, SkipArchive: true}); we != nil {
+		t.Fatalf("task.remove again: %v", we)
+	}
+	if _, err := os.Lstat(tk.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree still there: %v", err)
+	}
+	if ts := e.tasks(t); len(ts) != 0 {
+		t.Fatalf("tasks after removal: %+v", ts)
+	}
+}
+
+// Removing a worktree no task has from the worktree screen goes on when
+// the bridge goes in the middle of it: the worktree goes and its merged
+// branch is deleted after the bridge has exited.
+func TestWorktreeRemoveOutlivesTheBridge(t *testing.T) {
+	e := newRemoveEnv(t)
+	wt := e.repo + "-loose"
+	e.gitIn(e.repo, "worktree", "add", "-q", "--no-track", "-b", "loose", wt, "origin/main")
+	e.daemonCall(t, wire.MethodConfigSet, wire.ConfigSetParams{Config: json.RawMessage(`{"worktree_repos":["` + e.repo + `"]}`)}, nil)
+	hold, held := e.holdGit(t)
+
+	e.goCall(wire.MethodWorktreeRemove, wire.WorktreeRemoveParams{Path: wt})
+	waitFile(t, held)
+	e.a.hangUp()
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(waitLong)
+	for {
+		_, err := os.Lstat(wt)
+		list := e.gitIn(e.repo, "worktree", "list", "--porcelain")
+		branch := e.gitIn(e.repo, "branch", "--list", "loose")
+		if os.IsNotExist(err) && !strings.Contains(list, wt) && branch == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worktree there (%v), listed:\n%s\nbranch %q", err, list, branch)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // task.remove without archive: the dry run reports the changes (not the
 // ignored .env nor the node_modules link), the unpushed commits and the
 // live session; the real call refuses changes (not_clean) and live
@@ -322,8 +481,38 @@ func TestTaskRemoveArchive(t *testing.T) {
 	}
 }
 
-// A missing task is forgotten and its worktree pruned; an in_place task
-// only forgotten, its sessions untied. Neither needs a dry run.
+// A branch squash-merged on origin goes though gh knows no pull request
+// for it (another forge, or no gh): git finds its changes in origin's main
+// once fetched. Origin's branch stays.
+func TestTaskRemoveSquashMergedWithoutGH(t *testing.T) {
+	e := newRemoveEnv(t)
+	tk := e.task(t, 6, false)
+	writeFile(t, filepath.Join(tk.Worktree, "b.txt"), "b\n")
+	e.gitIn(tk.Worktree, "add", "b.txt")
+	e.gitIn(tk.Worktree, "commit", "-q", "-m", "work")
+	e.gitIn(tk.Worktree, "push", "-q", "origin", tk.Branch)
+	pushed := e.gitIn(tk.Worktree, "rev-parse", "HEAD")
+	home := filepath.Dir(e.repo)
+	merger := filepath.Join(home, "merger")
+	e.gitIn(home, "clone", "-q", "origin.git", merger)
+	e.gitIn(merger, "merge", "-q", "--squash", "origin/"+tk.Branch)
+	e.gitIn(merger, "commit", "-q", "-m", "squash")
+	e.gitIn(merger, "push", "-q", "origin", "main")
+	if res, we := e.remove(t, wire.TaskRemoveParams{ID: tk.ID}); we != nil || res.KeptBranch != "" {
+		t.Fatalf("task.remove = %+v, %v", res, we)
+	}
+	if out, err := exec.Command("git", "-C", e.repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+tk.Branch).CombinedOutput(); err == nil {
+		t.Fatalf("squash-merged branch kept: %s", out)
+	}
+	if got := e.gitIn(filepath.Join(home, "origin.git"), "rev-parse", "refs/heads/"+tk.Branch); got != pushed {
+		t.Fatalf("origin's %s is %s, want %s", tk.Branch, got, pushed)
+	}
+}
+
+// A missing task is forgotten and its worktree unregistered, its branch
+// deleted when no commit would be lost and else kept and named; an
+// in_place task only forgotten, its sessions untied. Neither needs a dry
+// run.
 func TestTaskRemoveMissingAndInPlace(t *testing.T) {
 	e := newRemoveEnv(t)
 	gone := e.task(t, 3, false)
@@ -336,27 +525,78 @@ func TestTaskRemoveMissingAndInPlace(t *testing.T) {
 	if res, we := e.remove(t, wire.TaskRemoveParams{ID: gone.ID, DryRun: true}); we != nil || len(res.Changes)+len(res.Sessions)+res.Unpushed != 0 {
 		t.Fatalf("dry run of a missing task = %+v, %v", res, we)
 	}
-	if _, we := e.remove(t, wire.TaskRemoveParams{ID: gone.ID}); we != nil {
-		t.Fatalf("task.remove missing: %v", we)
+	if res, we := e.remove(t, wire.TaskRemoveParams{ID: gone.ID}); we != nil || res.KeptBranch != "" {
+		t.Fatalf("task.remove missing = %+v, %v", res, we)
 	}
 	if list := e.gitIn(e.repo, "worktree", "list", "--porcelain"); strings.Contains(list, gone.Worktree) {
-		t.Fatalf("not pruned:\n%s", list)
+		t.Fatalf("not unregistered:\n%s", list)
 	}
 	if _, err := os.Stat(filepath.Join(e.repo, "archive-ran")); err == nil {
 		t.Fatal("archive ran for a missing task")
 	}
+	if e.gitIn(e.repo, "branch", "--list", gone.Branch) != "" {
+		t.Fatalf("branch %s of the missing task kept", gone.Branch)
+	}
+
+	worked := e.task(t, 5, false)
+	e.gitIn(worked.Worktree, "commit", "-q", "--allow-empty", "-m", "work")
+	if err := os.RemoveAll(worked.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	if ts := e.tasks(t); len(ts) != 1 || ts[0].State != wire.TaskMissing {
+		t.Fatalf("tasks %+v, want missing", ts)
+	}
+	if res, we := e.remove(t, wire.TaskRemoveParams{ID: worked.ID}); we != nil || res.KeptBranch != worked.Branch {
+		t.Fatalf("task.remove missing with a commit = %+v, %v; want kept_branch %s", res, we, worked.Branch)
+	}
+	var kept string
+	e.a.waitFor(t, "missing task.removed", taskRemoved(worked.ID, &kept))
+	if kept != worked.Branch {
+		t.Fatalf("task.removed kept_branch %q, want %q", kept, worked.Branch)
+	}
+	e.gitIn(e.repo, "rev-parse", "--verify", "refs/heads/"+worked.Branch)
 
 	ip := e.task(t, 4, true)
 	sid := e.shell(t, e.repo, ip.ID, ip.ID)
 	if _, we := e.remove(t, wire.TaskRemoveParams{ID: ip.ID}); we != nil {
 		t.Fatalf("task.remove in_place: %v", we)
 	}
-	var kept string
 	e.a.waitFor(t, "in_place task.removed", taskRemoved(ip.ID, &kept))
 	e.a.waitFor(t, "session untied, still live", func(m *wire.Msg) bool {
 		return sessionUpdated(m, sid, func(s wire.Session) bool { return s.TaskID == "" && s.ExitCode == nil })
 	})
 	if ts := e.tasks(t); len(ts) != 0 {
 		t.Fatalf("tasks after removal: %+v", ts)
+	}
+}
+
+// A task whose worktree folder was moved away (a volume unplugged) is
+// missing; task.create of it answers that, starting nothing. With the
+// folder back task.create finds it ready again and opens it as usual.
+func TestTaskMissingComesBack(t *testing.T) {
+	e := newRemoveEnv(t)
+	tk := e.task(t, 5, false)
+	if err := os.Rename(tk.Worktree, tk.Worktree+"-away"); err != nil {
+		t.Fatal(err)
+	}
+	if ts := e.tasks(t); len(ts) != 1 || ts[0].State != wire.TaskMissing {
+		t.Fatalf("tasks %+v, want missing", ts)
+	}
+	create := func() wire.TaskCreateResult {
+		var res wire.TaskCreateResult
+		e.a.call(t, wire.MethodTaskCreate, wire.TaskCreateParams{Repo: e.repo, Kind: wire.TaskKindIssue, Number: 5, Command: []string{"claude"}}, &res)
+		return res
+	}
+	if res := create(); !res.Existed || res.Task.State != wire.TaskMissing || res.Session != nil {
+		t.Fatalf("task.create while away = %+v", res)
+	}
+	if err := os.Rename(tk.Worktree+"-away", tk.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	if res := create(); !res.Existed || res.Task.ID != tk.ID || res.Task.State != wire.TaskReady {
+		t.Fatalf("task.create with the folder back = %+v", res)
+	}
+	if ts := e.tasks(t); len(ts) != 1 || ts[0].State != wire.TaskReady {
+		t.Fatalf("tasks %+v, want ready", ts)
 	}
 }

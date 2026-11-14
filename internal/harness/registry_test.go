@@ -164,3 +164,23 @@ func TestCopilotTranscriptRoot(t *testing.T) {
 		}
 	}
 }
+
+// Claude's configuration directory is CLAUDE_CONFIG_DIR as a clean path
+// (the variable as set kept apart), else ~/.claude.
+func TestClaudeConfigDir(t *testing.T) {
+	for _, c := range []struct{ env, dir string }{
+		{"", "/home/u/.claude"},
+		{"/home/u/work/", "/home/u/work"},
+		{"/home/u//work/.", "/home/u/work"},
+	} {
+		dir, env := ClaudeConfigDir("/home/u", func(k string) string {
+			if k == "CLAUDE_CONFIG_DIR" {
+				return c.env
+			}
+			return ""
+		})
+		if dir != filepath.FromSlash(c.dir) || env != c.env {
+			t.Errorf("ClaudeConfigDir with %q = %q, %q; want %q, %q", c.env, dir, env, c.dir, c.env)
+		}
+	}
+}

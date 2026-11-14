@@ -46,16 +46,32 @@ type Layout struct {
 	// Tasks holds the tasks; only the daemon writes it:
 	// <StateDir>/tasks.json
 	Tasks string
+	// SetupApprovals holds the scripts.setup contents the user approved
+	// for each source checkout (ADR 0023); only the daemon writes it:
+	// <StateDir>/setup-approvals.json
+	SetupApprovals string
 	// Schedules holds the schedules (定期実行) and ScheduleRuns their runs
 	// (<id>.jsonl); only the daemon writes them: <StateDir>/schedules.json,
 	// <StateDir>/schedule-runs
 	Schedules    string
 	ScheduleRuns string
-	DataDir      string // per-session scrollback segments; local disk even when Home is on NFS
-	LogDir       string // <Root>/log — stderr of detached processes
-	RunDir       string // sockets (unix) / lock and pid files (all OSes), 0700
-	DaemonAddr   string // IPC address of the daemon
-	UploadsDir   string // <Home>/.ssh-term/uploads — files sent from the app
+	UsageIndex   string // <StateDir>/usage-index.json — the usage counted from the transcripts; only the daemon writes it
+	// UsageLimits holds the last value of every limit window (上限の枠),
+	// per account; only the daemon writes it: <StateDir>/usage-limits.json
+	UsageLimits string
+	// UsageAlerts holds what was notified of each limit window (80%,
+	// 100%, reset), so a restart does not notify it again; only the
+	// daemon writes it: <StateDir>/usage-alerts.json
+	UsageAlerts string
+	// StatusLineMarks holds one file per Claude session whose modification
+	// time is when `stagent statusline claude` last sent its limit windows
+	// (it sends at most every 15 s): <StateDir>/statusline
+	StatusLineMarks string
+	DataDir         string // per-session scrollback segments; local disk even when Home is on NFS
+	LogDir          string // <Root>/log — stderr of detached processes
+	RunDir          string // sockets (unix) / lock and pid files (all OSes), 0700
+	DaemonAddr      string // IPC address of the daemon
+	UploadsDir      string // <Home>/.ssh-term/uploads — files sent from the app
 	// DataOnNetworkFS reports that Home is on a network file system and
 	// DataDir was moved to local disk.
 	DataOnNetworkFS bool
@@ -108,8 +124,13 @@ func resolve(home string, isolated bool) (*Layout, error) {
 	l.NotifyErrors = filepath.Join(l.StateDir, "notify-errors.json")
 	l.ChatMessages = filepath.Join(l.StateDir, "chat-messages.json")
 	l.Tasks = filepath.Join(l.StateDir, "tasks.json")
+	l.SetupApprovals = filepath.Join(l.StateDir, "setup-approvals.json")
 	l.Schedules = filepath.Join(l.StateDir, "schedules.json")
 	l.ScheduleRuns = filepath.Join(l.StateDir, "schedule-runs")
+	l.UsageIndex = filepath.Join(l.StateDir, "usage-index.json")
+	l.UsageLimits = filepath.Join(l.StateDir, "usage-limits.json")
+	l.UsageAlerts = filepath.Join(l.StateDir, "usage-alerts.json")
+	l.StatusLineMarks = filepath.Join(l.StateDir, "statusline")
 	l.DataDir = filepath.Join(l.StateDir, "sessions")
 	if !isolated && isNetworkFS(home) {
 		l.DataOnNetworkFS = true

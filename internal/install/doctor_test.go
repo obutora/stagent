@@ -398,3 +398,21 @@ func TestDoctorReportsBlockedLocation(t *testing.T) {
 		t.Fatalf("problems = %s", problems)
 	}
 }
+
+// doctor reads no login of the agents: with Claude's credentials and
+// Codex's auth.json in place (and the private API on), its report holds
+// neither token.
+func TestDoctorHoldsNoToken(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	const claudeToken, codexToken = "sk-ant-oat01-SECRET-doctor", "eyJSECRET-doctor"
+	writeFile(t, te.home(".claude", ".credentials.json"), `{"claudeAiOauth":{"accessToken":"`+claudeToken+`","refreshToken":"SECRET-r"}}`)
+	writeFile(t, te.home(".codex", "auth.json"), `{"tokens":{"access_token":"`+codexToken+`","account_id":"a"}}`)
+	writeFile(t, te.l.Config, `{"usage":{"private_api":{"claude":true,"codex":true}}}`)
+	b, err := json.Marshal(te.doctor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "SECRET") {
+		t.Fatalf("doctor report holds a token: %s", b)
+	}
+}

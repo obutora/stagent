@@ -117,6 +117,11 @@ type addResult struct {
 	containers []string
 	edits      []TOMLEdit
 	summary    string
+	// replaced: our element took the place of one of the user's, whose
+	// source text is original ("": there was none), recorded in the
+	// manifest (ConfigEntry.Original) so that removal puts it back.
+	replaced bool
+	original string
 }
 
 // withRecorded is t followed by at(path) for every other path the manifest
@@ -151,7 +156,26 @@ func (e *env) addChange(t *target) (*Change, error) {
 	if cur == nil {
 		c.Action = "create"
 	}
-	c.apply = func() error { return e.writeAdd(t, cur, res) }
+	c.apply = func() error {
+		now, err := readOptional(t.path)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(now, cur) {
+			return e.writeAdd(t, cur, res)
+		}
+		// Another change of this run wrote the file (targets sharing one
+		// file, like Claude's hooks and statusLine): add ours to what it
+		// holds now. What we replace is still what it held before the run.
+		res2, err := t.add(now)
+		if err != nil || now != nil && bytes.Equal(res2.after, now) {
+			return err
+		}
+		if res.replaced && res2.replaced {
+			res2.original = res.original
+		}
+		return e.writeAdd(t, now, res2)
+	}
 	return c, nil
 }
 
@@ -182,6 +206,9 @@ func (e *env) writeAdd(t *target, before []byte, res addResult) error {
 		// Edited by someone since our last write: the backup no longer
 		// restores a state that contains those edits.
 		rec.Backup = ""
+	}
+	if res.replaced {
+		rec.Original = res.original
 	}
 	rec.CreatedDirs = addUnique(rec.CreatedDirs, missingDirs(filepath.Dir(resolveTarget(t.path)))...)
 	if err := atomicWrite(t.path, res.after, t.mode); err != nil {
@@ -253,6 +280,15 @@ func (e *env) removeChange(t *target) (*Change, error) {
 		c.Action = "delete"
 	}
 	c.apply = func() error {
+		if now, err := readOptional(t.path); err == nil && !bytes.Equal(now, cur) {
+			// Another change of this run wrote the file (targets sharing
+			// one file): plan again on what it holds now.
+			c2, err := e.removeChange(t)
+			if err != nil || c2 == nil {
+				return err
+			}
+			return c2.apply()
+		}
 		if after == nil {
 			if err := os.Remove(resolveTarget(t.path)); err != nil && !os.IsNotExist(err) {
 				return err

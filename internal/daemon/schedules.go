@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
+	"github.com/obutora/stagent/internal/fsutil"
 	"github.com/obutora/stagent/internal/loginenv"
 	"github.com/obutora/stagent/internal/proc"
 	"github.com/obutora/stagent/internal/schedagent"
@@ -98,7 +99,7 @@ func loadSchedules(path string) ([]*wire.Schedule, error) {
 func (d *Daemon) saveSchedulesLocked() error {
 	b, err := json.MarshalIndent(schedulesFile{Schedules: d.schedules}, "", "  ")
 	if err == nil {
-		err = writeFileAtomic(d.layout.Schedules, b)
+		err = fsutil.WriteFileAtomic(d.layout.Schedules, b)
 	}
 	return err
 }

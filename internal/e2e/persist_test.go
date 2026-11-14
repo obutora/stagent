@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -32,13 +33,13 @@ import (
 func startPersistBridge(t *testing.T) (a *app, l *paths.Layout, bin, home string) {
 	t.Helper()
 	bin = buildStagent(t)
-	bash, err := exec.LookPath("bash")
-	if err != nil {
+	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not installed")
 	}
 	home = t.TempDir()
 	t.Setenv(paths.EnvHome, home)
 	t.Setenv(daemonclient.EnvExe, bin)
+	var err error
 	if l, err = paths.Resolve(); err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +47,28 @@ func startPersistBridge(t *testing.T) (a *app, l *paths.Layout, bin, home string
 	profile := "echo LOGIN-PROFILE-RAN\nPS1='$ '\n"
 	if err := os.WriteFile(filepath.Join(home, ".bash_profile"), []byte(profile), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		shutdownDaemon(l)
+		if t.Failed() {
+			logs, _ := filepath.Glob(filepath.Join(l.LogDir, "*.log"))
+			for _, f := range logs {
+				b, _ := os.ReadFile(f)
+				t.Logf("%s:\n%s", filepath.Base(f), b)
+			}
+		}
+	})
+	return startBridgeFor(t, bin, home), l, bin, home
+}
+
+// startBridgeFor runs another `stagent bridge` for the home of
+// startPersistBridge — the app connecting (again) — and opens its watch.
+// app.hangUp ends it as the app's SSH connection going does.
+func startBridgeFor(t *testing.T, bin, home string) *app {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not installed")
 	}
 	cmd := exec.Command(bin, "bridge")
 	cmd.Env = []string{
@@ -65,27 +88,27 @@ func startPersistBridge(t *testing.T) (a *app, l *paths.Layout, bin, home string
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	a := newApp(stdout, stdin)
+	var once sync.Once
+	a.hangUp = func() {
+		once.Do(func() {
+			stdin.Close()
+			cmd.Wait()
+		})
+	}
 	t.Cleanup(func() {
-		stdin.Close()
-		cmd.Wait()
-		shutdownDaemon(l)
+		a.hangUp()
 		if t.Failed() {
 			t.Logf("bridge stderr:\n%s", stderr.String())
-			logs, _ := filepath.Glob(filepath.Join(l.LogDir, "*.log"))
-			for _, f := range logs {
-				b, _ := os.ReadFile(f)
-				t.Logf("%s:\n%s", filepath.Base(f), b)
-			}
 		}
 	})
-	a = newApp(stdout, stdin)
 	var hello wire.HelloResult
 	a.call(t, wire.MethodHello, wire.HelloParams{Protocol: version.Protocol, Client: "e2e"}, &hello)
 	if !slices.Contains(hello.Capabilities, wire.CapPersist) {
 		t.Fatalf("hello capabilities %v lack %q", hello.Capabilities, wire.CapPersist)
 	}
 	a.call(t, wire.MethodWatch, wire.WatchParams{}, nil)
-	return a, l, bin, home
+	return a
 }
 
 // mark is the number of notifications received so far.

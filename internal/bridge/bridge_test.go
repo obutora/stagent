@@ -31,6 +31,11 @@ type app struct {
 	mu     sync.Mutex
 	log    []string // "notify:<method>" / "resp:<tag>" in arrival order
 	notifs chan *wire.Msg
+	// in is the bridge's stdin; exited is closed once Serve returned
+	// (serveErr).
+	in       io.Closer
+	exited   chan struct{}
+	serveErr error
 }
 
 type pipeRW struct {
@@ -59,10 +64,11 @@ func startBridge(t *testing.T, opts ...func(*Bridge)) (*paths.Layout, *app) {
 	for _, o := range opts {
 		o(b)
 	}
-	served := make(chan error, 1)
-	go func() { served <- b.Serve(context.Background(), inR) }()
-
-	a := &app{notifs: make(chan *wire.Msg, 256)}
+	a := &app{notifs: make(chan *wire.Msg, 256), in: inW, exited: make(chan struct{})}
+	go func() {
+		a.serveErr = b.Serve(context.Background(), inR)
+		close(a.exited)
+	}()
 	a.Client = rpc.NewClient(pipeRW{outR, inW}, func(m *wire.Msg) {
 		a.mu.Lock()
 		a.log = append(a.log, "notify:"+m.Method)
@@ -72,9 +78,9 @@ func startBridge(t *testing.T, opts ...func(*Bridge)) (*paths.Layout, *app) {
 	t.Cleanup(func() {
 		inW.Close()
 		select {
-		case err := <-served:
-			if err != nil {
-				t.Errorf("Serve: %v", err)
+		case <-a.exited:
+			if a.serveErr != nil {
+				t.Errorf("Serve: %v", a.serveErr)
 			}
 		case <-time.After(5 * time.Second):
 			t.Error("bridge did not exit after stdin closed")
@@ -82,6 +88,18 @@ func startBridge(t *testing.T, opts ...func(*Bridge)) (*paths.Layout, *app) {
 		outR.Close()
 	})
 	return l, a
+}
+
+// hangUp closes the bridge's stdin, as the app's SSH connection going
+// does, and waits until the bridge has exited.
+func (a *app) hangUp(t *testing.T) {
+	t.Helper()
+	a.in.Close()
+	select {
+	case <-a.exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bridge did not exit after stdin closed")
+	}
 }
 
 // call issues a request and returns its wire error (nil on success).

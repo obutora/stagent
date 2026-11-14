@@ -76,9 +76,12 @@ type WorktreeEntry struct {
 	// task.Unpushed of Branch.
 	Changes  int `json:"changes"`
 	Unpushed int `json:"unpushed"`
-	// Merged: Head is an ancestor of the default branch (origin's, else
-	// the local one).
+	// Merged: git finds Head merged into its task's base or the default
+	// branch (task.Merged: squash and rebase merges too).
 	Merged bool `json:"merged"`
+	// Refusals: why worktree.remove would refuse it whatever the flags,
+	// as its dry run lists them (nested_worktrees).
+	Refusals []RemoveRefusal `json:"refusals,omitempty"`
 }
 
 // WorktreeFolder is a folder of the worktree folder that is no worktree
@@ -136,8 +139,9 @@ type WorktreeWatchResult struct {
 }
 
 // WorktreeRemoveParams is worktree.remove. DryRun only reports; otherwise
-// a worktree's uncommitted changes need Force (not_clean) and its live
-// sessions StopSessions (busy).
+// a worktree's refusal reasons refuse it whatever the flags (refused), its
+// uncommitted changes need Force (not_clean) and its live sessions
+// StopSessions (busy).
 type WorktreeRemoveParams struct {
 	Path         string `json:"path"`
 	Force        bool   `json:"force,omitempty"`
@@ -145,12 +149,13 @@ type WorktreeRemoveParams struct {
 	DryRun       bool   `json:"dry_run,omitempty"`
 }
 
-// WorktreeRemoveResult: a worktree's dry run reports Changes (at most
-// TaskRemoveChangesMax, then ChangesTruncated), Unpushed and Sessions, as
-// task.remove's; a folder's, Bytes and its largest Entries. A removal
-// reports KeptBranch, and RemovedParent when <worktree folder>/<repo
-// name> was left empty and went too.
+// WorktreeRemoveResult: a worktree's dry run reports Refusals, Changes (at
+// most TaskRemoveChangesMax, then ChangesTruncated), Unpushed and
+// Sessions, as task.remove's; a folder's, Bytes and its largest Entries. A
+// removal reports KeptBranch, and RemovedParent when <worktree
+// folder>/<repo name> was left empty and went too.
 type WorktreeRemoveResult struct {
+	Refusals         []RemoveRefusal     `json:"refusals,omitempty"`
 	Changes          []string            `json:"changes,omitempty"`
 	ChangesTruncated bool                `json:"changes_truncated,omitempty"`
 	Unpushed         int                 `json:"unpushed,omitempty"`

@@ -84,9 +84,9 @@ func TestGitNotFound(t *testing.T) {
 	}
 }
 
-// Listed knows the worktrees git lists for a checkout, the checkout
+// WorktreeAt finds the worktrees git lists for a checkout, the checkout
 // itself included, and none that was removed.
-func TestListed(t *testing.T) {
+func TestWorktreeAt(t *testing.T) {
 	base, repo := newRepo(t)
 	ctx := context.Background()
 	kept, removed := filepath.Join(base, "repo-1"), filepath.Join(base, "repo-2")
@@ -94,13 +94,13 @@ func TestListed(t *testing.T) {
 	git(t, repo, "worktree", "add", "-q", "-b", "b2", removed)
 	git(t, repo, "worktree", "remove", removed)
 	for wt, want := range map[string]bool{repo: true, kept: true, removed: false, filepath.Join(base, "other"): false} {
-		got, err := Listed(ctx, nil, repo, wt)
-		if err != nil || got != want {
-			t.Errorf("Listed(%s) = %v, %v; want %v", wt, got, err, want)
+		w, err := WorktreeAt(ctx, nil, repo, wt)
+		if err != nil || (w != nil) != want {
+			t.Errorf("WorktreeAt(%s) = %+v, %v; want listed %v", wt, w, err, want)
 		}
 	}
-	if _, err := Listed(ctx, nil, filepath.Join(base, "gone"), kept); err == nil {
-		t.Errorf("Listed of a missing checkout succeeded")
+	if _, err := WorktreeAt(ctx, nil, filepath.Join(base, "gone"), kept); err == nil {
+		t.Errorf("WorktreeAt of a missing checkout succeeded")
 	}
 }
 

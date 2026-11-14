@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/eventlog"
 	"github.com/obutora/stagent/internal/follow"
+	"github.com/obutora/stagent/internal/fsutil"
 	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/loginenv"
@@ -35,6 +37,7 @@ import (
 	"github.com/obutora/stagent/internal/schedule"
 	"github.com/obutora/stagent/internal/task"
 	"github.com/obutora/stagent/internal/transcript"
+	"github.com/obutora/stagent/internal/usage"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -86,6 +89,20 @@ type Options struct {
 	// is outside the GUI login session (default: proc.StartHolder).
 	LoginEnv    func() ([]string, error)
 	SpawnHolder func(exe string, args []string, dir string, env []string, logPath string) (pid int, outsideGUI bool, err error)
+	// UsageScanInterval: how often the transcripts are scanned for new
+	// usage (default 10 s; usage.get also asks for a scan), and
+	// UsageChangedEvery the least time between two usage.changed
+	// (default 30 s). UsageBeforeFile, when set, is called before each
+	// file the scan reads (tests hold the scan with it). See usage.go.
+	UsageScanInterval time.Duration
+	UsageChangedEvery time.Duration
+	UsageBeforeFile   func(path string)
+	// PrivateAPI calls the harnesses' private usage APIs (default: the
+	// real endpoints; on macOS the Keychain too, unless STAGENT_HOME is
+	// set), and PrivateAPITick is how often the daemon looks whether one
+	// is due (default 15 s). See usage_private.go.
+	PrivateAPI     usage.PrivateAPI
+	PrivateAPITick time.Duration
 }
 
 const (
@@ -132,13 +149,20 @@ type Daemon struct {
 	chatSent map[string]bool
 	// tasks in the order they were created (tasks.json); prepAt: when a
 	// preparing task was prepared (or the daemon started); removingFrom:
-	// the state a removing task returns to when a step fails. review
-	// fires reviewTasksLocked at reviewAt.
+	// the state a removing task returns to when a step fails; removers:
+	// who carries each removal on (see remover). review fires
+	// reviewTasksLocked at reviewAt.
 	tasks        []*wire.Task
 	prepAt       map[string]time.Time
 	removingFrom map[string]string
+	removers     map[string]remover
 	review       *time.Timer
 	reviewAt     time.Time
+	// setupWaits: the task.await_setup waiting on each task's pending
+	// scripts.setup; setupDecided: task.setup's last decision for each
+	// (see setup.go).
+	setupWaits   map[string]setupWait
+	setupDecided map[string]wire.TaskSetupParams
 
 	// schedules in the order they were created (schedules.json);
 	// schedDue: when each runs next; runs: their records; pendingRuns:
@@ -150,6 +174,27 @@ type Daemon struct {
 	// retryWaits: the retry each schedule waits to run, by schedule id
 	// (kept in memory only: a daemon restart drops them).
 	retryWaits map[string]*retryWait
+
+	// usage counts the tokens of the transcripts (see usage.go);
+	// usageNudge asks its goroutine for a scan. usageSent is when
+	// usage.changed was last sent and usageTimer the pending one.
+	usage      *usage.Scanner
+	usageNudge chan struct{}
+	// limits keeps the limit windows (上限の枠) usage.report brings.
+	limits *usage.Limits
+	// alerts is what was notified of the limit windows; alertMu orders
+	// the checks (see usage_alerts.go).
+	alerts     *usage.Alerts
+	alertMu    sync.Mutex
+	usageSent  time.Time
+	usageTimer *time.Timer
+	// apiNudge asks the private API goroutine to look now; apiOpened (under
+	// mu): the usage screen was opened since it last looked. apiMu orders
+	// recording a call's result against turning the API off (taken before
+	// mu; see usage_private.go).
+	apiNudge  chan struct{}
+	apiOpened bool
+	apiMu     sync.Mutex
 
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
@@ -216,6 +261,18 @@ func New(opts Options) (*Daemon, error) {
 	if opts.SpawnHolder == nil {
 		opts.SpawnHolder = proc.StartHolder
 	}
+	if opts.UsageScanInterval <= 0 {
+		opts.UsageScanInterval = defaultUsageScanInterval
+	}
+	if opts.UsageChangedEvery <= 0 {
+		opts.UsageChangedEvery = defaultUsageChangedEvery
+	}
+	if opts.PrivateAPITick <= 0 {
+		opts.PrivateAPITick = defaultPrivateAPITick
+	}
+	if opts.PrivateAPI.Keychain == nil && runtime.GOOS == "darwin" && !opts.Layout.Isolated {
+		opts.PrivateAPI.Keychain = usage.MacKeychain
+	}
 	l := opts.Layout
 	if err := l.EnsureDirs(); err != nil {
 		return nil, err
@@ -271,13 +328,31 @@ func New(opts Options) (*Daemon, error) {
 		tasks:        tasks,
 		prepAt:       map[string]time.Time{},
 		removingFrom: map[string]string{},
+		setupWaits:   map[string]setupWait{},
+		setupDecided: map[string]wire.TaskSetupParams{},
+		removers:     map[string]remover{},
 
 		schedules:   schedules,
 		schedDue:    map[string]time.Time{},
 		runs:        schedule.RunLog{Dir: l.ScheduleRuns},
 		pendingRuns: map[string]*pendingRun{},
 		retryWaits:  map[string]*retryWait{},
+
+		usage:      usage.Open(l.UsageIndex, roots),
+		limits:     usage.OpenLimits(l.UsageLimits),
+		alerts:     usage.OpenAlerts(l.UsageAlerts),
+		usageNudge: make(chan struct{}, 1),
+		apiNudge:   make(chan struct{}, 1),
 	}
+	// Errors of a private API turned off while the daemon was down.
+	for _, h := range privateAPIHarnesses {
+		if !eff.Usage.PrivateAPI.On(h) {
+			if _, err := d.limits.ClearErrors(h); err != nil {
+				opts.Logf("daemon: usage limits: %v", err)
+			}
+		}
+	}
+	d.usage.BeforeFile = opts.UsageBeforeFile
 	d.digest = notify.NewDigester(func(ns []wire.NotificationData) {
 		d.mu.Lock()
 		cfg := d.eff.Notify
@@ -314,8 +389,8 @@ func (d *Daemon) restoreChat() {
 	cfg := d.eff.Notify
 	d.sender.Reconfigure(cfg)
 	for _, id := range d.sender.ChatSessions(cfg) {
-		if notify.IsScheduleKey(id) {
-			continue // a schedule's message stays until a newer replaces it
+		if !notify.IsSessionKey(id) {
+			continue // a schedule's or a limit window's message stays until a newer replaces it
 		}
 		if d.holderAnswers(id) {
 			d.chatSent[id] = true
@@ -339,6 +414,16 @@ func (d *Daemon) Serve(ln net.Listener) error {
 			d.runSchedules()
 		}()
 	}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.runUsage()
+	}()
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.runPrivateAPI()
+	}()
 	go func() {
 		<-d.shutdown
 		ln.Close()
@@ -386,6 +471,9 @@ func (d *Daemon) Shutdown() {
 		}
 		if d.review != nil {
 			d.review.Stop()
+		}
+		if d.usageTimer != nil {
+			d.usageTimer.Stop()
 		}
 		conns := make([]*connState, 0, len(d.conns))
 		var holders []*rpc.Conn
@@ -481,6 +569,7 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 	switch m.Method {
 	case wire.MethodConfigSet, wire.MethodPresenceSet, wire.MethodNotifyTest, wire.MethodDaemonShutdown,
 		wire.MethodTaskProgress, wire.MethodTaskRegister, wire.MethodTaskForget,
+		wire.MethodTaskSetup, wire.MethodTaskAwaitSetup,
 		wire.MethodScheduleCreate,
 		wire.MethodScheduleUpdate, wire.MethodScheduleRemove, wire.MethodSchedulePause, wire.MethodScheduleResume,
 		wire.MethodScheduleRunNow:
@@ -555,6 +644,21 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 			return nil, err
 		}
 		return d.conversations(p)
+	case wire.MethodUsageGet:
+		var p wire.UsageGetParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		if p.RefreshLimits && cs.refusal == nil {
+			d.refreshLimits()
+		}
+		return d.usageGet(p)
+	case wire.MethodUsageReport:
+		var p wire.UsageReportParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return nil, d.usageReport(p)
 	case wire.MethodTranscriptGet:
 		var p wire.TranscriptGetParams
 		if err := rpc.Decode(m, &p); err != nil {
@@ -601,9 +705,18 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		d.mu.Lock()
 		cs.foreground = p.Foreground
 		d.mu.Unlock()
+		if p.Foreground {
+			d.nudgePrivateAPI()
+		}
 		return struct{}{}, nil
 	case wire.MethodTaskList:
 		return d.taskList(), nil
+	case wire.MethodTaskSetup:
+		var p wire.TaskSetupParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return struct{}{}, d.taskSetup(p)
 
 	// bridge → daemon (schedules)
 	case wire.MethodScheduleList:
@@ -648,13 +761,19 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		if err := rpc.Decode(m, &p); err != nil {
 			return nil, err
 		}
-		return struct{}{}, d.taskProgress(p)
+		return struct{}{}, d.taskProgress(cs, p)
 	case wire.MethodTaskForget:
 		var p wire.TaskRemoved
 		if err := rpc.Decode(m, &p); err != nil {
 			return nil, err
 		}
 		return struct{}{}, d.taskForget(p)
+	case wire.MethodTaskAwaitSetup:
+		var p wire.TaskAwaitSetupParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return d.taskAwaitSetup(cs.c, m.ID, p)
 
 	// install / doctor → daemon
 	case wire.MethodDaemonStatus:
@@ -684,6 +803,10 @@ func (d *Daemon) connClosed(cs *connState) {
 	cs.subs = nil
 	if cs.holderID != "" {
 		d.holderGoneLocked(cs)
+	}
+	if !d.closed {
+		// A removal this connection carried on is over.
+		d.reviewTasksLocked(time.Now())
 	}
 }
 
@@ -920,18 +1043,23 @@ func (d *Daemon) configSet(patch json.RawMessage) (wire.ConfigResult, error) {
 	if err := validRepos(p, c.Repos); err != nil {
 		return wire.ConfigResult{}, wire.Errorf(wire.ErrBadRequest, "repos: %v", err)
 	}
-	if err := writeFileAtomic(d.layout.Config, b); err != nil {
+	if err := fsutil.WriteFileAtomic(d.layout.Config, b); err != nil {
 		return wire.ConfigResult{}, err
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	before := d.eff.Usage.PrivateAPI
 	d.cfg, d.eff = c, c.WithDefaults()
+	after := d.eff.Usage.PrivateAPI
 	d.sender.Reconfigure(d.eff.Notify)
 	r := d.eff.Retention
 	if err := d.log.SetRetention(r.EventsMax, time.Duration(r.EventsDays)*24*time.Hour); err != nil {
 		d.logf("daemon: event log retention: %v", err)
 	}
-	return d.configResultLocked(), nil
+	res := d.configResultLocked()
+	d.mu.Unlock()
+	// Outside mu: it rewrites the limit windows and sends usage.changed.
+	d.privateAPIConfigured(before, after)
+	return res, nil
 }
 
 // configResultLocked is the reply of config.get and config.set.
@@ -1077,26 +1205,6 @@ func decodeJSON(b []byte) (any, error) {
 		return nil, errors.New("trailing data after the JSON value")
 	}
 	return v, nil
-}
-
-// writeFileAtomic writes b to path via a temporary file and rename, 0600.
-func writeFileAtomic(path string, b []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	_, werr := f.Write(b)
-	cerr := f.Close()
-	if err := errors.Join(werr, cerr, os.Chmod(tmp, 0o600)); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
 }
 
 // notifyTest pushes a test notification right away (no digest) to the

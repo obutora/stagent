@@ -77,8 +77,8 @@ func (d *Digester) fire() {
 const digestItems = 5
 
 // Fold combines notifications into one. A single notification is returned
-// unchanged; several become reason "digest" with Count set, level warn if
-// any was a warning, titled in lang.
+// unchanged; several become reason "digest" with Count set, at the most
+// serious level of them (error, warn, info), titled in lang.
 func Fold(ns []wire.NotificationData, lang string) wire.NotificationData {
 	if len(ns) == 1 {
 		return ns[0]
@@ -91,8 +91,8 @@ func Fold(ns []wire.NotificationData, lang string) wire.NotificationData {
 	for i, n := range ns {
 		c := max(n.Count, 1)
 		count += c
-		if n.Level == wire.LevelWarn {
-			level = wire.LevelWarn
+		if levelRank(n.Level) > levelRank(level) {
+			level = n.Level
 		}
 		if i == 0 {
 			reason = n.Reason
@@ -123,6 +123,8 @@ func Fold(ns []wire.NotificationData, lang string) wire.NotificationData {
 			title = Text(lang, PhraseDigestExited, count)
 		case "schedule":
 			title = Text(lang, PhraseDigestSchedule, count)
+		case wire.ReasonUsageLimit:
+			title = Text(lang, PhraseDigestUsageLimit, count)
 		}
 	}
 	return wire.NotificationData{
@@ -132,5 +134,17 @@ func Fold(ns []wire.NotificationData, lang string) wire.NotificationData {
 		Reason:    "digest",
 		Count:     count,
 		Schedules: slices.ContainsFunc(ns, func(n wire.NotificationData) bool { return n.ScheduleID != "" }),
+		Usage:     slices.ContainsFunc(ns, isUsage),
 	}
+}
+
+// levelRank orders the levels: info, warn, error.
+func levelRank(level string) int {
+	switch level {
+	case wire.LevelError:
+		return 2
+	case wire.LevelWarn:
+		return 1
+	}
+	return 0
 }

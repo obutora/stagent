@@ -383,6 +383,59 @@ func TestTaskMissing(t *testing.T) {
 	}
 }
 
+// task.list brings a missing task back to ready once its worktree
+// directory is back and git still lists it as a worktree (a volume
+// reconnected); one git no longer lists, or a bare directory where it
+// was, stays missing.
+func TestTaskMissingBack(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	e := startDaemon(t, fastConfig(), Options{PrepareGrace: time.Minute})
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	os.Mkdir(repo, 0o700)
+	git(t, repo, "init", "-q", "-b", "main")
+	git(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+	canon, err := task.Canonical(context.Background(), nil, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := e.client()
+	ready := func(n int) wire.Task {
+		wt := canon + "-" + itoa(n)
+		git(t, repo, "worktree", "add", "-q", "-b", "b"+itoa(n), wt)
+		tk := registerTask(t, c, issueTask(canon, n, "00000000000000a"+itoa(n))).Task
+		call(t, c, wire.MethodTaskProgress, wire.TaskProgressParams{ID: tk.ID, Stage: wire.TaskStageAgent}, nil)
+		return tk
+	}
+	moved, pruned, emptied := ready(1), ready(2), ready(3)
+	rename := func(from, to string) {
+		if err := os.Rename(from, to); err != nil {
+			t.Fatal(err)
+		}
+	}
+	states := func(want map[string]string, when string) {
+		t.Helper()
+		for _, tk := range listTasks(t, c) {
+			if tk.State != want[tk.ID] {
+				t.Errorf("%s: task #%d is %s, want %s", when, tk.Number, tk.State, want[tk.ID])
+			}
+		}
+	}
+	// pruned: git forgets it while its folder is away.
+	rename(pruned.Worktree, pruned.Worktree+"-away")
+	git(t, repo, "worktree", "prune")
+	rename(pruned.Worktree+"-away", pruned.Worktree)
+	rename(moved.Worktree, moved.Worktree+"-away")
+	rename(emptied.Worktree, emptied.Worktree+"-away")
+	states(map[string]string{moved.ID: wire.TaskMissing, pruned.ID: wire.TaskMissing, emptied.ID: wire.TaskMissing}, "while away")
+
+	rename(moved.Worktree+"-away", moved.Worktree)
+	os.Mkdir(emptied.Worktree, 0o700) // still listed, but no checkout in it
+	states(map[string]string{moved.ID: wire.TaskReady, pruned.ID: wire.TaskMissing, emptied.ID: wire.TaskMissing}, "after coming back")
+}
+
 // Session.task_id: a worktree task takes the sessions in its worktree,
 // live ones when it is registered and new ones when they start; an
 // in_place task only its prepared session and those started for it.
@@ -544,6 +597,92 @@ func TestTaskRemovingInterruptedByRestart(t *testing.T) {
 	call(t, c3, wire.MethodWatch, wire.WatchParams{}, &w)
 	if got := w.Tasks[0]; got.State != wire.TaskReady || got.Stage != wire.TaskStageStop {
 		t.Fatalf("interrupted again, stored: %+v", got)
+	}
+}
+
+// interrupted matches task id becoming ready with error interrupted.
+func interrupted(id string) func(*wire.Msg) bool {
+	return func(m *wire.Msg) bool {
+		if !taskUpdated(id, wire.TaskReady)(m) {
+			return false
+		}
+		var tk wire.Task
+		json.Unmarshal(m.Params, &tk)
+		return tk.Error == wire.TaskErrInterrupted
+	}
+}
+
+// A removal whose remover went — the connection that started it (the
+// bridge stopping the task's sessions) closed — is over without a
+// restart: the task is ready again with error interrupted, keeping the
+// stage, and can be removed again.
+func TestTaskRemovingInterruptedWhenRemoverGoes(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{PrepareGrace: time.Minute})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	c, _ := e.client()
+	tk := registerTask(t, c, issueTask(abs("/w/repo"), 7, "00000000000000a1")).Task
+	call(t, c, wire.MethodTaskProgress, wire.TaskProgressParams{ID: tk.ID, Stage: wire.TaskStageAgent}, nil)
+
+	bridge, _ := e.client()
+	call(t, bridge, wire.MethodTaskProgress, wire.TaskProgressParams{ID: tk.ID, Stage: wire.TaskStageStop}, nil)
+	await(t, events, "removing", taskUpdated(tk.ID, wire.TaskRemoving))
+	bridge.Close()
+	got := decodeTask(t, await(t, events, "back to ready", interrupted(tk.ID)))
+	if got.Error != wire.TaskErrInterrupted || got.Stage != wire.TaskStageStop {
+		t.Fatalf("after the remover went: %+v", got)
+	}
+	call(t, c, wire.MethodTaskProgress, wire.TaskProgressParams{ID: tk.ID, Stage: wire.TaskStageStop}, nil)
+	if got := decodeTask(t, await(t, events, "removing again", taskUpdated(tk.ID, wire.TaskRemoving))); got.Error != "" {
+		t.Fatalf("removing again: %+v", got)
+	}
+}
+
+// A removal handed to a session (a stage reported with its session_id)
+// no longer depends on the connection that handed it: it lasts while the
+// session is live, and is over (ready, interrupted) when the session ends
+// before the record went, or does not register within the grace.
+func TestTaskRemovingInterruptedWhenSessionGoes(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{PrepareGrace: 300 * time.Millisecond})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	c, _ := e.client()
+	ready := func(number int, prep string) wire.Task {
+		t.Helper()
+		tk := registerTask(t, c, issueTask(abs("/w/repo"), number, prep)).Task
+		call(t, c, wire.MethodTaskProgress, wire.TaskProgressParams{ID: tk.ID, Stage: wire.TaskStageAgent}, nil)
+		return tk
+	}
+	const remover, never = "00000000000000b1", "00000000000000b2"
+	live, lost := ready(1, "00000000000000a1"), ready(2, "00000000000000a2")
+	bridge, _ := e.client()
+	for _, h := range []struct {
+		tk      wire.Task
+		session string
+	}{{live, remover}, {lost, never}} {
+		call(t, bridge, wire.MethodTaskProgress, wire.TaskProgressParams{ID: h.tk.ID, Stage: wire.TaskStageStop}, nil)
+		call(t, bridge, wire.MethodTaskProgress, wire.TaskProgressParams{ID: h.tk.ID, Stage: wire.TaskStageWorktree, SessionID: h.session}, nil)
+	}
+	s := testSession(remover)
+	s.Cwd = abs("/w/repo")
+	h := e.register(s)
+	bridge.Close()
+
+	got := decodeTask(t, await(t, events, "never registered", interrupted(lost.ID)))
+	if got.Error != wire.TaskErrInterrupted || got.Stage != wire.TaskStageWorktree {
+		t.Fatalf("handed to a session that never came: %+v", got)
+	}
+	time.Sleep(400 * time.Millisecond) // past the grace: the live session counts
+	var w wire.WatchResult
+	call(t, c, wire.MethodWatch, wire.WatchParams{}, &w)
+	if w.Tasks[0].State != wire.TaskRemoving {
+		t.Fatalf("handed to a live session: %+v", w.Tasks[0])
+	}
+	call(t, c, wire.MethodTaskProgress, wire.TaskProgressParams{ID: live.ID, Stage: wire.TaskStageBranch}, nil)
+	h.Notify(wire.MethodHolderEnded, wire.ClosedParams{ID: remover, ExitCode: 1})
+	got = decodeTask(t, await(t, events, "session ended", interrupted(live.ID)))
+	if got.Error != wire.TaskErrInterrupted || got.Stage != wire.TaskStageBranch {
+		t.Fatalf("after its session ended: %+v", got)
 	}
 }
 
