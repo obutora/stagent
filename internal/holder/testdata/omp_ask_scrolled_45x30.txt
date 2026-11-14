@@ -1,0 +1,31 @@
+|│  ○ Plan 11: deploy to region 11 with a    │
+|│    long explanation of the rollout steps  │
+|│    and rollback strategy                  │
+|│  ○ Plan 12: deploy to region 12 with a    │
+|│    long explanation of the rollout steps  │
+|│    and rollback strategy                  │
+|╰───────────────────────────────────────────╯
+|
+|  ⎋ Asking deployment plan preference
+|╭─ Ask ─────────────────────────────────────╮
+|│ Which deployment plan do you prefer?      │
+|├───────────────────────────────────────────┤
+|│ ❯ ○ Plan 1: deploy to region 1 with a   █ │
+|│     long explanation of the rollout     █ │
+|│     steps and rollback strategy         █ │
+|│   ○ Plan 2: deploy to region 2 with a   █ │
+|│     long explanation of the rollout     █ │
+|│     steps and rollback strategy         █ │
+|│   ○ Plan 3: deploy to region 3 with a   │ │
+|│     long explanation of the rollout     │ │
+|│     steps and rollback strategy         │ │
+|│   ○ Plan 4: deploy to region 4 with a   │ │
+|│     long explanation of the rollout     │ │
+|│     steps and rollback strategy         │ │
+|│   ○ Plan 5: deploy to region 5 with a   │ │
+|│     long explanation of the rollout     │ │
+|│     steps and rollback strategy         │ │
+|├───────────────────────────────────────────┤
+|│ ⏎ select · n note · ↑/↓ move · ↓ scroll … │
+|╰───────────────────────────────────────────╯
+cursor=0,0 alt=false appCursor=false bracketed=true

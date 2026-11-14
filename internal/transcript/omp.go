@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -26,7 +27,7 @@ func ompSessionFormat(scan func(path string, e *entry), title func(*entry) strin
 		named:  func(path, id string) bool { return strings.HasSuffix(filepath.Base(path), "_"+id+".jsonl") },
 		scan:   scan,
 		titler: func(*Index) func(*entry) string { return title },
-		parse:  parseOmp,
+		parse:  perRecord(parseOmp),
 	}
 }
 
@@ -80,19 +81,27 @@ func scanOmp(path string, e *entry) {
 func ompEntryTitle(e *entry) string { return oneLine(e.Title, maxSummary) }
 
 type ompRecord struct {
-	Type      string `json:"type"`
-	Timestamp string `json:"timestamp"`
-	Message   struct {
-		Role        string      `json:"role"`
-		Content     ompContents `json:"content"`
-		Attribution string      `json:"attribution"`
-		Timestamp   int64       `json:"timestamp"`
-	} `json:"message"`
+	Type      string     `json:"type"`
+	Timestamp string     `json:"timestamp"`
+	Message   ompMessage `json:"message"`
+}
+
+type ompMessage struct {
+	Role        string      `json:"role"`
+	Content     ompContents `json:"content"`
+	Attribution string      `json:"attribution"`
+	Timestamp   int64       `json:"timestamp"`
+	// Tool results
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	Details    json.RawMessage `json:"details"`
+	IsError    bool            `json:"isError"`
 }
 
 type ompContent struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text"`
+	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
 	Intent    string          `json:"intent"`
@@ -159,6 +168,12 @@ func parseOmp(line []byte) []wire.Message {
 				}
 			case "toolCall":
 				flush()
+				if c.Name == ompAskTool {
+					if m, ok := ompAskQuestion(c, t); ok {
+						out = append(out, m)
+						continue
+					}
+				}
 				s := Summarize(c.Arguments)
 				if s == "" {
 					s = oneLine(c.Intent, maxSummary)
@@ -167,6 +182,83 @@ func parseOmp(line []byte) []wire.Message {
 			}
 		}
 		flush()
+	case "toolResult":
+		if r.Message.ToolName == ompAskTool {
+			out = append(out, ompAskAnswer(r.Message, t))
+		}
 	}
 	return out
+}
+
+// ompAskTool is omp's tool for asking the user questions.
+var ompAskTool = harness.QuestionToolOf(wire.HarnessOmp)
+
+func ompAskQuestion(c ompContent, t int64) (wire.Message, bool) {
+	var args struct {
+		Questions []struct {
+			ID       string `json:"id"`
+			Header   string `json:"header"`
+			Question string `json:"question"`
+			Multi    bool   `json:"multi"`
+		} `json:"questions"`
+	}
+	if json.Unmarshal(c.Arguments, &args) != nil || len(args.Questions) == 0 {
+		return wire.Message{}, false
+	}
+	items := make([]wire.QuestionItem, len(args.Questions))
+	for i, q := range args.Questions {
+		items[i] = wire.QuestionItem{ID: q.ID, Header: q.Header, Question: q.Question, Multi: q.Multi}
+	}
+	return askQuestionRow(c.Name, c.ID, items, t), true
+}
+
+// ompAskResult is the answer to one question in an ask result's details.
+type ompAskResult struct {
+	ID              string   `json:"id"`
+	Question        string   `json:"question"`
+	Multi           bool     `json:"multi"`
+	SelectedOptions []string `json:"selectedOptions"`
+	CustomInput     string   `json:"customInput"`
+	Note            string   `json:"note"`
+}
+
+func (r ompAskResult) item() wire.QuestionItem {
+	return wire.QuestionItem{
+		ID: r.ID, Question: r.Question, Multi: r.Multi,
+		Answers: typedAnswers(typedAnswers(nil, r.SelectedOptions...), r.CustomInput, r.Note),
+	}
+}
+
+// ompAskAnswer reads the answer row from an ask result: details holds one
+// question's answer, or results with one per question. An error result is
+// a question closed without an answer (cancelled, skipped).
+func ompAskAnswer(m ompMessage, t int64) wire.Message {
+	id := m.ToolCallID
+	if m.IsError {
+		return askDeclinedRow(id, t)
+	}
+	var d struct {
+		ompAskResult
+		Results []ompAskResult `json:"results"`
+	}
+	_ = json.Unmarshal(m.Details, &d)
+	var items []wire.QuestionItem
+	switch {
+	case len(d.Results) > 0:
+		for _, r := range d.Results {
+			items = append(items, r.item())
+		}
+	case d.Question != "":
+		items = []wire.QuestionItem{d.ompAskResult.item()}
+	default:
+		// Details of a shape not known: the result's text as the answer.
+		var texts []string
+		for _, c := range m.Content {
+			if c.Type == "text" {
+				texts = typedAnswers(texts, c.Text)
+			}
+		}
+		items = []wire.QuestionItem{{Answers: texts}}
+	}
+	return askAnswerRow(id, items, t)
 }

@@ -1,0 +1,30 @@
+[38;2;31;37;45m[48;2;15;18;22m│[39m  [38;2;107;114;128m○[39m [38;2;156;163;176mPlan 11: deploy to region 11 with a    [38;2;31;37;45m│
+│[39m    [38;2;156;163;176mlong explanation of the rollout steps  [38;2;31;37;45m│
+│[39m    [38;2;156;163;176mand rollback strategy[39m                  [38;2;31;37;45m│
+│[39m  [38;2;107;114;128m○[39m [38;2;156;163;176mPlan 12: deploy to region 12 with a    [38;2;31;37;45m│
+│[39m    [38;2;156;163;176mlong explanation of the rollout steps  [38;2;31;37;45m│
+│[39m    [38;2;156;163;176mand rollback strategy[39m                  [38;2;31;37;45m│
+╰───────────────────────────────────────────╯
+
+[39m[49m [38;2;103;123;166m ⎋[39m [38;2;107;114;128mAsking [38;2;80;136;255mde[1mploym[0m[38;2;80;136;255me[38;2;107;114;128mnt plan preference[39m
+[38;2;42;48;56m╭─[38;2;0;180;255m Ask [38;2;42;48;56m─────────────────────────────────────╮
+│[39m Which deployment plan do you prefer?      [38;2;42;48;56m│
+├───────────────────────────────────────────┤
+│[39m [38;2;0;180;255m❯ [38;2;107;114;128m○[39m [38;2;0;180;255mPlan 1: deploy to region 1 with a   █[39m [38;2;42;48;56m│
+│[39m     [38;2;0;180;255mlong explanation of the rollout     █[39m [38;2;42;48;56m│
+│[39m     [38;2;0;180;255msteps and rollback strategy[39m         [38;2;0;180;255m█[39m [38;2;42;48;56m│
+│[39m   [38;2;107;114;128m○[39m Plan 2: deploy to region 2 with a   [38;2;0;180;255m█[39m [38;2;42;48;56m│
+│[39m     long explanation of the rollout     [38;2;0;180;255m█[39m [38;2;42;48;56m│
+│[39m     steps and rollback strategy         [38;2;0;180;255m█[39m [38;2;42;48;56m│
+│[39m   [38;2;107;114;128m○[39m Plan 3: deploy to region 3 with a   [38;2;156;163;176m│[39m [38;2;42;48;56m│
+│[39m     long explanation of the rollout     [38;2;156;163;176m│[39m [38;2;42;48;56m│
+│[39m     steps and rollback strategy         [38;2;156;163;176m│[39m [38;2;42;48;56m│
+│[39m   [38;2;107;114;128m○[39m Plan 4: deploy to region 4 with a   [38;2;156;163;176m│[39m [38;2;42;48;56m│
+│[39m     long explanation of the rollout     [38;2;156;163;176m│[39m [38;2;42;48;56m│
+│[39m     steps and rollback strategy         [38;2;156;163;176m│[39m [38;2;42;48;56m│
+│[39m   [38;2;107;114;128m○[39m Plan 5: deploy to region 5 with a   [38;2;156;163;176m│[39m [38;2;42;48;56m│
+│[39m     long explanation of the rollout     [38;2;156;163;176m│[39m [38;2;42;48;56m│
+│[39m     steps and rollback strategy         [38;2;156;163;176m│[39m [38;2;42;48;56m│
+├───────────────────────────────────────────┤
+│[39m [38;2;107;114;128m⏎ select · n note · ↑/↓ move · ↓ scroll [39m… [38;2;42;48;56m│
+╰───────────────────────────────────────────╯

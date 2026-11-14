@@ -67,6 +67,47 @@ func TestMergedState(t *testing.T) {
 	}
 }
 
+// The question a session waits on lasts as long as the hook-derived
+// waiting_input it came with, and its question UI on the screen: output
+// while it is up (the highlight moving, tabs switched, a multi-select
+// toggled) is the user answering, not the agent working.
+func TestQuestionFollowsHookState(t *testing.T) {
+	q := &wire.Question{Tool: "AskUserQuestion", Questions: []wire.QuestionItem{{Question: "Which?"}}}
+	ask := func(at int64) step { return func(t stateTrack) stateTrack { return t.hookQuestion(q, at) } }
+	offScreen := func(t stateTrack) stateTrack { return t.questionOffScreen() }
+	cases := []struct {
+		name  string
+		steps []step
+		state string
+		asks  bool
+	}{
+		{"asked", []step{hook(working, 50), ask(100)}, waiting, true},
+		{"a notification while asking keeps it", []step{ask(100), hook(waiting, 200)}, waiting, true},
+		{"answered (PostToolUse)", []step{ask(100), hook(working, 3000)}, working, false},
+		{"turn ends", []step{ask(100), hook(idle, 3000)}, idle, false},
+		{"output while the question is up keeps it", []step{ask(100), holder(working, srcAct, 100+overrideGraceMs), holder(working, srcAct, 9000)}, waiting, true},
+		{"its UI left the screen (answered or cancelled there)", []step{ask(100), holder(working, srcAct, 5000), offScreen}, working, false},
+		{"its UI left the screen, then quiet", []step{ask(100), offScreen, holder(idle, srcAct, 9000)}, idle, false},
+		{"off screen after it was answered changes nothing", []step{ask(100), hook(working, 3000), offScreen}, working, false},
+		{"off screen without a question changes nothing", []step{hook(needsAp, 100), offScreen}, needsAp, false},
+		{"SessionEnd", []step{ask(100), clearHook()}, idle, false},
+		{"exit", []step{ask(100), exit()}, exited, false},
+		{"an idle reminder is no question", []step{hook(waiting, 100)}, waiting, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var tr stateTrack
+			for _, s := range c.steps {
+				tr = s(tr)
+			}
+			state, _ := tr.merged()
+			if got := tr.question(); state != c.state || (got != nil) != c.asks {
+				t.Fatalf("state %s question %v, want %s asking=%v", state, got, c.state, c.asks)
+			}
+		})
+	}
+}
+
 func TestClassifyHook(t *testing.T) {
 	payload := func(s string) hookPayload { return parseHookPayload(json.RawMessage(s)) }
 	cases := []struct {
@@ -103,6 +144,14 @@ func TestClassifyHook(t *testing.T) {
 		{"copilot agent completed", "copilot", "Notification", `{"notification_type":"agent_completed","message":"x"}`, hookEffect{event: hookNotification}},
 		{"copilot agent idle", "copilot", "Notification", `{"notification_type":"agent_idle","message":"x"}`, hookEffect{event: hookNotification}},
 		{"copilot stop", "copilot", "Stop", `{"stop_reason":"end_turn"}`, hookEffect{event: hookStop, state: idle, turnComplete: true}},
+		// A question tool waits for the user's answer, whichever hook
+		// names it: not an approval (claude runs AskUserQuestion through
+		// its permission flow).
+		{"ask pre tool use", "", "PreToolUse", `{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which?"}]}}`, hookEffect{event: hookPreToolUse, state: waiting, ask: true}},
+		{"ask permission request", "", "PermissionRequest", `{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which?"}]}}`, hookEffect{event: hookPermissionRequest, state: waiting, ask: true}},
+		{"ask answered", "", "PostToolUse", `{"tool_name":"AskUserQuestion"}`, hookEffect{event: hookPostToolUse, state: working}},
+		{"other pre tool use", "", "PreToolUse", `{"tool_name":"Bash"}`, hookEffect{event: hookPreToolUse}},
+		{"other post tool use", "", "PostToolUse", `{"tool_name":"Bash"}`, hookEffect{event: hookPostToolUse}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -2656,8 +2656,9 @@ goes out (after the wait).
 
 A session settles what its notifications are about when its approval
 closes (answered anywhere, or the turn moved on), when it goes back to
-`working` — by a hook (a prompt was submitted) for what a hook raised, by
-the terminal for what the terminal raised — or when it ends. Its pushes
+`working` — by a hook (a prompt was submitted, a question answered) for
+what a hook raised, by the terminal for what the terminal raised — or when
+it ends. Its pushes
 still waiting (or in the digest window) are then dropped, and the one
 already pushed is cleared on ntfy (`PUT <topic>/<sequence id>/clear`:
 marked read and removed from the notification drawer; replacing and
@@ -2807,9 +2808,12 @@ are refused too: they take the generic webhook. Whether the destination
 answers is `notify.test`'s job (`{channels: ["chat"]}`).
 
 A message starts with the emoji of its `reason` (🔒 `needs_approval`, ⏳
-`waiting_input`, ✅ `turn_complete`, ⚠️ abnormal / 🏁 normal `exited`, 🔔
-`digest`; none for `terminal` and `test`), then the host-labelled title,
-then on the next line the body (the fixed phrase in `notify.lang`):
+`waiting_input` — ❓ when it is about a question the agent asked
+(`question`, since 0.20.0) —, ✅ `turn_complete`, ⚠️ abnormal / 🏁 normal
+`exited`, 🔔 `digest`; none for `terminal` and `test`), then the
+host-labelled title, then on the next line the body (the fixed phrase in
+`notify.lang`; for a question the question itself, see "Questions"; ntfy
+tags a question `question`):
 
 | service | request (JSON, `Content-Type: application/json`) | the message's ids |
 |---|---|---|
@@ -2857,9 +2861,29 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 (claude|codex|omp|pi|copilot|other), command[], cwd, pid,
 holder_pid, mode (passthrough|detached), attached, state (working|idle|
 waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
-process), title?, conversation_id?, transcript_path?, last_message?, cols,
-rows, started_at, last_activity_at, last_local_input_at?, focused?,
-presence_file?, exit_code?, task_id?, schedule_id?, run_id?`.
+process), title?, conversation_id?, transcript_path?, last_message?,
+question?, cols, rows, started_at, last_activity_at, last_local_input_at?,
+focused?, presence_file?, exit_code?, task_id?, schedule_id?, run_id?`.
+
+`question` (since 0.20.0, #1548, #1549) is the choice question the agent
+waits on: `{tool, questions: [QuestionItem]}` — `tool` the harness's
+question tool (`AskUserQuestion`, `request_user_input`, `ask`), each
+question's `id` (Codex, omp), short `header`, text, whether several
+options may be picked (`multi`) and the options' labels (`options`; no
+`answers` here). It is present only while `state` is `waiting_input` from
+the question's hook (`state_source` `hook`) and goes with that state; see
+"Questions". A session waiting for input without it is idle at a prompt
+(手すき) or waits on something stagent cannot read.
+
+`QuestionItem` (since 0.20.0) is one question of an agent's question tool
+call, the same in `Session.question` and `Message.ask`: `{id?, header?,
+question, multi?, options?[], answers?[]}` — `id` the agent's id for it
+(omp, Codex), `header` its short header, `question` its text (empty only
+in a Codex answer row, which names its questions by `id`), `multi` that
+several options may be chosen, `options` the option labels as asked
+(`Session.question` only), `answers` the options chosen and the text
+typed (`Message.ask` answer rows only).
+
 `mode` is fixed for the life of a session except for one transition
 (`persist`): a `passthrough` session started with `--handoff` becomes
 `detached` when its local terminal hangs up.
@@ -2931,14 +2955,16 @@ started as another program (a kept shell): `harness` is that agent,
 | `session_started` | `{harness, command[], cwd, mode}` |
 | `session_ended` | `{exit_code, hung_up?}` — `hung_up`: a client ended it with `session.signal hangup`, or (Windows) the console of a passthrough session closed |
 | `state_changed` | `{from, to, source}` |
-| `notification` | `{title, body, level (info\|warn\|error), reason, count?, session_id?, schedule_id?, run_id?, harness?, window?, resets_at?}` — reason `waiting_input\|needs_approval\|turn_complete\|exited\|terminal\|test\|digest\|schedule\|usage_limit`; `session_id` names the session it is about (absent for a digest, `notify.test`, a schedule's, a limit window's and approvals of no session); `schedule_id` and `run_id` name the run of the schedule a `schedule` one is about (`run_id` absent when it is about the schedule: stopped after failures); `harness`, `window` and `resets_at` the limit window a `usage_limit` one is about (since 0.19.0, #1562; see "Limit windows"; level `error` is new with it: 100% of a window — a digest takes the most serious level of what it folds); the generic webhook posts this object with `click_url?` added (see "Click link"; absent without `notify.click_page`) |
+| `notification` | `{title, body, level (info\|warn\|error), reason, count?, question?, session_id?, schedule_id?, run_id?, harness?, window?, resets_at?}` — reason `waiting_input\|needs_approval\|turn_complete\|exited\|terminal\|test\|digest\|schedule\|usage_limit`; `question` (since 0.20.0, #1548) is true on a `waiting_input` one about a question the agent asked, whose `body` is then the first question (see "Questions"); `session_id` names the session it is about (absent for a digest, `notify.test`, a schedule's, a limit window's and approvals of no session); `schedule_id` and `run_id` name the run of the schedule a `schedule` one is about (`run_id` absent when it is about the schedule: stopped after failures); `harness`, `window` and `resets_at` the limit window a `usage_limit` one is about (since 0.19.0, #1562; see "Limit windows"; level `error` is new with it: 100% of a window — a digest takes the most serious level of what it folds); the generic webhook posts this object with `click_url?` added (see "Click link"; absent without `notify.click_page`) |
 | `approval_requested` | `Approval` |
 | `approval_resolved` | `{request_id, by: "cancelled"}` |
 
 `Approval`: `request_id, session_id, harness, tool_name?, summary,
 created_at`. Only programs running in a stagent session raise approvals,
-from their PermissionRequest hook; elsewhere (an IDE, `claude -p`, the
-SDK) the hook returns at once and nothing is registered or pushed. claude's
+from their PermissionRequest hook — except for a question tool's, which is
+a question, never an approval (see "Questions"); elsewhere (an IDE,
+`claude -p`, the SDK) the hook returns at once and nothing is registered
+or pushed. claude's
 hook is held, with no time limit, while its prompt is open; Codex shows its
 prompt only after the hook returned, so its hook returns at once. Neither
 tells when the prompt is answered: claude does not stop the hook (it runs
@@ -3022,7 +3048,33 @@ ends with the connection (start it in a kept shell); `no_terminal`
 (Windows) — no marker and no shell above the agent: a program started it
 without a terminal (cannot be shown).
 
-`Message`: `role (user|assistant|tool|system), text, tool_name?, time?`.
+`Message`: `role (user|assistant|tool|system), text, tool_name?, time?,
+ask?`. `ask` (since 0.20.0, #1550) marks the two rows of an agent's
+question to the user — Claude Code's `AskUserQuestion`, omp's `ask`,
+Codex's `request_user_input`: `{id, kind (question|answer), questions?:
+[QuestionItem], declined?}`, `id` the tool call's id both rows share. The
+question row (`kind: question`) is a `tool` row whose `text` is the
+questions, one per line; the answer row (`kind: answer`) is a `user` row
+whose `text` is the answers (one line per question, `<header or question
+or id>: <answers>` when there are several, answers joined by `, `), or,
+when the question was closed without an answer (`declined: true`: omp's
+cancelled `ask`, Codex's cancelled or interrupted call), a `system` row
+`Question dismissed`. Codex 0.160.1 interrupts the turn on Esc at its
+question, and the call's output, `aborted by user after <n>s`, names no
+tool: it is that row only when its call id is a `request_user_input`
+call's found in the records before it (whatever page or read they are in),
+and no row for any other function call the user interrupted (Codex's
+`wait` on a command). A reader shows a declined row under the question row
+of its `id`. Its `QuestionItem`s (see `Session`) carry no `options`; an
+answer row's carry `answers` — free text, omp's note and custom input,
+Codex's `user_note:` (prefix removed), Claude Code's notes and its
+`response` (an element of its own) — in order. The answer row comes from
+the tool result alone: Codex's names its answers by question `id` only
+(sorted by it), omp's carries no header. Neither row knows of the other
+(records are read one at a time, pages backwards), so the reader pairs
+them: a question row followed by neither its answer row nor any other row
+is still waiting for the user. Claude Code records no answer for a
+rejected call; the `Interrupted by user` row after it closes the question.
 
 `Conversation`: `harness, id, cwd, title, updated_at, path,
 live_session_id?`.
@@ -3979,14 +4031,17 @@ gets the JSON as its last argument. Copilot CLI's hooks file
 '<bin>' hook copilot <event> || true`) and a powershell one (below). Its
 `PermissionRequest` hook answers nothing and returns at once: Copilot CLI
 shows its menu only after the hook. The omp extension runs `stagent hook
-omp` with `{hook_event_name, session_id, transcript_path, cwd, message?}`
-on stdin, and Pi's extension (`$PI_CODING_AGENT_DIR` or `~/.pi/agent`,
+omp` with `{hook_event_name, session_id, transcript_path, cwd, message?,
+tool_name?, tool_input?}` on stdin, and Pi's extension (`$PI_CODING_AGENT_DIR` or `~/.pi/agent`,
 `extensions/ssh-term-stagent.ts`) runs `stagent hook pi` with the same and
 `argv` (Pi's arguments, `process.argv` after the script), both using
 Claude's event names (`SessionStart`, `UserPromptSubmit`, `Stop`,
 `SessionEnd`; Pi's: `session_start`, `before_agent_start`,
 `agent_settled` — the end of a run no retry, compaction or queued message
-follows — and `session_shutdown`). Both stay silent in a run without a
+follows — and `session_shutdown`). omp's also sends its `ask` tool's
+`tool_call` as `PreToolUse` and its `tool_result` as `PostToolUse`, with
+`tool_name` `ask` and the call's input as `tool_input` (since 0.20.0, see
+"Questions"); no other tool is sent. Both stay silent in a run without a
 terminal UI (the extension context's `hasUI` false, e.g. `-p`, `--mode
 json`); Pi's also when its arguments hold `-p` /
 `--print` or `--mode json` / `--mode rpc` (also `--mode=…`), as Pi
@@ -4009,6 +4064,114 @@ command keeps the path's backslashes, single-quoted for PowerShell (`'`
 doubled), and skips a missing binary as the bash command does: `if
 (Test-Path -LiteralPath 'C:\…\stagent.exe') { & 'C:\…\stagent.exe' hook
 copilot <event> }`.
+
+### Questions
+
+(since 0.20.0, #1548, #1549) A question tool is a tool through which an
+agent asks the user a choice question: claude's `AskUserQuestion`, Codex's
+`request_user_input`, omp's `ask`. A hook of any harness whose payload
+names one as `tool_name` is read the same way:
+
+| hook | effect |
+|---|---|
+| `PreToolUse` or `PermissionRequest` | the session waits for input (`state` `waiting_input`, `state_source` `hook`) with `question` read from `tool_input` (see `Session`); never an approval: nothing is registered, the hook returns at once |
+| `PostToolUse` | answered: the session works again (`working`), `question` goes, its pushes settle |
+
+`tool_input` is read as `{questions: [{id?, question, header?,
+multiSelect? (claude) or multi? (omp), options?: [{label} or "label"]}]}`;
+questions without text are skipped, and an input with none sets `waiting_input`
+without `question`. While the session waits on a question, a
+`Notification` hook changes nothing: claude sends one with
+`notification_type` `permission_prompt` ("Claude needs your permission")
+for AskUserQuestion's dialog. The question also goes when the hook-derived
+state does: another state from a hook (`UserPromptSubmit`, `Stop`),
+`SessionEnd`, the process exiting — and when its UI leaves the screen.
+
+Output activity does not end a question (it ends other hook-derived states
+1 s or more after their hook): while the question is up, output is the
+user moving through it — the highlight, claude's tabs and review page, a
+multi-select's checks, omp's note box — in the terminal or by keys from
+the app. The session's holder watches the screen instead (local IPC only,
+since 0.20.0): while a question is in force the daemon sends it
+`holder.question_watch {id, gen, on: true, harness}` (one `gen` for as
+long as that question is in force: claude's `PermissionRequest` after its
+`PreToolUse` starts none; `harness` the harness whose question tool asked
+it), and `on: false` once the question went (again to a holder that
+re-registers). The holder takes the question UI on the screen during the
+watch — claude's numbered options with one under the cursor and a key hint
+below (as for "Approval"; with previews, what is typed into the notes
+field beside them, however many lines, does not hide the hint); Codex's
+`request_user_input` UI, its `Question <n>/<m>` header with its key hint
+(`… enter to submit answer` or `… enter to submit all`) at the bottom of
+the screen, the notes field Tab opens included; omp's dialog box at the
+bottom of the screen (`╭─ Ask`, the `Note for …` and `Custom answer: …`
+boxes its options open) — and once none has been on the screen for 400 ms
+(answered, or cancelled with Esc, for which claude and Codex send no hook)
+sends `holder.question_gone {id, gen}`, once per `gen`. The question of
+that watch then goes with its `waiting_input`, its pushes settle, and the
+holder's terminal/activity state shows again; a report of an older watch
+changes nothing. A holder that never saw the UI (a resize forgets it until
+it is seen again at the new size) and one started before 0.20.0 (it
+ignores the notification) report nothing: the question then goes with the
+next hook only.
+
+Entering `waiting_input` from `working` with a question raises the
+`waiting_input` notification with `question: true` and as `body` the first
+question on one line (at most 200 bytes), followed by the number of
+questions when there are several (`notify.lang`: en `<q> (2 questions)`,
+ja `<q>（全 2 問）`, ko `<q> (질문 2개)`, zh `<q>（共 2 个问题）`). Outside a
+stagent session it is raised (in-app) once, by the hook that comes when
+the question shows: claude's `PermissionRequest`, Codex's and omp's
+`PreToolUse`.
+
+claude's hooks register `PreToolUse` and `PostToolUse` with `matcher`
+`AskUserQuestion` (a group of their own), so no other tool runs them.
+Claude Code runs AskUserQuestion through its permission flow
+(`checkPermissions` asks; its dialog is a permission dialog), so the
+`PermissionRequest` hook fires for it too, followed by the
+`permission_prompt` notification. Measured on 2.1.325: `PreToolUse`
+(`tool_input.questions`, `tool_use_id`), `PermissionRequest` some 30 ms
+later (the same `tool_input`, no `tool_use_id`), the `Notification`
+(`permission_prompt`, "Claude needs your permission") some 6 s after it,
+`PostToolUse` (`tool_response` = AskUserQuestion's output) when the
+answers are submitted, then `Stop`; Esc sends no hook at all (no
+`PostToolUse`, `PostToolUseFailure`, `PermissionDenied` or `Stop`). A
+Claude Code that sends no question hook keeps the plain `Notification`
+handling.
+
+Codex's hooks (`~/.codex/hooks.json`) register `PreToolUse` and
+`PostToolUse` with `matcher` `request_user_input` the same way. Codex
+(0.160.1, measured in Plan mode) runs `PreToolUse` for a
+`request_user_input` call with the call's arguments as `tool_input`
+(`{questions: [{id, header, question, options: [{label, description}]}]}`)
+and its `tool_use_id` before it shows the question, and `PostToolUse` once
+it is answered, with the answers as `tool_response` (`{"answers": {<id>:
+{"answers": [<label>, "user_note: <notes>"]}}}`, a string). Esc at the
+question interrupts the turn and sends neither `PostToolUse` nor `Stop`:
+the question goes when its UI leaves the screen (the holder's question
+watch). A call Codex refuses after `PreToolUse` (the tool is unavailable
+in the current collaboration mode) sends no `PostToolUse` and shows no
+question: the question stays until the next hook-derived state (the turn's
+`Stop`). Codex shows the new hooks for review on its next start, as with
+any change to `hooks.json`. Codex's `request_user_input_async` asks
+without waiting (the turn goes on) and is not a question tool.
+
+omp's extension sends `PreToolUse` / `PostToolUse` for its `ask` tool
+(see "Harness hooks"); `ask`'s input is `{questions: [{id, question,
+header?, options: [{label, description?}], multi?, recommended?}]}`, and
+its `tool_result` comes when the question is answered, cancelled or timed
+out.
+
+Each harness's question tool is named once, in the harness registry
+(`QuestionTool` of `internal/harness`); the daemon's reading of these
+hooks, the hook matchers `stagent integrate` writes, the tool name in the
+generated omp extension and the transcript readers' question rows all
+take it from there. Another harness gets its questions read by naming its
+tool there and sending these hooks with the same fields — plus, where it
+differs, the hook that comes when its question shows (the daemon's
+per-harness handling, `PreToolUse` by default), its transcript's question
+and answer rows (its reader) and its question UI when it is no menu of
+its own (the holder's menu style for the harness).
 
 ### Agents without a stagent session
 

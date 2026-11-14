@@ -322,6 +322,9 @@ func isOurCommand(cmd string) bool {
 type hookSpec struct {
 	Event   string
 	Timeout int
+	// Matcher: our entry runs for the tools it matches only ("": every
+	// call of the event).
+	Matcher string
 }
 
 var errHookShape = errors.New(`unexpected "hooks" layout`)
@@ -332,9 +335,11 @@ func ourHookEntry(command string, timeout int) *jnode {
 
 // mergeHooks makes root.hooks.<event> contain exactly one entry of ours per
 // spec, with the given command and timeout. Existing entries of ours are
-// updated in place (duplicates dropped); new ones are appended as their own
-// group after everything else, so indices of foreign hooks never move.
-// created lists the JSON pointers of containers that had to be added.
+// updated in place (duplicates dropped, and for a spec with a matcher any
+// entry in a group of another matcher); new ones are appended as their own
+// group, with the spec's matcher, after everything else, so indices of
+// foreign hooks never move. created lists the JSON pointers of containers
+// that had to be added.
 func mergeHooks(root *jnode, command string, specs []hookSpec) (created []string, changed bool, err error) {
 	if root.kind != jObject {
 		return nil, false, errHookShape
@@ -365,13 +370,15 @@ func mergeHooks(root *jnode, command string, specs []hookSpec) (created []string
 			if list == nil || list.kind != jArray {
 				continue
 			}
+			matcher, _ := g.get("matcher").str()
+			fits := sp.Matcher == "" || matcher == sp.Matcher
 			removedHere := false
 			for hi := 0; hi < len(list.vals); hi++ {
 				cmd, _ := list.vals[hi].get("command").str()
 				if !isOurCommand(cmd) {
 					continue
 				}
-				if !kept {
+				if !kept && fits {
 					kept = true
 					if !sameEntry(list.vals[hi], command, sp.Timeout) {
 						list.vals[hi] = want
@@ -390,7 +397,11 @@ func mergeHooks(root *jnode, command string, specs []hookSpec) (created []string
 			}
 		}
 		if !kept {
-			arr.vals = append(arr.vals, jObj("hooks", jArr(want)))
+			g := jObj("hooks", jArr(want))
+			if sp.Matcher != "" {
+				g = jObj("matcher", jStr(sp.Matcher), "hooks", jArr(want))
+			}
+			arr.vals = append(arr.vals, g)
 			changed = true
 		}
 	}

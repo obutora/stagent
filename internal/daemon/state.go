@@ -19,6 +19,9 @@ const overrideGraceMs = 1000
 type stateTrack struct {
 	Hook   string // hook-derived state, "" when none is in force
 	HookAt int64  // unix ms the hook state was set
+	// Question is the question a hook-derived waiting_input is about
+	// (nil: none); it goes with that state.
+	Question *wire.Question
 
 	Holder       string // latest state reported by the holder
 	HolderSource string // terminal | activity | process
@@ -42,24 +45,60 @@ func (t stateTrack) holderReport(state, source string, at int64) stateTrack {
 	t.Holder, t.HolderSource, t.HolderAt = state, source, at
 	// Output activity after a hook state means the harness moved on without
 	// telling us (e.g. the user answered a prompt in the terminal): the hook
-	// state is stale and lower sources take over again.
-	if t.Hook != "" && state == wire.StateWorking && source == wire.SourceActivity && at >= t.HookAt+overrideGraceMs {
+	// state is stale and lower sources take over again. Not while a
+	// question is in force: output then is the user moving through its
+	// UI (the highlight, the tabs, a multi-select's checks), and the
+	// question goes with a hook or when its UI leaves the screen
+	// (questionOffScreen).
+	if t.Hook != "" && t.Question == nil && state == wire.StateWorking && source == wire.SourceActivity && at >= t.HookAt+overrideGraceMs {
 		t.Hook, t.HookAt = "", 0
 	}
 	return t
 }
 
-// hookState applies a state derived from a harness hook.
+// hookState applies a state derived from a harness hook. A question in
+// force stays with a later waiting_input (a reminder about it) and goes
+// with any other state.
 func (t stateTrack) hookState(state string, at int64) stateTrack {
 	t.Hook, t.HookAt = state, at
+	if state != wire.StateWaitingInput {
+		t.Question = nil
+	}
+	return t
+}
+
+// hookQuestion applies a question hook: the session waits for the answer
+// to q.
+func (t stateTrack) hookQuestion(q *wire.Question, at int64) stateTrack {
+	t.Hook, t.HookAt, t.Question = wire.StateWaitingInput, at, q
 	return t
 }
 
 // hookClear drops the hook-derived state (SessionEnd: the harness left, the
 // PTY-derived state is all that remains).
 func (t stateTrack) hookClear() stateTrack {
-	t.Hook, t.HookAt = "", 0
+	t.Hook, t.HookAt, t.Question = "", 0, nil
 	return t
+}
+
+// questionOffScreen applies the holder's report that the question's UI
+// left the screen (holder.question_gone): it was answered or cancelled
+// there — an Esc sends no hook. The question and its waiting_input go, the
+// PTY-derived state takes over.
+func (t stateTrack) questionOffScreen() stateTrack {
+	if t.Question == nil {
+		return t
+	}
+	return t.hookClear()
+}
+
+// question is the question the session waits on: the hook's, while its
+// waiting_input is the merged state.
+func (t stateTrack) question() *wire.Question {
+	if t.Exited || t.Hook != wire.StateWaitingInput {
+		return nil
+	}
+	return t.Question
 }
 
 // exited marks the child process as ended.
@@ -95,6 +134,8 @@ const (
 	hookStop              = "Stop"
 	hookNotification      = "Notification"
 	hookPermissionRequest = "PermissionRequest"
+	hookPreToolUse        = "PreToolUse"
+	hookPostToolUse       = "PostToolUse"
 	codexNotify           = "notify"
 )
 
@@ -143,6 +184,10 @@ type hookEffect struct {
 	turnComplete bool
 	// approval: a blocking permission request.
 	approval bool
+	// ask: the agent asks the user a question through its question tool
+	// (harness.Harness.QuestionTool); the hook's tool input holds the
+	// questions.
+	ask bool
 	// permissionCheck: the harness checks a tool call's permission and
 	// may show its menu next (daemonHarness.checksFirst); the tool is kept
 	// for that menu's approval.
@@ -167,12 +212,24 @@ func classifyHook(harnessID, event string, p hookPayload) hookEffect {
 		e.state = wire.StateIdle
 		e.turnComplete = true
 	case hookPermissionRequest:
+		if isQuestionTool(p.ToolName) {
+			e.state, e.ask = wire.StateWaitingInput, true
+			break
+		}
 		if checksFirst {
 			e.permissionCheck = true
 			break
 		}
 		e.state = wire.StateNeedsApproval
 		e.approval = true
+	case hookPreToolUse:
+		if isQuestionTool(p.ToolName) {
+			e.state, e.ask = wire.StateWaitingInput, true
+		}
+	case hookPostToolUse:
+		if isQuestionTool(p.ToolName) {
+			e.state = wire.StateWorking
+		}
 	case hookNotification:
 		e.state = notificationState(p)
 		e.approval = checksFirst && p.NotificationType == "permission_prompt"

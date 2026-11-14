@@ -1,0 +1,30 @@
+
+
+[1;2m› [0mrequest_user_input を1回だけ使って2問を同時に聞いてくださ
+  い。1問目: id「color」、header「色」、問い「好きな色はど
+  れですか？」、選択肢 赤/青。2問目: id「size」、header「サ
+  イズ」、問い「サイズはどれにしますか？」、選択肢 S/M。答
+  えがなければ、その旨を一文で返すだけにしてください。
+
+
+■ Conversation interrupted - use /feedback if something went
+wrong
+
+
+[1;2m› [0mrequest_user_input を1回だけ使って1問だけ聞いてください:
+  id「drink」、header「飲み物」、問い「飲み物はどれにします
+  か？」、選択肢 コーヒー/紅茶。答えを受け取ったら一文で復
+  唱してください。
+
+
+[2m•[0m [1mQuestions[0;2m 1/1 answered[0m
+  • 飲み物はどれにしますか？
+[2m    answer: [0m[38;2;99;168;248mコーヒー[39m
+
+[1m[38;2;167;167;167m•[0m [2mWorking[0m [2m(4s • [0;1mesc[0;2m to interrupt)[0m
+
+
+[1m›[0m [2mAsk Codex to do anything[0m
+
+  [38;2;246;226;183mGPT-6.1-Sol medium[39m · [38;2;171;223;167m/private/tmp/cxm/proj2[39m ·… [38;5;5mPlan mode[39m
+  [1m?[0m for shortcuts

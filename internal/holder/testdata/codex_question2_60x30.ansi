@@ -1,0 +1,29 @@
+[2m╰──────────────────────────────────────────────────────────╯
+
+[0m
+  [38;2;99;168;248m>_ [1m[39mOpenAI Codex[0;2m (v0.160.1)[0m
+     [2m/private/tmp/cxm/proj2[0m
+
+  [38;2;99;168;248mHow deep does this codebase go?[39m
+
+[2m• [0mModel changed to gpt-6.1-sol medium for Plan mode.
+
+
+[1;2m› [0mrequest_user_input を1回だけ使って2問を同時に聞いてくださ
+  い。1問目: id「color」、header「色」、問い「好きな色はど
+  れですか？」、選択肢 赤/青。2問目: id「size」、header「サ
+  イズ」、問い「サイズはどれにしますか？」、選択肢 S/M。答
+  えがなければ、その旨を一文で返すだけにしてください。
+
+
+
+  [2mQuestion 2/2 (1 unanswered)[0m
+  [38;2;99;168;248mサイズはどれにしますか？[39m
+
+  [1;7m› 1. S                  [0;7mSサイズを選びます。[1m             [0m
+    2. M                  [2mMサイズを選びます。[0m
+    3. None of the above  [2mOptionally, add details in notes[0m
+                          [2m(tab)[0m
+
+  [1mtab[0m to add notes[2m | [0;1menter[0m to submit all
+  [1m←/→[0m to navigate questions[2m | [0;1mesc[0m to interrupt

@@ -1,0 +1,31 @@
+|
+| I ran sleep 10 && echo finished2. It printed finished2     
+| after about 10 seconds.                                    
+|
+|                                                            
+| Use the ask tool to ask me which color I prefer, options   
+| Red, Green, Blue. Then reply with my answer only.          
+|                                                            
+|
+|╭─── Ask 1 questions ──────────────────────────────────────╮
+|├─── [color] · options:3 ──────────────────────────────────┤
+|│  Which color do you prefer?                              │
+|│  ○ Red                                                   │
+|│  ○ Green                                                 │
+|│  ○ Blue                                                  │
+|╰──────────────────────────────────────────────────────────╯
+|
+|  ⎋ Asking color preference       Run sleep and echo command
+|╭─ Ask ────────────────────────────────────────────────────╮
+|│ Which color do you prefer?                               │
+|├──────────────────────────────────────────────────────────┤
+|│   ○ Red                                                  │
+|│ ❯ ○ Green                                                │
+|│   ○ Blue                                                 │
+|│   ○ Other (type your own)                                │
+|│                                                          │
+|│                                                          │
+|├──────────────────────────────────────────────────────────┤
+|│ Enter select · n note · ↑/↓ move · Esc cancel            │
+|╰──────────────────────────────────────────────────────────╯
+cursor=0,-45 alt=false appCursor=false bracketed=true

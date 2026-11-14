@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -20,7 +21,7 @@ var claudeFormat = format{
 	named:  func(path, id string) bool { return filepath.Base(path) == id+".jsonl" },
 	scan:   scanClaude,
 	titler: func(*Index) func(*entry) string { return claudeEntryTitle },
-	parse:  parseClaude,
+	parse:  perRecord(parseClaude),
 }
 
 var claudeIDName = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.jsonl$`)
@@ -94,13 +95,18 @@ type claudeRecord struct {
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
+	// ToolUseResult is the output of the tool whose tool_result the record
+	// carries.
+	ToolUseResult json.RawMessage `json:"toolUseResult"`
 }
 
 type claudePart struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
 }
 
 // Tags whose user records are harness plumbing, not something the user said.
@@ -134,28 +140,31 @@ func parseClaude(line []byte) []wire.Message {
 		if r.IsMeta || (r.Origin != nil && r.Origin.Kind != "" && r.Origin.Kind != "human") {
 			return nil
 		}
-		var texts []string
-		if s, ok := jsonString(r.Message.Content); ok {
-			texts = []string{s}
-		} else {
-			var parts []claudePart
-			if json.Unmarshal(r.Message.Content, &parts) != nil {
-				return nil
-			}
-			for _, p := range parts {
-				switch p.Type {
-				case "text":
-					texts = append(texts, p.Text)
-				case "image":
-					texts = append(texts, "[image]")
-				}
-			}
-		}
 		var out []wire.Message
-		for _, s := range texts {
+		add := func(s string) {
 			if m, ok := claudeUserText(s); ok {
 				m.Time = t
 				out = append(out, m)
+			}
+		}
+		if s, ok := jsonString(r.Message.Content); ok {
+			add(s)
+			return out
+		}
+		var parts []claudePart
+		if json.Unmarshal(r.Message.Content, &parts) != nil {
+			return nil
+		}
+		for _, p := range parts {
+			switch p.Type {
+			case "text":
+				add(p.Text)
+			case "image":
+				add("[image]")
+			case "tool_result":
+				if m, ok := claudeAskAnswer(p.ToolUseID, r.ToolUseResult, t); ok {
+					out = append(out, m)
+				}
 			}
 		}
 		return out
@@ -175,6 +184,12 @@ func parseClaude(line []byte) []wire.Message {
 					out = append(out, wire.Message{Role: RoleAssistant, Text: clip(s, maxText), Time: t})
 				}
 			case "tool_use":
+				if p.Name == claudeAskTool {
+					if m, ok := claudeAskQuestion(p, t); ok {
+						out = append(out, m)
+						continue
+					}
+				}
 				out = append(out, wire.Message{Role: RoleTool, ToolName: p.Name, Text: Summarize(p.Input), Time: t})
 			}
 		}
@@ -214,4 +229,162 @@ func claudeUserText(s string) (wire.Message, bool) {
 		}
 	}
 	return wire.Message{Role: RoleUser, Text: clip(trimmed, maxText)}, true
+}
+
+// claudeAskTool is Claude Code's tool for asking the user questions.
+var claudeAskTool = harness.QuestionToolOf(wire.HarnessClaude)
+
+type claudeAskQuestionInput struct {
+	Question    string `json:"question"`
+	Header      string `json:"header"`
+	MultiSelect bool   `json:"multiSelect"`
+	Options     []struct {
+		Label string `json:"label"`
+	} `json:"options"`
+}
+
+// claudeAskOutput is AskUserQuestion's output (toolUseResult): the
+// questions, the answers by question text, notes typed beside them and the
+// text the user replied with instead.
+type claudeAskOutput struct {
+	Questions   []claudeAskQuestionInput   `json:"questions"`
+	Answers     map[string]json.RawMessage `json:"answers"`
+	Annotations map[string]struct {
+		Notes string `json:"notes"`
+	} `json:"annotations"`
+	Response string `json:"response"`
+}
+
+// claudeNotesOnly is the answer of a question the user only wrote notes
+// on.
+const claudeNotesOnly = "(notes only)"
+
+func claudeAskQuestion(p claudePart, t int64) (wire.Message, bool) {
+	var in struct {
+		Questions []claudeAskQuestionInput `json:"questions"`
+	}
+	if json.Unmarshal(p.Input, &in) != nil || len(in.Questions) == 0 {
+		return wire.Message{}, false
+	}
+	items := make([]wire.QuestionItem, len(in.Questions))
+	for i, q := range in.Questions {
+		items[i] = wire.QuestionItem{Header: q.Header, Question: q.Question, Multi: q.MultiSelect}
+	}
+	return askQuestionRow(p.Name, p.ID, items, t), true
+}
+
+// claudeAskAnswer reads the answer row from the toolUseResult of a
+// tool_result record, if it is AskUserQuestion's. A rejected call records
+// no output of it; the interrupt that follows closes the question.
+func claudeAskAnswer(id string, raw json.RawMessage, t int64) (wire.Message, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] != '{' {
+		return wire.Message{}, false
+	}
+	var out claudeAskOutput
+	if json.Unmarshal(raw, &out) != nil || len(out.Questions) == 0 || out.Answers == nil {
+		return wire.Message{}, false
+	}
+	items := make([]wire.QuestionItem, 0, len(out.Questions)+1)
+	for _, q := range out.Questions {
+		labels := make([]string, len(q.Options))
+		for i, o := range q.Options {
+			labels[i] = o.Label
+		}
+		answers := claudeAnswerList(out.Answers[q.Question], q.MultiSelect, labels)
+		answers = typedAnswers(answers, out.Annotations[q.Question].Notes)
+		items = append(items, wire.QuestionItem{Header: q.Header, Question: q.Question, Multi: q.MultiSelect, Answers: answers})
+	}
+	if s := strings.TrimSpace(out.Response); s != "" {
+		items = append(items, wire.QuestionItem{Answers: []string{s}})
+	}
+	return askAnswerRow(id, items, t), true
+}
+
+// claudeAnswerList is the answer to one question: the option chosen, the
+// options of a multi-select (joined by ", ", labels holding ", " or a quote
+// JSON-quoted, the text typed beside them last) or the text typed.
+func claudeAnswerList(raw json.RawMessage, multi bool, labels []string) []string {
+	var list []string
+	if json.Unmarshal(raw, &list) == nil {
+		return typedAnswers(nil, list...)
+	}
+	s, ok := jsonString(raw)
+	if s = strings.TrimSpace(s); !ok || s == "" || s == claudeNotesOnly {
+		return nil
+	}
+	if multi {
+		if parts := splitClaudeMulti(s); len(parts) > 0 && allIn(parts[:len(parts)-1], labels) {
+			return parts
+		}
+	}
+	return []string{s}
+}
+
+// splitClaudeMulti undoes Claude Code's join of multi-select labels; nil
+// when s is not such a join.
+func splitClaudeMulti(s string) []string {
+	var out []string
+	for {
+		if strings.HasPrefix(s, `"`) {
+			end, esc := -1, false
+			for i := 1; i < len(s); i++ {
+				switch {
+				case esc:
+					esc = false
+				case s[i] == '\\':
+					esc = true
+				case s[i] == '"':
+					end = i
+				}
+				if end >= 0 {
+					break
+				}
+			}
+			if end < 0 {
+				return nil
+			}
+			var label string
+			if json.Unmarshal([]byte(s[:end+1]), &label) != nil {
+				return nil
+			}
+			out = append(out, label)
+			s = s[end+1:]
+		} else {
+			label, rest, found := strings.Cut(s, ", ")
+			if strings.Contains(label, `"`) {
+				return nil
+			}
+			out = append(out, label)
+			s = ""
+			if found {
+				s = ", " + rest
+			}
+		}
+		if s == "" {
+			return out
+		}
+		if !strings.HasPrefix(s, ", ") {
+			return nil
+		}
+		if s = s[2:]; s == "" {
+			return nil
+		}
+	}
+}
+
+func allIn(xs, set []string) bool {
+	for _, x := range xs {
+		found := false
+		for _, s := range set {
+			if x == s {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }

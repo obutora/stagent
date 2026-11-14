@@ -1,0 +1,31 @@
+| Run the shell command: sleep 10 && echo finished2          
+|                                                            
+|
+|╭──────────────────────────────────────────────────────────╮
+|│ $ sleep 10 && echo finished2                             │
+|├─── Output ───────────────────────────────────────────────┤
+|│ finished2                                                │
+|│ ⟦Wall: 10.01s | Timeout: 300s⟧                           │
+|╰──────────────────────────────────────────────────────────╯
+|
+| I ran sleep 10 && echo finished2. It printed finished2     
+| after about 10 seconds.                                    
+|
+|                                                            
+| Use the ask tool to ask me which color I prefer, options   
+| Red, Green, Blue. Then reply with my answer only.          
+|                                                            
+|
+|╭─── ? Ask ────────────────────────────────────────────────╮
+|│  Which color do you prefer?                              │
+|│  ○ Red                                                   │
+|│  ○ Green                                                 │
+|│  ◉ Blue                                                  │
+|╰──────────────────────────────────────────────────────────╯
+|
+| Blue                                                       
+|
+|                                  Run sleep and echo command
+| ⬢ Opus 5.5 ▶─1%──────────────────────────╎─┃────1M─◀ S0.06 
+|╰─                                                          
+cursor=3,-16 alt=false appCursor=false bracketed=true

@@ -67,10 +67,15 @@ type Session struct {
 	ConversationID string   `json:"conversation_id,omitempty"`
 	TranscriptPath string   `json:"transcript_path,omitempty"`
 	LastMessage    string   `json:"last_message,omitempty"` // short, single line
-	Cols           int      `json:"cols"`
-	Rows           int      `json:"rows"`
-	StartedAt      int64    `json:"started_at"`       // unix ms
-	LastActivityAt int64    `json:"last_activity_at"` // unix ms, last PTY output
+	// Question is the choice question the agent waits on (omitted: none),
+	// set with state waiting_input by the agent's question hook (claude's
+	// AskUserQuestion, Codex's request_user_input, omp's ask) and dropped with that state: answered, the turn
+	// moved on, or output activity took over.
+	Question       *Question `json:"question,omitempty"`
+	Cols           int       `json:"cols"`
+	Rows           int       `json:"rows"`
+	StartedAt      int64     `json:"started_at"`       // unix ms
+	LastActivityAt int64     `json:"last_activity_at"` // unix ms, last PTY output
 	// LastLocalInputAt is when a terminal on the host last typed anything
 	// into the session, unix ms: the passthrough session's own terminal or
 	// a `stagent attach` (session.input with local); 0 (omitted) until one
@@ -97,6 +102,30 @@ type Session struct {
 	// the host's agents, and it belongs to no task.
 	ScheduleID string `json:"schedule_id,omitempty"`
 	RunID      string `json:"run_id,omitempty"`
+}
+
+// Question is a choice question an agent asked through its question tool
+// (claude's AskUserQuestion, Codex's request_user_input, omp's ask), read
+// from the tool's input in the hook.
+type Question struct {
+	// Tool is the harness's question tool, e.g. "AskUserQuestion".
+	Tool      string         `json:"tool"`
+	Questions []QuestionItem `json:"questions"`
+}
+
+// QuestionItem is one question of an agent's question tool call: of a
+// Question (the live question, from the hook's tool input) and of an Ask
+// (the transcript's question and answer rows, which add the answers).
+type QuestionItem struct {
+	ID       string `json:"id,omitempty"` // the agent's id for it (omp, Codex)
+	Header   string `json:"header,omitempty"`
+	Question string `json:"question"`        // empty on a Codex answer (by id only)
+	Multi    bool   `json:"multi,omitempty"` // several options may be chosen
+	// Options are the option labels, as asked (Question only).
+	Options []string `json:"options,omitempty"`
+	// Answers: the options chosen and the text typed, in order (an Ask's
+	// answer row only).
+	Answers []string `json:"answers,omitempty"`
 }
 
 // NewSessionID returns a random 16-hex-char id (paths.sessionIDLen).
@@ -215,6 +244,10 @@ type NotificationData struct {
 	Reason string `json:"reason"`
 	// Count > 1 for a digest folding several notifications together.
 	Count int `json:"count,omitempty"`
+	// Question: a waiting_input notification about a question the agent
+	// asked (Session.Question); Body is its first question, with the
+	// number of questions when there are several.
+	Question bool `json:"question,omitempty"`
 	// SessionID is the session the notification is about; absent for a
 	// digest, notify.test and approvals of no session. ntfy's sequence ID
 	// and the s= of the Click link are both made from it.
@@ -312,6 +345,35 @@ type Message struct {
 	Text     string `json:"text"`
 	ToolName string `json:"tool_name,omitempty"`
 	Time     int64  `json:"time,omitempty"` // unix ms
+	// Ask is set on the rows of an agent's question to the user (Claude
+	// Code's AskUserQuestion, omp's ask, Codex's request_user_input).
+	Ask *Ask `json:"ask,omitempty"`
+}
+
+// Kinds of Ask.
+const (
+	// AskQuestion: the question row, a tool row whose text is the
+	// questions.
+	AskQuestion = "question"
+	// AskAnswer: the answer row, a user row whose text is the answers, or a
+	// system row when the question was closed without one (Declined).
+	AskAnswer = "answer"
+)
+
+// Ask links the question row of an agent's question and its answer row.
+// A question row no answer row follows is waiting for the user, as long as
+// nothing else follows it either.
+type Ask struct {
+	ID   string `json:"id"`   // the tool call's id, shared by both rows
+	Kind string `json:"kind"` // AskQuestion | AskAnswer
+	// Questions in the order asked; an answer row's carry the answers.
+	// Codex records the answers by question id only.
+	Questions []QuestionItem `json:"questions,omitempty"`
+	// Declined: the answer row of a question closed without an answer.
+	// Codex's interrupted calls name no tool, so any of its function calls
+	// the user interrupted gets one: a reader shows it only under the
+	// question row of its ID.
+	Declined bool `json:"declined,omitempty"`
 }
 
 // Conversation is one stored conversation of a harness (conversations.list).

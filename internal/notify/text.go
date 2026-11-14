@@ -53,6 +53,9 @@ const (
 	PhraseWindowHours         // %d: hours
 	PhraseWindowMinutes       // %d: minutes
 	PhraseDigestUsageLimit    // %d: count
+	// The body of a question with several questions (%s: the first, %d:
+	// how many); one question's body is its text alone.
+	PhraseQuestions
 	phraseCount
 )
 
@@ -97,6 +100,8 @@ var phrases = map[string][phraseCount]string{
 		PhraseWindowHours:         "%dh",
 		PhraseWindowMinutes:       "%dm",
 		PhraseDigestUsageLimit:    "%d limit window notifications",
+
+		PhraseQuestions: "%s (%d questions)",
 	},
 	wire.LangJa: {
 		PhraseWaitingInput:        "入力待ち",
@@ -138,6 +143,8 @@ var phrases = map[string][phraseCount]string{
 		PhraseWindowHours:         "%d時間",
 		PhraseWindowMinutes:       "%d分",
 		PhraseDigestUsageLimit:    "上限の枠の通知 %d 件",
+
+		PhraseQuestions: "%s（全 %d 問）",
 	},
 	wire.LangKo: {
 		PhraseWaitingInput:        "입력 대기",
@@ -179,6 +186,8 @@ var phrases = map[string][phraseCount]string{
 		PhraseWindowHours:         "%d시간",
 		PhraseWindowMinutes:       "%d분",
 		PhraseDigestUsageLimit:    "사용 한도 알림 %d개",
+
+		PhraseQuestions: "%s (질문 %d개)",
 	},
 	wire.LangZh: {
 		PhraseWaitingInput:        "等待输入",
@@ -220,6 +229,8 @@ var phrases = map[string][phraseCount]string{
 		PhraseWindowHours:         "%d 小时",
 		PhraseWindowMinutes:       "%d 分钟",
 		PhraseDigestUsageLimit:    "%d 条用量上限通知",
+
+		PhraseQuestions: "%s（共 %d 个问题）",
 	},
 }
 

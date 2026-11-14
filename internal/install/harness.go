@@ -43,9 +43,21 @@ type hookFile struct {
 	// timeouts are the hook timeouts (seconds) of events whose hook takes
 	// longer than hookTimeoutSec.
 	timeouts map[string]int
+	// matchers are the tool matchers of events whose hook runs for some
+	// tools only; our entry of such an event sits in a group of its own
+	// with that matcher.
+	matchers map[string]string
 	// sessionShell: the harness runs the hook command with the session's
 	// shell, PowerShell on Windows.
 	sessionShell bool
+}
+
+// questionMatchers runs PreToolUse and PostToolUse for the question tool of
+// harness id only (harness.Harness.QuestionTool): its question puts the
+// session in waiting_input with the question, its answer ends it.
+func questionMatchers(id string) map[string]string {
+	tool := harness.QuestionToolOf(id)
+	return map[string]string{"PreToolUse": tool, "PostToolUse": tool}
 }
 
 const (
@@ -99,7 +111,7 @@ func hookSpecs(f hookFile) []hookSpec {
 		if !ok {
 			t = hookTimeoutSec
 		}
-		out[i] = hookSpec{ev, t}
+		out[i] = hookSpec{Event: ev, Timeout: t, Matcher: f.matchers[ev]}
 	}
 	return out
 }

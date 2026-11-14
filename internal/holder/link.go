@@ -27,10 +27,11 @@ type queuedNote struct {
 
 // daemonLink keeps the holder registered with the daemon: it registers the
 // full session, then sends coalesced holder.update patches, holder.notify
-// for program notifications, holder.prompt_gone for the prompt watch the
-// daemon asked for, and finally holder.ended. It redials with backoff
-// (re-registering) whenever the daemon goes away; the session keeps
-// running meanwhile. Nothing here is ever waited on by the output path.
+// for program notifications, holder.prompt_gone and holder.question_gone
+// for the prompt and question watches the daemon asked for, and finally
+// holder.ended. It redials with backoff (re-registering) whenever the
+// daemon goes away; the session keeps running meanwhile. Nothing here is
+// ever waited on by the output path.
 type daemonLink struct {
 	h    *Holder
 	dial func() (net.Conn, error)
@@ -52,6 +53,9 @@ type daemonLink struct {
 	notes []queuedNote
 	// goneGen is a holder.prompt_gone waiting to be sent (0: none).
 	goneGen int64
+	// questionGoneGen is a holder.question_gone waiting to be sent (0:
+	// none).
+	questionGoneGen int64
 
 	failing bool // logging: only transitions are logged
 }
@@ -87,6 +91,16 @@ func (l *daemonLink) notify(p wire.HolderNotifyParams) {
 func (l *daemonLink) promptGone(gen int64) {
 	l.mu.Lock()
 	l.goneGen = max(l.goneGen, gen)
+	l.mu.Unlock()
+	l.wake()
+}
+
+// questionGone queues holder.question_gone for watch gen. Reports not sent
+// yet fold into the newest one: the daemon heeds the watch of the question
+// in force only.
+func (l *daemonLink) questionGone(gen int64) {
+	l.mu.Lock()
+	l.questionGoneGen = max(l.questionGoneGen, gen)
 	l.mu.Unlock()
 	l.wake()
 }
@@ -148,11 +162,12 @@ func (l *daemonLink) run() {
 // session registers over conn and serves it until the connection drops
 // (error) or the session ended and holder.ended was sent (nil).
 func (l *daemonLink) session(conn net.Conn) (registered bool, err error) {
-	// A prompt watch belongs to the connection that asked for it: a daemon
-	// that restarted has none, one we reconnect to asks again.
+	// A prompt or question watch belongs to the connection that asked for
+	// it: a daemon that restarted has none, one we reconnect to asks again.
 	l.h.prompt.stop()
+	l.h.question.stop()
 	l.mu.Lock()
-	l.goneGen = 0
+	l.goneGen, l.questionGoneGen = 0, 0
 	l.mu.Unlock()
 	c := rpc.NewClient(conn, func(m *wire.Msg) {
 		switch m.Method {
@@ -162,6 +177,11 @@ func (l *daemonLink) session(conn net.Conn) (registered bool, err error) {
 			var p wire.HolderPromptWatchParams
 			if rpc.Decode(m, &p) == nil && p.ID == l.h.id {
 				l.h.prompt.set(p.Gen, p.On, p.Harness)
+			}
+		case wire.MethodHolderQuestionWatch:
+			var p wire.HolderPromptWatchParams
+			if rpc.Decode(m, &p) == nil && p.ID == l.h.id {
+				l.h.question.set(p.Gen, p.On, p.Harness)
 			}
 		}
 	})
@@ -222,8 +242,8 @@ func (l *daemonLink) flush(c *rpc.Client, sent *wire.Session) error {
 	l.mu.Lock()
 	notes := l.notes
 	l.notes = nil
-	goneGen := l.goneGen
-	l.goneGen = 0
+	goneGen, questionGoneGen := l.goneGen, l.questionGoneGen
+	l.goneGen, l.questionGoneGen = 0, 0
 	l.mu.Unlock()
 	for _, n := range notes {
 		if time.Since(n.at) > noteMaxAge {
@@ -234,7 +254,12 @@ func (l *daemonLink) flush(c *rpc.Client, sent *wire.Session) error {
 		}
 	}
 	if goneGen != 0 {
-		return c.Notify(wire.MethodHolderPromptGone, wire.HolderPromptGoneParams{ID: l.h.id, Gen: goneGen})
+		if err := c.Notify(wire.MethodHolderPromptGone, wire.HolderPromptGoneParams{ID: l.h.id, Gen: goneGen}); err != nil {
+			return err
+		}
+	}
+	if questionGoneGen != 0 {
+		return c.Notify(wire.MethodHolderQuestionGone, wire.HolderPromptGoneParams{ID: l.h.id, Gen: questionGoneGen})
 	}
 	return nil
 }

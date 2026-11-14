@@ -572,3 +572,14 @@ func TestReasonMarks(t *testing.T) {
 		}
 	}
 }
+
+// A question the agent asked is told apart from waiting for input.
+func TestQuestionMark(t *testing.T) {
+	n := wire.NotificationData{Reason: "waiting_input", Level: wire.LevelInfo, Question: true}
+	if got := ntfyTags(n); got != "stagent,question" {
+		t.Errorf("ntfyTags = %q", got)
+	}
+	if got := chatEmoji(n); got != "❓" {
+		t.Errorf("chatEmoji = %q", got)
+	}
+}

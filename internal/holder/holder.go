@@ -112,6 +112,9 @@ type Holder struct {
 	// prompt watches the screen for claude's or Codex's permission menu
 	// while the daemon asks (holder.prompt_watch).
 	prompt *promptWatch
+	// question watches the screen for the UI of the question in force
+	// while the daemon asks (holder.question_watch).
+	question *promptWatch
 
 	sbWarned         bool
 	lastActivityWake int64 // pump goroutine only
@@ -263,7 +266,8 @@ func Run(ctx context.Context, o Options) (int, error) {
 		respond = h.in.tryPush
 	}
 	h.scr = screen.New(cols, rows, respond)
-	h.prompt = newPromptWatch(h.scr.Lines, h.link.promptGone)
+	h.prompt = newPromptWatch(h.scr.Lines, permissionMenu, h.link.promptGone)
+	h.question = newPromptWatch(h.scr.Lines, questionMenu, h.link.questionGone)
 	h.in.menuUp = h.menuShown
 	// vt.NewEmulator allocates a 4 MiB parser buffer and 10,000-line
 	// scrollbacks that screen.New immediately shrinks; hand those pages back
@@ -398,6 +402,7 @@ wait:
 func (h *Holder) finish(code int) {
 	h.det.Exited()
 	h.prompt.stop()
+	h.question.stop()
 	h.mu.Lock()
 	h.ended = true
 	h.sess.ExitCode = &code
@@ -480,6 +485,7 @@ func (h *Holder) output(b []byte) {
 	}
 	h.mu.Unlock()
 	h.prompt.output()
+	h.question.output()
 
 	// Activity timestamps reach the daemon at most once per second.
 	if titleChanged || now-h.lastActivityWake >= 1000 {
@@ -603,6 +609,7 @@ func (h *Holder) applySize(cols, rows int) {
 	}
 	h.mu.Unlock()
 	h.prompt.resized()
+	h.question.resized()
 	h.link.wake()
 }
 

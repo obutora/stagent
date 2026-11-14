@@ -91,7 +91,7 @@ func TestClaudeMergeKeepsForeignEntriesOrderAndFormatting(t *testing.T) {
 		t.Errorf("top-level key order changed:\n%s", out)
 	}
 	// Existing events stay first, new ones follow in registration order.
-	order := []string{`"Stop"`, `"PreToolUse"`, `"SessionStart"`, `"SessionEnd"`, `"UserPromptSubmit"`, `"Notification"`, `"PermissionRequest"`}
+	order := []string{`"Stop"`, `"PreToolUse"`, `"SessionStart"`, `"SessionEnd"`, `"UserPromptSubmit"`, `"Notification"`, `"PermissionRequest"`, `"PostToolUse"`}
 	for i := 1; i < len(order); i++ {
 		if strings.Index(out, order[i-1]) > strings.Index(out, order[i]) {
 			t.Errorf("event %s appears before %s:\n%s", order[i], order[i-1], out)
@@ -99,8 +99,19 @@ func TestClaudeMergeKeepsForeignEntriesOrderAndFormatting(t *testing.T) {
 	}
 
 	s := parseClaude(t, out)
-	if n := len(s.Hooks["PreToolUse"]); n != 1 || s.Hooks["PreToolUse"][0].Hooks[0].Command != "audit.sh" {
+	// The foreign PreToolUse group stays first and untouched; ours, only
+	// for the question tool, follows as its own group.
+	if pre := s.Hooks["PreToolUse"]; len(pre) != 2 || pre[0].Hooks[0].Command != "audit.sh" || *pre[0].Matcher != "Bash" {
 		t.Errorf("PreToolUse changed: %+v", s.Hooks["PreToolUse"])
+	}
+	for _, ev := range []string{"PreToolUse", "PostToolUse"} {
+		groups := s.Hooks[ev]
+		if m := groups[len(groups)-1].Matcher; m == nil || *m != "AskUserQuestion" {
+			t.Errorf("%s: our group's matcher = %v, want AskUserQuestion", ev, m)
+		}
+	}
+	if m := s.Hooks["Stop"][1].Matcher; m != nil {
+		t.Errorf("Stop: our group has matcher %q", *m)
 	}
 	stop := s.Hooks["Stop"]
 	if len(stop) != 2 || stop[0].Hooks[0].Command != "notify-send done" {
@@ -129,6 +140,24 @@ func TestClaudeMergeKeepsForeignEntriesOrderAndFormatting(t *testing.T) {
 	// Idempotent: a second apply plans nothing.
 	if r := te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessClaude}}); len(r.Changes) != 0 {
 		t.Fatalf("second apply changed %v", changeIDs(r.Changes))
+	}
+}
+
+// Our PreToolUse entry runs for AskUserQuestion only: one found in a group
+// for every tool (an older or hand edit) moves to a group of its own.
+func TestClaudeToolHookMovesToItsMatcher(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	path := te.claudeSettings()
+	cmd, _ := json.Marshal(te.hookCommand(claudeHooks))
+	writeFile(t, path, `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"audit.sh"},{"type":"command","command":`+string(cmd)+`,"timeout":10}]}]}}`)
+
+	te.integrate(t, integrateOpts{apply: true, harness: []string{wire.HarnessClaude}})
+	pre := parseClaude(t, readFile(t, path)).Hooks["PreToolUse"]
+	if len(pre) != 2 || len(pre[0].Hooks) != 1 || pre[0].Hooks[0].Command != "audit.sh" || pre[0].Matcher != nil {
+		t.Fatalf("foreign group = %+v", pre)
+	}
+	if m := pre[1].Matcher; m == nil || *m != "AskUserQuestion" || len(pre[1].Hooks) != 1 || !isOurCommand(pre[1].Hooks[0].Command) {
+		t.Fatalf("our group = %+v", pre[1])
 	}
 }
 

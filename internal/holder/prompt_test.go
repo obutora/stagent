@@ -12,8 +12,8 @@ import (
 	"github.com/obutora/stagent/internal/screen"
 )
 
-// testdata/claude_*, codex_*: real screens of Claude Code and Codex, the
-// fixtures of the app's screen reader
+// testdata/claude_*, codex_*, omp_*: real screens of Claude Code, Codex and
+// Oh My Pi, the fixtures of the app's screen reader
 // (test/services/terminal_chat/_fixtures): `.ansi` is what a terminal of
 // the size in the name is fed, `.txt` the app's plain rendering (`|` +
 // row, then the cursor line). claude_trust_*: Claude Code 2.1.293's
@@ -380,7 +380,7 @@ func watchScreen(t *testing.T) (*screen.Screen, *promptWatch, chan int64) {
 	scr := screen.New(60, 30, nil)
 	t.Cleanup(scr.Close)
 	reports := make(chan int64, 8)
-	w := newPromptWatch(scr.Lines, func(gen int64) { reports <- gen })
+	w := newPromptWatch(scr.Lines, permissionMenu, func(gen int64) { reports <- gen })
 	t.Cleanup(w.stop)
 	return scr, w, reports
 }

@@ -29,7 +29,7 @@ var copilotFormat = format{
 	named:  func(path, id string) bool { return filepath.Base(filepath.Dir(path)) == id },
 	scan:   scanCopilot,
 	titler: func(*Index) func(*entry) string { return titleOrPrompt },
-	parse:  parseCopilot,
+	parse:  perRecord(parseCopilot),
 }
 
 const (

@@ -32,7 +32,10 @@ type approval struct {
 // menu leave the screen (it was answered somewhere), claude stopped the
 // hook (the approved tool finished, or claude was interrupted) or the turn
 // moved on. claude shows the same prompt on its screen meanwhile, so nobody
-// waits on the hook. Every other event returns at once.
+// waits on the hook. A PermissionRequest naming claude's question tool
+// (AskUserQuestion runs through claude's permission flow) is a question,
+// not an approval, and returns at once like every other event (ADR 0002,
+// addendum of 2026-11-14).
 func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (any, error) {
 	pl := parseHookPayload(p.Payload)
 	eff := classifyHook(p.Harness, p.Event, pl)
@@ -47,6 +50,12 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 		changed = d.hookMetaLocked(s, p.Harness, pl)
 	}
 	d.noteUnwrappedLocked(p, pl, eff, s != nil, now)
+	// While the session waits on a question, a notification is about that
+	// question (claude sends a permission_prompt for AskUserQuestion), not
+	// an approval.
+	if s != nil && eff.event == hookNotification && s.track.question() != nil {
+		eff = hookEffect{event: eff.event}
+	}
 	label := sessionLabel(p.Harness, pl.Cwd)
 	if s != nil {
 		label = sessionLabel(s.s.Harness, s.s.Cwd)
@@ -70,6 +79,17 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 			s.track = s.track.hookState(wire.StateNeedsApproval, now)
 			changed = d.recomputeLocked(s, false) || changed
 		}
+	case eff.ask:
+		q := questionOf(pl.ToolName, pl.ToolInput)
+		if s != nil {
+			s.track = s.track.hookQuestion(q, now)
+			changed = d.recomputeLocked(s, false) || changed
+		} else if eff.event == questionShownHook(pl.ToolName) {
+			// Outside stagent sessions: in-app only, once per question,
+			// by the hook that comes when it shows (claude's
+			// PermissionRequest follows its PreToolUse).
+			d.notifyLocked(nil, waitingInputNotice(lang, label, q), nil)
+		}
 	case eff.state != "":
 		if s != nil {
 			// omp's extension sends the prompt as message.
@@ -81,7 +101,7 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 			changed = d.recomputeLocked(s, eff.state == wire.StateWorking) || changed
 		} else if eff.state == wire.StateWaitingInput {
 			// Outside stagent sessions: in-app only (notifyLocked).
-			d.notifyLocked(nil, wire.NotificationData{Title: label, Body: notify.Text(lang, notify.PhraseWaitingInput), Level: wire.LevelInfo, Reason: reasonWaitingInput}, nil)
+			d.notifyLocked(nil, waitingInputNotice(lang, label, nil), nil)
 		}
 	case eff.clear:
 		if s != nil {
@@ -168,6 +188,10 @@ type daemonHarness struct {
 	// what the harness reports about itself (unwrapped.go); nil when it
 	// reports nothing.
 	launch func(p wire.HookEventParams) launchKind
+	// questionShown is the hook that comes when the question of its
+	// question tool (harness.Harness.QuestionTool) shows; "" is its
+	// PreToolUse.
+	questionShown string
 }
 
 // daemonHarnesses has an entry for every harness of the registry.

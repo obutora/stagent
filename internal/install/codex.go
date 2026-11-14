@@ -13,11 +13,16 @@ import (
 // enabled in ~/.codex/config.toml, or the legacy notify program where this
 // Codex has no hooks.
 
-var codexEvents = []string{"SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest"}
+// PreToolUse and PostToolUse run only for its question tool
+// (questionMatchers).
+var codexEvents = []string{"SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "PreToolUse", "PostToolUse"}
 
 // codexHooks: Codex runs the hook command with the session's shell,
 // PowerShell on Windows.
-var codexHooks = hookFile{harness: wire.HarnessCodex, events: codexEvents, sessionShell: true}
+var codexHooks = hookFile{
+	harness: wire.HarnessCodex, events: codexEvents, sessionShell: true,
+	matchers: questionMatchers(wire.HarnessCodex),
+}
 
 type codexIntegration struct{}
 

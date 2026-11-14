@@ -371,11 +371,16 @@ const (
 	// menu the daemon asked to watch for (holder.prompt_watch) left the
 	// screen.
 	MethodHolderPromptGone = "holder.prompt_gone"
+	// notification, HolderPromptGoneParams (since 0.20.0): the question UI
+	// the daemon asked to watch for (holder.question_watch) left the
+	// screen: the question was answered or cancelled there.
+	MethodHolderQuestionGone = "holder.question_gone"
 
 	// hook → daemon (one request per connection)
 	// Answers {} once the daemon applied the event; a PermissionRequest of a
 	// claude running in a stagent session is answered only when its approval
-	// closes (the hook stays open until then, with no decision).
+	// closes (the hook stays open until then, with no decision), except one
+	// naming its question tool, which is answered at once.
 	MethodHookEvent = "hook.event" // HookEventParams → {}
 
 	// install / doctor → daemon
@@ -392,6 +397,12 @@ const (
 	// 0.5.0 and earlier know only claude's menu, 0.15.0 and earlier no
 	// Copilot CLI menu.
 	MethodHolderPromptWatch = "holder.prompt_watch"
+	// daemon → holder notification, HolderPromptWatchParams (since
+	// 0.20.0): watch the screen for the question UI of the harness while a
+	// question of the session is in force (on), or stop (off); Gen names
+	// the watch (one per question in force). Holders before 0.20.0 ignore
+	// it: their sessions' questions go with the next hook only.
+	MethodHolderQuestionWatch = "holder.question_watch"
 )
 
 type HolderRegisterResult struct {

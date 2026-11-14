@@ -81,7 +81,7 @@ func (x extension) source() string {
 		b.WriteString(x.local + "\n")
 	}
 	b.WriteString(extensionRemember + "\n")
-	b.WriteString("function send(event: string, ctx: any, message?: string): void {\n")
+	b.WriteString("function send(event: string, ctx: any, message?: string, tool?: { name: string; input: unknown }): void {\n")
 	b.WriteString("  if (" + x.skip + ") return;\n")
 	b.WriteString(`  remember(ctx);
   const bin = stagentBin();
@@ -95,6 +95,10 @@ func (x extension) source() string {
 	b.WriteString(x.payload)
 	b.WriteString(`  };
   if (message) payload.message = message;
+  if (tool) {
+    payload.tool_name = tool.name;
+    payload.tool_input = tool.input;
+  }
   try {
     const child = spawn(bin, ["hook", "` + x.id + `"], {
       stdio: ["pipe", "ignore", "ignore"],

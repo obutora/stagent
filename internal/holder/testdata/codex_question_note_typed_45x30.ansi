@@ -1,0 +1,29 @@
+  [38;2;99;168;248mHow deep does this codebase go?[39m
+
+[2m• [0mModel changed to gpt-6.1-sol medium for
+Plan mode.
+
+
+[1;2m› [0mrequest_user_input を1回だけ使って2問を同
+  時に聞いてください。1問目: id「color」、
+  header「色」、問い「好きな色はどれです
+  か？」、選択肢 赤/青。2問目: id「size」、
+  header「サイズ」、問い「サイズはどれにしま
+  すか？」、選択肢 S/M。答えがなければ、その
+  旨を一文で返すだけにしてください。
+
+
+
+  [2mQuestion 1/2 (2 unanswered)[0m
+  [38;2;99;168;248m好きな色はどれですか？[39m
+
+  [1;7m› 1. 赤                 [0;7m赤を選びます。[1m   [0m
+    2. 青                 [2m青を選びます。[0m
+    3. None of the above  [2mOptionally, add[0m
+                          [2mdetails in notes[0m
+                          [2m(tab)[0m
+
+  [1m›[0m 濃いめ
+
+  [1mtab[0;2m or [0;1mesc[0;2m to clear notes[0m
+  [1menter[0m to submit answer

@@ -1,0 +1,31 @@
+|
+|
+|● User answered Claude's questions:
+|  ⎿  · どの色が好みですか？ → Green
+|
+|● Green
+|
+|✻ Crunched for 6s · done 10:51
+|
+|❯ Use AskUserQuestion with multiSelect true: which fruits   
+|  do I like, options Apple, Banana, Cherry. Then reply with 
+|  my answer only.                                           
+|
+|────────────────────────────────────────────────────────────
+|←  ☒ Fruits  ✔ Submit  →
+|
+|Review your answers
+|
+| ● 好きな果物はどれですか？（複数選択可）
+|   → Apple, Cherry
+|        
+|Ready to submit your answers?
+|         
+|❯ 1. Submit answers
+|  2. Cancel
+|
+|  
+|  
+|
+|
+cursor=0,23 alt=true appCursor=false bracketed=true

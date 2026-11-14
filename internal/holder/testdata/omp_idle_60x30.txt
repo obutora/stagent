@@ -1,0 +1,31 @@
+|│   Welcome back!   │ # for prompt actions               │
+|│                   │ / for commands                     │
+|│   ████████████    │ ! to run bash                      │
+|│      ██  ██       │ $ to run python                    │
+|│      ██  ██       │ ────────────────────────────────── │
+|│      ▒▒  ██       │ LSP Servers                        │
+|│          ██       │ No LSP servers                     │
+|│                   │                                    │
+|│  Claude Opus 5.5  │                                    │
+|│     anthropic     │                                    │
+|│                   │ ────────────────────────────────── │
+|│                   │ Recent sessions                    │
+|│                   │ No recent sessions                 │
+|│                   │                                    │
+|│                   │                                    │
+|│                   │                                    │
+|│                   │                                    │
+|╰───────────────────┴────────────────────────────────────╯
+| Tip: Did you know? Each kitty/tmux/cmux/zellij/wezterm
+|      split keeps its own session — `omp -c` resumes the
+|      right one
+|
+|
+|────────────────────────────────────────────────────────────
+| Update Available                                           
+| New version 18.4.4 is available. Run: omp update           
+|────────────────────────────────────────────────────────────
+|
+| ⬢ Opus 5.5 ▶─1%──────────────────────────╎─┃────1M─◀ (sub) 
+|╰─                                                          
+cursor=3,26 alt=false appCursor=false bracketed=true

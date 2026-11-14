@@ -3,6 +3,67 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.20.0
+
+### Added
+
+- Questions (質問, #1548): when claude asks with AskUserQuestion, the
+  session waits for input with the question attached — `Session.question
+  {tool, questions: [{id?, header?, question, multi?, options?[]}]}` —
+  and its push says the first question (with the number of questions when
+  there are several; `notification.question: true`, ❓ / ntfy tag
+  `question`) instead of the fixed "Waiting for input". The question goes
+  when it is answered (`PostToolUse`), the turn moves on, or its UI
+  leaves the screen (answered, or cancelled with Esc, for which claude
+  sends no hook): while a question is in force the daemon has the session's holder
+  watch the screen for it (`holder.question_watch` / `holder.question_gone`,
+  local IPC). Output while the question is up — moving the highlight or
+  between tabs, toggling a multi-select — no longer ends it. Sessions of
+  holders started before 0.20.0 keep the question until the next hook.
+  claude's hooks add `PreToolUse` and `PostToolUse` for AskUserQuestion
+  only (matcher); rerun `stagent integrate` and
+  restart claude to get them. Any harness's hook naming a question tool
+  (the harness registry's `QuestionTool`, the one place each harness's
+  tool is named) is read the same way (PROTOCOL.md "Questions").
+- Questions from Codex and omp (#1549): Codex's `request_user_input` and
+  omp's `ask` are question tools too, so their questions show and push
+  the same way. Codex's hooks add `PreToolUse` and `PostToolUse` for
+  `request_user_input` only (matcher; measured with Codex 0.160.1 in
+  Plan mode); omp's extension sends its `ask` tool's `tool_call` and
+  `tool_result` as `PreToolUse` / `PostToolUse` with `tool_name` and
+  `tool_input`. Rerun `stagent integrate` and restart Codex (it asks to
+  review the new hooks) and omp to get them. Outside a stagent session
+  a Codex or omp question is told in-app at its `PreToolUse`. The
+  holder knows Codex's question UI by its `Question 1/2` header and key
+  hint, so moving through it and opening its notes field (Tab) keep the
+  question, and Esc, which interrupts Codex's turn with no hook, ends it.
+- Agents' questions and the user's answers in conversations (チャット表示
+  の会話, #1550): Claude Code's `AskUserQuestion`, omp's `ask` and Codex's
+  `request_user_input` become a question row (a `tool` row whose text is
+  the questions, no longer an empty `AskUserQuestion` / `request_user_input`
+  or omp's intent) and an answer row (a `user` row with the options chosen
+  — all of a multi-select — and the text typed), linked by the new
+  `Message.ask {id, kind, questions[], declined?}`, whose questions are
+  the same `QuestionItem` as `Session.question`'s (with `answers?[]`, no
+  `options`); a question closed without an answer (omp, Codex) is a
+  `system` row `Question dismissed`. Esc at Codex's question interrupts
+  its turn: the call's output (`aborted by user after …`) names no tool,
+  so it becomes that row only when its call id is a `request_user_input`
+  call's found in the records before it (any page or read); another
+  interrupted call (Codex's `wait` on a command) gets no row.
+  The answers used to be dropped with the tool results. A question row
+  nothing follows is waiting for the user.
+
+### Fixed
+
+- claude (2.1.322 to 2.1.325) runs AskUserQuestion through its
+  permission flow: its `PermissionRequest` hook was registered as an
+  approval ("Needs approval: AskUserQuestion"), held until the turn moved
+  on, and the `permission_prompt` notification that follows marked the
+  session `needs_approval`. A question tool's `PermissionRequest` now
+  returns at once and registers nothing, and a notification while a
+  question is pending changes nothing.
+
 ## 0.19.1
 
 ### Added

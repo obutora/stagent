@@ -39,6 +39,10 @@ type Harness struct {
 	// PermissionRequest hook runs, so the hook may wait until the prompt
 	// is answered (Codex shows its prompt only once the hook returned).
 	HookHeldForPrompt bool
+	// QuestionTool is the tool through which the harness asks the user a
+	// choice question ("" when it has none): its hooks and transcript rows
+	// naming it are a question (PROTOCOL.md "Questions").
+	QuestionTool string
 }
 
 // Batch describes the arguments that make a harness run without its
@@ -70,6 +74,7 @@ var All = []Harness{
 			return filepath.Join(dir, "projects")
 		},
 		HookHeldForPrompt: true,
+		QuestionTool:      "AskUserQuestion",
 	},
 	{
 		ID:      wire.HarnessCodex,
@@ -86,6 +91,7 @@ var All = []Harness{
 			}
 			return filepath.Join(home, ".codex")
 		},
+		QuestionTool: "request_user_input",
 	},
 	{
 		ID:       wire.HarnessOmp,
@@ -95,6 +101,7 @@ var All = []Harness{
 		TranscriptRoot: func(home string, _ func(string) string) string {
 			return filepath.Join(home, ".omp", "agent", "sessions")
 		},
+		QuestionTool: "ask",
 	},
 	{
 		ID:      wire.HarnessPi,
@@ -173,6 +180,21 @@ func IDs() []string {
 // Lookup returns the entry of id.
 func Lookup(id string) (Harness, bool) {
 	i := slices.IndexFunc(All, func(h Harness) bool { return h.ID == id })
+	if i < 0 {
+		return Harness{}, false
+	}
+	return All[i], true
+}
+
+// QuestionToolOf is the question tool of harness id ("" when it has none).
+func QuestionToolOf(id string) string {
+	h, _ := Lookup(id)
+	return h.QuestionTool
+}
+
+// QuestionToolHarness returns the harness whose question tool is tool.
+func QuestionToolHarness(tool string) (Harness, bool) {
+	i := slices.IndexFunc(All, func(h Harness) bool { return h.QuestionTool != "" && h.QuestionTool == tool })
 	if i < 0 {
 		return Harness{}, false
 	}

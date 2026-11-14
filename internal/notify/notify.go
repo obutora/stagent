@@ -655,8 +655,11 @@ var reasonMarks = map[string]map[string]mark{
 	"digest": {"": {"bell", "🔔"}},
 }
 
-// markOf is n's mark (zero: none).
+// markOf is n's mark (zero: none). A question the agent asked has its own.
 func markOf(n wire.NotificationData) mark {
+	if n.Question {
+		return mark{"question", "❓"}
+	}
 	byLevel := reasonMarks[n.Reason]
 	if m, ok := byLevel[n.Level]; ok {
 		return m

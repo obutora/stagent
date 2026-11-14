@@ -1,6 +1,11 @@
 package install
 
-import "github.com/obutora/stagent/internal/wire"
+import (
+	"strconv"
+
+	"github.com/obutora/stagent/internal/harness"
+	"github.com/obutora/stagent/internal/wire"
+)
 
 // omp: an extension of stagent's in ~/.omp/agent/extensions that runs
 // `stagent hook omp` itself.
@@ -32,7 +37,9 @@ func (e *env) ompTarget() *target {
 
 // ompExtensionSource is written to ~/.omp/agent/extensions/ssh-term-stagent.ts.
 // It forwards session events to `stagent hook omp` using Claude Code's event
-// names. It never blocks omp: the hook runs detached, errors are swallowed,
+// names, and its question tool's (harness.Harness.QuestionTool: ask) call
+// and result as PreToolUse / PostToolUse (a question to the user and its
+// end). It never blocks omp: the hook runs detached, errors are swallowed,
 // and nothing happens when the binary is missing or omp is nested.
 var ompExtensionSource = extension{
 	id: wire.HarnessOmp, name: "omp",
@@ -60,5 +67,14 @@ const nested = process.env.OMPCODE === "1";
     send("Stop", ctx, assistantText(event?.messages));
   });
   pi.on("session_shutdown", (_event, ctx) => send("SessionEnd", ctx));
+  // The question tool asks the user; its result comes once answered (or
+  // cancelled, or timed out).
+  const questionTool = ` + strconv.Quote(harness.QuestionToolOf(wire.HarnessOmp)) + `;
+  pi.on("tool_call", (event, ctx) => {
+    if (event?.toolName === questionTool) send("PreToolUse", ctx, undefined, { name: questionTool, input: event.input });
+  });
+  pi.on("tool_result", (event, ctx) => {
+    if (event?.toolName === questionTool) send("PostToolUse", ctx, undefined, { name: questionTool, input: event.input });
+  });
 `,
 }.source()

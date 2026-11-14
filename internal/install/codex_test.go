@@ -57,7 +57,8 @@ trusted_hash = "sha256:aaaa"
 
 type codexHooksFile struct {
 	Hooks map[string][]struct {
-		Hooks []claudeHook `json:"hooks"`
+		Matcher *string      `json:"matcher"`
+		Hooks   []claudeHook `json:"hooks"`
 	} `json:"hooks"`
 }
 
@@ -85,8 +86,21 @@ func TestCodexHooksAndFeatureFlagRoundTrip(t *testing.T) {
 	if pr := hf.Hooks["PermissionRequest"]; len(pr) != 1 || pr[0].Hooks[0].Timeout != 10 {
 		t.Fatalf("PermissionRequest = %+v", pr)
 	}
-	if len(hf.Hooks["PreToolUse"]) != 1 {
-		t.Fatal("foreign PreToolUse changed")
+	// The foreign PreToolUse group stays first and untouched; ours runs
+	// for request_user_input only (codex 0.160.1 runs PreToolUse and, once
+	// answered, PostToolUse for it), as a group of its own.
+	if pre := hf.Hooks["PreToolUse"]; len(pre) != 2 || pre[0].Matcher != nil || !strings.Contains(pre[0].Hooks[0].Command, "orca") {
+		t.Fatalf("PreToolUse = %+v", pre)
+	}
+	for _, ev := range []string{"PreToolUse", "PostToolUse"} {
+		groups := hf.Hooks[ev]
+		if len(groups) == 0 {
+			t.Fatalf("no %s hook", ev)
+		}
+		g := groups[len(groups)-1]
+		if g.Matcher == nil || *g.Matcher != "request_user_input" || len(g.Hooks) != 1 || !isOurCommand(g.Hooks[0].Command) {
+			t.Fatalf("%s = %+v", ev, groups)
+		}
 	}
 
 	cfg := readFile(t, te.codexConfig())

@@ -9,7 +9,9 @@ import (
 
 // Claude Code: stagent's hooks in ~/.claude/settings.json.
 
-var claudeEvents = []string{"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification", "PermissionRequest"}
+// PreToolUse and PostToolUse run only for its question tool
+// (questionMatchers).
+var claudeEvents = []string{"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification", "PermissionRequest", "PreToolUse", "PostToolUse"}
 
 // claudeApprovalTimeoutSec (7 days) is the timeout of claude's
 // PermissionRequest hook: the daemon holds that hook until the prompt is
@@ -22,6 +24,7 @@ var claudeHooks = hookFile{
 	harness:  wire.HarnessClaude,
 	events:   claudeEvents,
 	timeouts: map[string]int{"PermissionRequest": claudeApprovalTimeoutSec},
+	matchers: questionMatchers(wire.HarnessClaude),
 }
 
 type claudeIntegration struct{}

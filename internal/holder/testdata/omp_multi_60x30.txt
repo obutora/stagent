@@ -1,0 +1,31 @@
+|
+| Blue                                                       
+|
+|                                                            
+| Use the ask tool with multi-select enabled: which fruits   
+| do I like, options Apple, Banana, Cherry. Then reply with  
+| my answer only.                                            
+|                                                            
+|
+|╭─── Ask 1 questions ──────────────────────────────────────╮
+|├─── [fruits] · multi · options:3 ─────────────────────────┤
+|│  Which fruits do you like?                               │
+|│  ☐ Apple                                                 │
+|│  ☐ Banana                                                │
+|│  ☐ Cherry                                                │
+|╰──────────────────────────────────────────────────────────╯
+|
+|  ⎋ Asking fruit preferences      Run sleep and echo command
+|╭─ Ask ────────────────────────────────────────────────────╮
+|│  fruits    Submit                                        │
+|│ Which fruits do you like?                                │
+|├──────────────────────────────────────────────────────────┤
+|│ ❯ ☐ Apple                                                │
+|│   ☐ Banana                                               │
+|│   ☐ Cherry                                               │
+|│   ☐ Other (type your own)                                │
+|│                                                          │
+|├──────────────────────────────────────────────────────────┤
+|│ Space toggle · Enter submit · ↑/↓ move · Tab/←/→ · Esc … │
+|╰──────────────────────────────────────────────────────────╯
+cursor=0,-59 alt=false appCursor=false bracketed=true

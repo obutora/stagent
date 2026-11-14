@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
+	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -100,7 +102,7 @@ func scanCodex(path string, e *entry) {
 		if !complete {
 			return true
 		}
-		for _, m := range parseCodex(line) {
+		for _, m := range parseCodex(line, nil) {
 			if m.Role == RoleUser {
 				e.Prompt = clip(m.Text, 1024)
 				return false
@@ -168,9 +170,11 @@ type codexItem struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-	Input     string `json:"input"`
+	Name      string          `json:"name"`
+	Arguments string          `json:"arguments"`
+	Input     string          `json:"input"`
+	CallID    string          `json:"call_id"`
+	Output    json.RawMessage `json:"output"`
 	Action    *struct {
 		Command []string `json:"command"`
 		Query   string   `json:"query"`
@@ -181,7 +185,7 @@ type codexItem struct {
 // <user_instructions>, AGENTS.md, <turn_aborted>, …
 var codexInjected = regexp.MustCompile(`^(<[A-Za-z_][A-Za-z0-9_ -]*>|# AGENTS\.md instructions)`)
 
-func parseCodex(line []byte) []wire.Message {
+func parseCodex(line []byte, asked askedFunc) []wire.Message {
 	if !bytes.Contains(line, []byte(`"response_item"`)) {
 		return nil
 	}
@@ -221,7 +225,16 @@ func parseCodex(line []byte) []wire.Message {
 		}
 		return []wire.Message{{Role: role, Text: clip(strings.Join(texts, "\n\n"), maxText), Time: t}}
 	case "function_call":
+		if it.Name == codexAskTool {
+			if m, ok := codexAskQuestion(it, t); ok {
+				return []wire.Message{m}
+			}
+		}
 		return []wire.Message{{Role: RoleTool, ToolName: it.Name, Text: Summarize(json.RawMessage(it.Arguments)), Time: t}}
+	case "function_call_output":
+		if m, ok := codexAskAnswer(it, t, asked); ok {
+			return []wire.Message{m}
+		}
 	case "custom_tool_call":
 		return []wire.Message{{Role: RoleTool, ToolName: it.Name, Text: summarizeFreeform(it.Name, it.Input), Time: t}}
 	case "local_shell_call":
@@ -238,4 +251,99 @@ func parseCodex(line []byte) []wire.Message {
 		return []wire.Message{{Role: RoleTool, ToolName: "web_search", Text: s, Time: t}}
 	}
 	return nil
+}
+
+// codexAskTool is Codex's tool for asking the user questions.
+var codexAskTool = harness.QuestionToolOf(wire.HarnessCodex)
+
+// codexAskCancelled is the output of a request_user_input call closed
+// without a response.
+var codexAskCancelled = codexAskTool + " was cancelled"
+
+// codexAborted is the output of a function call the user interrupted (Esc
+// on request_user_input's question interrupts the turn): it names no tool,
+// so it may be any function call's (`wait`, an MCP tool's); it closes a
+// question only when its call id is one asked before it.
+const codexAborted = "aborted by user"
+
+// codexUserNote prefixes the notes the user typed among a question's
+// answers.
+const codexUserNote = "user_note: "
+
+func codexAskQuestion(it codexItem, t int64) (wire.Message, bool) {
+	var args struct {
+		Questions []struct {
+			ID       string `json:"id"`
+			Header   string `json:"header"`
+			Question string `json:"question"`
+		} `json:"questions"`
+	}
+	if json.Unmarshal([]byte(it.Arguments), &args) != nil || len(args.Questions) == 0 {
+		return wire.Message{}, false
+	}
+	items := make([]wire.QuestionItem, len(args.Questions))
+	for i, q := range args.Questions {
+		items[i] = wire.QuestionItem{ID: q.ID, Header: q.Header, Question: q.Question}
+	}
+	return askQuestionRow(it.Name, it.CallID, items, t), true
+}
+
+// codexAskAnswer reads the answer row from a function call's output, if it
+// is request_user_input's: its response, {"answers":{<question id>:
+// {"answers":[…]}}}, the message of its cancellation, or the output of an
+// interrupted call whose id asked knows. The output names no tool, so
+// otherwise the shape alone tells.
+func codexAskAnswer(it codexItem, t int64, asked askedFunc) (wire.Message, bool) {
+	out := codexOutputText(it.Output)
+	if strings.HasPrefix(out, codexAskCancelled) ||
+		strings.HasPrefix(out, codexAborted) && asked != nil && asked(it.CallID) {
+		return askDeclinedRow(it.CallID, t), true
+	}
+	if !strings.HasPrefix(out, `{"answers":`) {
+		return wire.Message{}, false
+	}
+	var resp struct {
+		Answers map[string]struct {
+			Answers *[]string `json:"answers"`
+		} `json:"answers"`
+	}
+	if json.Unmarshal([]byte(out), &resp) != nil || resp.Answers == nil {
+		return wire.Message{}, false
+	}
+	ids := make([]string, 0, len(resp.Answers))
+	for id, a := range resp.Answers {
+		if a.Answers == nil {
+			return wire.Message{}, false
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	items := make([]wire.QuestionItem, len(ids))
+	for i, id := range ids {
+		var answers []string
+		for _, a := range *resp.Answers[id].Answers {
+			answers = typedAnswers(answers, strings.TrimPrefix(a, codexUserNote))
+		}
+		items[i] = wire.QuestionItem{ID: id, Answers: answers}
+	}
+	return askAnswerRow(it.CallID, items, t), true
+}
+
+// codexOutputText is a function call output's text: a string, or the text
+// of its content items.
+func codexOutputText(raw json.RawMessage) string {
+	if s, ok := jsonString(raw); ok {
+		return strings.TrimSpace(s)
+	}
+	var items []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &items) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range items {
+		b.WriteString(c.Text)
+	}
+	return strings.TrimSpace(b.String())
 }

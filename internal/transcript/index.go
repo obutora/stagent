@@ -71,8 +71,8 @@ type format struct {
 	scan func(path string, e *entry)
 	// titler returns how entries are titled, read once per listing.
 	titler func(x *Index) func(*entry) string
-	// parse normalizes one record (see ParseLine).
-	parse func(line []byte) []wire.Message
+	// parse normalizes one record (see parseLine).
+	parse func(line []byte, asked askedFunc) []wire.Message
 }
 
 var formats = map[string]format{

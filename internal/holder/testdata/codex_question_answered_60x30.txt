@@ -1,0 +1,30 @@
+|
+|
+|› request_user_input を1回だけ使って2問を同時に聞いてくださ
+|  い。1問目: id「color」、header「色」、問い「好きな色はど
+|  れですか？」、選択肢 赤/青。2問目: id「size」、header「サ
+|  イズ」、問い「サイズはどれにしますか？」、選択肢 S/M。答
+|  えがなければ、その旨を一文で返すだけにしてください。
+|
+|
+|■ Conversation interrupted - use /feedback if something went
+|wrong
+|
+|
+|› request_user_input を1回だけ使って1問だけ聞いてください:
+|  id「drink」、header「飲み物」、問い「飲み物はどれにします
+|  か？」、選択肢 コーヒー/紅茶。答えを受け取ったら一文で復
+|  唱してください。
+|
+|
+|• Questions 1/1 answered
+|  • 飲み物はどれにしますか？
+|    answer: コーヒー
+|
+|• Working (4s • esc to interrupt)
+|
+|
+|› Ask Codex to do anything
+|
+|  GPT-6.1-Sol medium · /private/tmp/cxm/proj2 ·… Plan mode
+|  ? for shortcuts

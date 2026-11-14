@@ -150,7 +150,8 @@ type Daemon struct {
 	probing   bool
 	sweep     *time.Timer
 	closed    bool
-	// promptGens numbers holder prompt watches (holder.prompt_watch).
+	// promptGens numbers holder prompt and question watches
+	// (holder.prompt_watch, holder.question_watch).
 	promptGens int64
 	// chatSent: sessions with a chat message from before the restart
 	// whose holder answered; it is theirs again once they register.
@@ -630,6 +631,12 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		var p wire.HolderPromptGoneParams
 		if rpc.Decode(m, &p) == nil {
 			d.holderPromptGone(cs, p)
+		}
+		return nil, nil
+	case wire.MethodHolderQuestionGone:
+		var p wire.HolderPromptGoneParams
+		if rpc.Decode(m, &p) == nil {
+			d.holderQuestionGone(cs, p)
 		}
 		return nil, nil
 

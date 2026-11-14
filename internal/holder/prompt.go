@@ -51,11 +51,15 @@ type promptTrack struct {
 	goneSince time.Time // no menu of sig on the screen since (zero: it is)
 }
 
-// promptWatch is the holder's side of the prompt watches. lines reads the
-// screen; gone reports a watch whose menu left it (called with mu held,
-// it must not block or call back).
+// promptWatch is the holder's side of the prompt watches, and of the
+// question watches (question.go), which differ in the menu they look for.
+// lines reads the screen; menu tells whether it shows the menu looked for
+// as harnessID draws it, and its signature (permissionMenu, questionMenu);
+// gone reports a watch whose menu left it (called with mu held, it must
+// not block or call back).
 type promptWatch struct {
 	lines func() []string
+	menu  func(lines []string, harnessID string) (sig string, ok bool)
 	gone  func(gen int64)
 
 	mu sync.Mutex
@@ -72,8 +76,8 @@ type promptWatch struct {
 	due      time.Time // when timer fires (zero: not armed)
 }
 
-func newPromptWatch(lines func() []string, gone func(gen int64)) *promptWatch {
-	return &promptWatch{lines: lines, gone: gone}
+func newPromptWatch(lines func() []string, menu func([]string, string) (string, bool), gone func(gen int64)) *promptWatch {
+	return &promptWatch{lines: lines, menu: menu, gone: gone}
 }
 
 // set starts watch gen (on) for the menu of harnessID or ends every watch
@@ -172,7 +176,7 @@ func (w *promptWatch) armLocked(at time.Time) {
 
 func (w *promptWatch) evalLocked(now time.Time) {
 	w.lastEval = now
-	sig, up := permissionMenu(w.lines(), w.harness)
+	sig, up := w.menu(w.lines(), w.harness)
 	kept := w.tracks[:0] // the tracks still to be reported, in order
 	for _, t := range w.tracks {
 		switch {
@@ -255,6 +259,10 @@ type menuStyle struct {
 	// are read there only, an option's wrapped label continuing at the
 	// column of its number.
 	framed func(lines []string) []string
+	// question reports whether lines show the UI of a question the
+	// harness asked through its question tool (questionShown), for a
+	// harness that draws it as no menu of its own; nil: its menus are.
+	question func(lines []string) bool
 }
 
 // outsideFrame stands for a line outside the boxes in a menuStyle.framed
@@ -556,12 +564,19 @@ func parsePromptItem(option *regexp.Regexp, text string, line int) (promptItem, 
 // promptHintFollows reports a key hint within the few lines under the
 // options, or nothing but blanks below them. A transcript entry below means
 // the list is part of the conversation, e.g. a numbered prompt the user
-// sent.
+// sent. When the bottom edge of a box beside the options comes right under
+// them (claude's question with previews), what is in that column below it
+// — its notes field, a note typed there however many lines it wraps to —
+// is not counted.
 func promptHintFollows(lines []string, end int) bool {
+	side := 0 // the column of the box beside the options
 	seen := 0
 	for j := end + 1; j < len(lines) && seen < 4; j++ {
 		t := strings.TrimSpace(lines[j])
-		if t == "" || isPromptRule(t) {
+		if side == 0 && seen == 0 && strings.HasPrefix(t, "└") {
+			side = indentOf(lines[j])
+		}
+		if t == "" || isPromptRule(t) || side > 0 && indentOf(lines[j]) >= side {
 			continue
 		}
 		if promptTranscriptMark.MatchString(t) {

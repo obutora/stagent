@@ -32,9 +32,11 @@ const (
 	maxSummary = 200
 )
 
-// ParseLine normalizes one JSONL record of harness to zero or more messages
-// (in order). Unknown or noise records yield none.
-func ParseLine(harness string, line []byte) []wire.Message {
+// parseLine normalizes one JSONL record of harness to zero or more messages
+// (in order). Unknown or noise records yield none. asked tells whether a
+// tool call id is a question's asked in the records before this one; nil
+// when they are not at hand (no question is known then).
+func parseLine(harness string, line []byte, asked askedFunc) []wire.Message {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 || line[0] != '{' {
 		return nil
@@ -43,7 +45,17 @@ func ParseLine(harness string, line []byte) []wire.Message {
 	if !ok {
 		return nil
 	}
-	return f.parse(line)
+	return f.parse(line, asked)
+}
+
+// askedFunc tells whether id is the tool call id of a question row (wire.Ask
+// kind question) of the records before the one being parsed.
+type askedFunc func(id string) bool
+
+// perRecord is the parse of a format whose records are read each on its
+// own.
+func perRecord(parse func(line []byte) []wire.Message) func([]byte, askedFunc) []wire.Message {
+	return func(line []byte, _ askedFunc) []wire.Message { return parse(line) }
 }
 
 // ---------------------------------------------------------------------------

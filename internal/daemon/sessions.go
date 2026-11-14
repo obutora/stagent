@@ -50,6 +50,9 @@ type session struct {
 	// promptHarness is the harness whose menu it watches for.
 	promptGen     int64
 	promptHarness string
+	// questionGen is the session holder's current question watch (0:
+	// none), kept while a question of the session is in force (question.go).
+	questionGen int64
 
 	// checkTool and checkInput are the tool the latest permission check
 	// of a harness that asks before its menu (daemonHarness.checksFirst:
@@ -143,9 +146,12 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 		d.recomputeLocked(s, true)
 		d.broadcastLocked(wire.NotifySessionUpdated, s.s)
 		// A holder that reconnected while an approval was pending
-		// watches for its prompt again.
+		// watches for its prompt again, and for the question in force.
 		if s.promptGen != 0 {
 			d.sendPromptWatchLocked(s, true)
+		}
+		if s.questionGen != 0 {
+			d.sendQuestionWatchLocked(s, true)
 		}
 		return res, nil
 	}
@@ -358,14 +364,22 @@ func (d *Daemon) endLocked(s *session, exitCode int, lost, hungUp bool) {
 	})
 }
 
-// recomputeLocked derives the session state from its track. On a change it
-// updates the session, cancels approvals the terminal already answered
-// (when cancelApprovals) and (re)starts the debounce of state_changed; a
-// hook saying the agent works again (a prompt was submitted) settles the
-// session's pushes. It reports whether the state changed; the caller
-// broadcasts.
+// recomputeLocked derives the session state, and the question it waits on,
+// from its track. On a change it updates the session, cancels approvals
+// the terminal already answered (when cancelApprovals) and (re)starts the
+// debounce of state_changed; a hook saying the agent works again (a prompt
+// was submitted, a question answered) settles the session's pushes. It
+// reports whether the session changed; the caller broadcasts.
 func (d *Daemon) recomputeLocked(s *session, cancelApprovals bool) bool {
 	state, source := s.track.merged()
+	q := s.track.question()
+	d.followQuestionLocked(s, q)
+	if q != s.s.Question {
+		s.s.Question = q
+		if state == s.s.State && source == s.s.StateSource {
+			return true
+		}
+	}
 	if state == s.s.State && source == s.s.StateSource {
 		return false
 	}
@@ -429,10 +443,7 @@ func (d *Daemon) settleLocked(s *session) {
 	lang := d.eff.Notify.Lang
 	switch notifyReasonForTransition(from, to) {
 	case reasonWaitingInput:
-		d.notifyLocked(s, wire.NotificationData{
-			Title: sessionLabel(s.s.Harness, s.s.Cwd), Body: notify.Text(lang, notify.PhraseWaitingInput),
-			Level: wire.LevelInfo, Reason: reasonWaitingInput,
-		}, nil)
+		d.notifyLocked(s, waitingInputNotice(lang, sessionLabel(s.s.Harness, s.s.Cwd), s.s.Question), nil)
 	case reasonNeedsApproval:
 		body := notify.Text(lang, notify.PhraseNeedsApproval)
 		if ap := d.firstApprovalLocked(s.s.ID); ap != nil && ap.a.ToolName != "" {

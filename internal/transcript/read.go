@@ -61,6 +61,8 @@ func ReadPage(path, harness string, before int64, limit int) (Page, error) {
 	}
 	page := Page{End: end}
 	sc := newReverseScanner(f, before)
+	lk := &questionLookup{f: f, harness: harness}
+	asked := lk.asked
 	var newestFirst [][]wire.Message
 	count := 0
 	cursor := before
@@ -74,7 +76,8 @@ func ReadPage(path, harness string, before int64, limit int) (Page, error) {
 			break
 		}
 		cursor = start
-		if msgs := ParseLine(harness, line); len(msgs) > 0 {
+		lk.start = start
+		if msgs := parseLine(harness, line, asked); len(msgs) > 0 {
 			newestFirst = append(newestFirst, msgs)
 			count += len(msgs)
 		}
@@ -117,13 +120,16 @@ func ReadFrom(path, harness string, offset int64) ([]wire.Message, int64, error)
 		return nil, offset, err
 	}
 	var out []wire.Message
+	lk := &questionLookup{f: f, harness: harness}
+	asked := lk.asked
 	consumed := 0
 	for {
 		i := bytes.IndexByte(buf[consumed:], '\n')
 		if i < 0 {
 			break
 		}
-		out = append(out, ParseLine(harness, buf[consumed:consumed+i])...)
+		lk.start = offset + int64(consumed)
+		out = append(out, parseLine(harness, buf[consumed:consumed+i], asked)...)
 		consumed += i + 1
 	}
 	rest := buf[consumed:]
@@ -134,10 +140,48 @@ func ReadFrom(path, harness string, offset int64) ([]wire.Message, int64, error)
 		return out, next, err
 	case offset+n == size && len(rest) > 0 && json.Valid(bytes.TrimSpace(rest)):
 		// Final record without a newline yet but complete.
-		out = append(out, ParseLine(harness, rest)...)
+		lk.start = offset + int64(consumed)
+		out = append(out, parseLine(harness, rest, asked)...)
 		consumed = len(buf)
 	}
 	return out, offset + int64(consumed), nil
+}
+
+// askLookback bounds how far before a record its question is looked for. A
+// question holds up the turn, so its call is just before the output that
+// closes it, past a few records of events.
+const askLookback = 4 << 20
+
+// questionLookup is the askedFunc of a reader of f: it looks for the
+// question row of an id in the records before start, the record being
+// parsed — in the file, whatever page or read they were in. Only records
+// that need it ask (Codex's interrupted call), so it reads back lazily.
+type questionLookup struct {
+	f       io.ReaderAt
+	harness string
+	start   int64
+}
+
+func (q *questionLookup) asked(id string) bool {
+	if id == "" {
+		return false
+	}
+	key := []byte(id)
+	sc := newReverseScanner(q.f, q.start)
+	for {
+		line, start, ok, err := sc.prev()
+		if !ok || err != nil || q.start-start > askLookback {
+			return false
+		}
+		if !bytes.Contains(line, key) {
+			continue
+		}
+		for _, m := range parseLine(q.harness, line, nil) {
+			if m.Ask != nil && m.Ask.Kind == wire.AskQuestion && m.Ask.ID == id {
+				return true
+			}
+		}
+	}
 }
 
 // EndOffset is where a tail of path should start to see only new records.

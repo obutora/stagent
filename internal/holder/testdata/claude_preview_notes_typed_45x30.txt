@@ -1,0 +1,30 @@
+|  "Layout"), options Sidebar, Top bar, Grid,
+|  each with a description and a 3-line
+|  ASCII preview. Nothing else.
+|
+|─────────────────────────────────────────────
+| ☐ Layout
+|
+|Which layout do you prefer?
+|
+|  1. Sidebar              ┌─────────┐
+|  2. Top bar              │ +------ │
+|❯ 3. Grid                 │ -+----- │
+|                          │ --+---- │
+|                          │ ---+    │
+|                          ├─── ✂ ─── 8 lines
+|                          hidden ┤
+|                          └─────────┘
+|
+|                          Notes: two
+|                                 co
+|                                 lum
+|                                 ns
+|
+|─────────────────────────────────────────────
+|  Chat about this
+|
+|Enter to select · ↑/↓ to navigate · n to add
+|notes · ctrl+g to edit in True · Esc to
+|cancel
+|

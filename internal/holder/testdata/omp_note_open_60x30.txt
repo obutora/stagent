@@ -1,0 +1,31 @@
+|────────────────────────────────────────────────────────────
+| Update Available
+| New version 18.20.0 is available. Run: omp update
+|────────────────────────────────────────────────────────────
+|
+|
+| Use the ask tool to ask me which color I prefer, options
+| Red, Green, Blue. Then reply with my answer and any note I
+| gave, nothing else.
+|
+|
+|╭─── Ask 1 questions ──────────────────────────────────────╮
+|├─── [color] · options:3 ──────────────────────────────────┤
+|│  Which color do you prefer?                              │
+|│  ○ Red                                                   │
+|│  ○ Green                                                 │
+|│  ○ Blue                                                  │
+|╰──────────────────────────────────────────────────────────╯
+|
+|
+|
+|
+|  ⎋ Asking color preference
+|╭─ Note for Green: Which color do you prefer? ─────────────╮
+|│                                                          │
+|│ >                                                        │
+|│                                                          │
+|│ ⏎ or ⌃Q submit  ⎋ cancel  ⌃G external editor             │
+|│                                                          │
+|╰──────────────────────────────────────────────────────────╯
+cursor=4,25 alt=false appCursor=false bracketed=true
