@@ -1,0 +1,69 @@
+{
+  "generatedAt": 1794630416619,
+  "reports": [
+    {
+      "provider": "anthropic",
+      "fetchedAt": 1794630400000,
+      "limits": [
+        {
+          "id": "anthropic:5h",
+          "label": "Claude 5 Hour",
+          "scope": {"provider": "anthropic", "windowId": "5h", "shared": true},
+          "window": {"id": "5h", "label": "5 Hour", "durationMs": 18000000, "resetsAt": 1794640000000},
+          "amount": {"used": 42, "limit": 100, "usedFraction": 0.425, "unit": "percent"},
+          "status": "ok"
+        },
+        {
+          "id": "anthropic:7d:opus",
+          "label": "Claude 7 Day (Opus)",
+          "scope": {"provider": "anthropic", "windowId": "7d", "tier": "Opus"},
+          "window": {"id": "7d", "label": "7 Day", "durationMs": 604800000, "resetsAt": 1794801600000},
+          "amount": {"used": 10, "limit": 100, "usedFraction": 0.1, "unit": "percent"},
+          "status": "ok"
+        },
+        {
+          "id": "anthropic:spend",
+          "label": "Claude spend",
+          "scope": {"provider": "anthropic", "windowId": "month"},
+          "amount": {"used": 3, "limit": 20, "unit": "usd"},
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "provider": "openai-codex",
+      "fetchedAt": 1794630410000,
+      "limits": [
+        {
+          "id": "openai-codex:primary",
+          "label": "Codex 5 Hour",
+          "scope": {"provider": "openai-codex", "windowId": "primary"},
+          "window": {"id": "primary", "label": "5 Hour", "durationMs": 18000000, "resetsAt": 1794641000000},
+          "amount": {"used": 7, "limit": 100, "usedFraction": 0.07, "unit": "percent"},
+          "status": "ok"
+        },
+        {
+          "id": "openai-codex:daily",
+          "label": "Codex 1 Day",
+          "scope": {"provider": "openai-codex", "windowId": "daily"},
+          "window": {"id": "daily", "label": "1 Day", "durationMs": 86400000, "resetsAt": 1794700000000},
+          "amount": {"used": 50, "limit": 100, "usedFraction": 0.5, "unit": "percent"},
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "provider": "github-copilot",
+      "fetchedAt": 1794630410000,
+      "limits": [
+        {
+          "id": "github-copilot:month",
+          "scope": {"provider": "github-copilot", "windowId": "month"},
+          "window": {"id": "month", "durationMs": 2592000000, "resetsAt": 1795000000000},
+          "amount": {"usedFraction": 0.3, "unit": "percent"},
+          "status": "ok"
+        }
+      ]
+    }
+  ]
+}

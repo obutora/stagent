@@ -103,6 +103,14 @@ type Options struct {
 	// is due (default 15 s). See usage_private.go.
 	PrivateAPI     usage.PrivateAPI
 	PrivateAPITick time.Duration
+	// OmpBin finds omp's executable ("" when not installed; default: PATH
+	// then the per-user tool directories, nil — omp never run — when
+	// STAGENT_HOME is set), Omp runs its usage command, and
+	// OmpHistoryEvery is how often its snapshots are read (default 2
+	// min). See usage_omp.go.
+	OmpBin          func() string
+	Omp             usage.OmpUsage
+	OmpHistoryEvery time.Duration
 }
 
 const (
@@ -272,6 +280,13 @@ func New(opts Options) (*Daemon, error) {
 	}
 	if opts.PrivateAPI.Keychain == nil && runtime.GOOS == "darwin" && !opts.Layout.Isolated {
 		opts.PrivateAPI.Keychain = usage.MacKeychain
+	}
+	if opts.OmpBin == nil && !opts.Layout.Isolated {
+		home := opts.Layout.Home
+		opts.OmpBin = func() string { return findOmp(home) }
+	}
+	if opts.OmpHistoryEvery <= 0 {
+		opts.OmpHistoryEvery = defaultOmpHistoryEvery
 	}
 	l := opts.Layout
 	if err := l.EnsureDirs(); err != nil {

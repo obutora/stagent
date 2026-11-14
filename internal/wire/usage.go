@@ -171,6 +171,10 @@ const (
 	// (Claude /api/oauth/usage, Codex wham/usage), called with the login
 	// token the harness keeps when usage.private_api is on for it.
 	UsageSourcePrivateAPI = "private_api"
+	// UsageSourceOmpUsage: what omp (oh-my-pi) tells with `omp usage
+	// --json` and records in its hourly snapshots (`omp usage --history
+	// --json`), when omp is installed (omp の記録).
+	UsageSourceOmpUsage = "omp_usage"
 )
 
 // More limit window ids the private API brings: Claude's weekly window of
@@ -272,6 +276,8 @@ const (
 	UsageErrNetwork = "network"
 	// UsageErrBadResponse: the API's answer was not the JSON expected.
 	UsageErrBadResponse = "bad_response"
+	// UsageErrCommand: `omp usage` failed (exit status, 15 s timeout).
+	UsageErrCommand = "command_failed"
 )
 
 // UsageLimitError is the last failed private API call for a limit window.

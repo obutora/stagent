@@ -3,6 +3,18 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.19.1
+
+### Added
+
+- omp's limit windows (omp の記録): when omp (oh-my-pi) is installed, the
+  daemon runs `omp usage --history --json` every 2 minutes and `omp usage
+  --json` while the app is in front (at most every 15 minutes), and
+  records the Claude and Codex windows omp tells with source `omp_usage`
+  — the week and a model's week (`seven_day_fable`) included, no
+  five-hour window when the provider sends none. stagent never reads
+  omp's tokens.
+
 ## 0.19.0
 
 ### Added

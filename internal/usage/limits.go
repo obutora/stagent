@@ -85,8 +85,9 @@ type Measurement struct {
 // and a restarted daemon records the newest rollout event again, however
 // old. A window without a reset time (ResetsAt 0, or one kept with only an
 // error) is always replaced. A window not among m.Windows keeps its
-// value, as does the plan when m has none. A measurement of the private
-// API clears the account's errors (it succeeded); any other keeps them.
+// value, as does the plan when m has none. A measurement of a source that
+// can fail (the private API, omp) clears the account's errors (it
+// succeeded); any other keeps them.
 // changed is whether a share, a reset time, the plan or an error changed;
 // the file is written whenever a value was taken.
 func (l *Limits) Record(h, configDir string, m Measurement) (changed bool, err error) {
@@ -123,7 +124,7 @@ func (l *Limits) Record(h, configDir string, m Measurement) (changed bool, err e
 		a.Plan = m.Plan
 		changed, taken = true, true
 	}
-	if m.Source == wire.UsageSourcePrivateAPI && clearErrors(a) {
+	if (m.Source == wire.UsageSourcePrivateAPI || m.Source == wire.UsageSourceOmpUsage) && clearErrors(a) {
 		changed, taken = true, true
 	}
 	return changed, l.settleLocked(i, taken, &snap)

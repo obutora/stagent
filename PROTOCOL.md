@@ -2397,7 +2397,8 @@ account:
   "Command-line tools"); `codex_rollout` — the `rate_limits` of Codex's
   `token_count` events in its rollouts (below); `private_api` — the
   harness's undocumented usage API (since 0.19.0, #1563; see "Private
-  API"). Items may gain keys: ignore what you do not know.
+  API"); `omp_usage` — what omp (oh-my-pi) tells (since 0.19.1; see "omp
+  usage"). Items may gain keys: ignore what you do not know.
 - `error` (optional, since 0.19.0, #1563): the last failure of the
   private API for the window's account, `{code, message, at, retry_at?}`
   (see "Private API"); the value beside it, if any, is the last one
@@ -2552,6 +2553,42 @@ break at any time. While both are false no HTTP request is made.
   off drops that harness's errors (the values stay), and what a call
   still in flight then brings. `usage.changed` goes out when an error's
   code or retry time changes.
+
+#### omp usage
+
+(Since 0.19.1.) When omp (oh-my-pi) is installed — found on the daemon's
+`PATH`, else in the per-user tool directories (`~/.local/bin`, `~/.bun/bin`,
+…) — the daemon runs omp's own command for the limit windows of the
+Claude and Codex logins omp holds, with no setting. stagent never reads
+omp's tokens; omp calls the providers and refreshes its login itself.
+Not run when `STAGENT_HOME` is set.
+
+- `omp usage --history --json --days 1` (omp's hourly snapshots, no
+  provider call) at daemon start and every 2 minutes; per limit the newest
+  entry (`recordedAt`, `limitId` `<provider>:<window>[:<tier>]`,
+  `usedFraction`, `resetsAt`). `measured_at` is the newest `recordedAt`.
+- `omp usage --json` (omp calls the providers) only when the private API
+  would be called (the schedule of "Private API": in front at most once
+  per 15 minutes, `refresh_limits` after 5 minutes, the same waits after
+  a failure), whether or not `usage.private_api` is on. Per provider the
+  report with the newest `fetchedAt` (the `measured_at`); its `limits`
+  with `amount.unit` `percent`.
+- Each run times out after 15 s. Providers: `anthropic` → `claude`, its
+  account the one the statusLine and the private API record under
+  (`CLAUDE_CONFIG_DIR`, else `~/.claude`); `openai-codex` → `codex`
+  (`CODEX_HOME`, else `~/.codex`); others are ignored. So omp's login is
+  taken as the host's Claude / Codex account and its windows merge with
+  the other sources' (the newest measurement wins), not a second row.
+- Windows: `5h` → `five_hour`, `7d` → `seven_day`, `7d` with
+  `scope.tier` X → `seven_day_<x>` (lowercase, e.g. `seven_day_fable`),
+  another window by its `durationMs` (`<minutes>m`); a window omp does
+  not send (Anthropic sends no five-hour window on some plans) is not
+  listed. `used_percent` = `usedFraction` × 100 (two decimals),
+  `resets_at` = `resetsAt`.
+- A failed live run (exit status, timeout: `command_failed`; output not
+  the JSON expected: `bad_response`) sets `error` on the windows of the
+  harnesses omp measured before, like the private API's; a successful
+  omp run drops them. A failed history run is only logged.
 
 #### Click link
 

@@ -1,0 +1,84 @@
+{
+  "generatedAt": 1794630424110,
+  "sinceMs": 1794544024110,
+  "entries": [
+    {
+      "recordedAt": 1794551163976,
+      "provider": "anthropic",
+      "accountKey": "oa*",
+      "email": "ku*",
+      "accountId": "36*",
+      "limitId": "anthropic:7d",
+      "label": "Claude 7 Day",
+      "windowLabel": "7 Day",
+      "usedFraction": 0.5,
+      "status": "ok",
+      "resetsAt": 1794801599842
+    },
+    {
+      "recordedAt": 1794551163976,
+      "provider": "anthropic",
+      "accountKey": "oa*",
+      "email": "ku*",
+      "accountId": "36*",
+      "limitId": "anthropic:7d:fable",
+      "label": "Claude 7 Day (Fable)",
+      "windowLabel": "7 Day",
+      "usedFraction": 0.28,
+      "status": "ok",
+      "resetsAt": 1794801599842
+    },
+    {
+      "recordedAt": 1794554289973,
+      "provider": "anthropic",
+      "accountKey": "oa*",
+      "email": "ku*",
+      "accountId": "36*",
+      "limitId": "anthropic:7d",
+      "label": "Claude 7 Day",
+      "windowLabel": "7 Day",
+      "usedFraction": 0.51,
+      "status": "ok",
+      "resetsAt": 1794801599851
+    },
+    {
+      "recordedAt": 1794554289973,
+      "provider": "anthropic",
+      "accountKey": "oa*",
+      "email": "ku*",
+      "accountId": "36*",
+      "limitId": "anthropic:7d:fable",
+      "label": "Claude 7 Day (Fable)",
+      "windowLabel": "7 Day",
+      "usedFraction": 0.28,
+      "status": "ok",
+      "resetsAt": 1794801599851
+    },
+    {
+      "recordedAt": 1794630416288,
+      "provider": "anthropic",
+      "accountKey": "oa*",
+      "email": "ku*",
+      "accountId": "36*",
+      "limitId": "anthropic:7d",
+      "label": "Claude 7 Day",
+      "windowLabel": "7 Day",
+      "usedFraction": 0.67,
+      "status": "ok",
+      "resetsAt": 1794801600157
+    },
+    {
+      "recordedAt": 1794630416288,
+      "provider": "anthropic",
+      "accountKey": "oa*",
+      "email": "ku*",
+      "accountId": "36*",
+      "limitId": "anthropic:7d:fable",
+      "label": "Claude 7 Day (Fable)",
+      "windowLabel": "7 Day",
+      "usedFraction": 0.28,
+      "status": "ok",
+      "resetsAt": 1794801600157
+    }
+  ]
+}

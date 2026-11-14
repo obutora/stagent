@@ -1,0 +1,153 @@
+{
+  "generatedAt": 1794630424203,
+  "reports": [
+    {
+      "provider": "anthropic",
+      "fetchedAt": 1794630417861,
+      "limits": [
+        {
+          "id": "anthropic:7d",
+          "label": "Claude 7 Day",
+          "scope": {
+            "provider": "anthropic",
+            "windowId": "7d",
+            "shared": true
+          },
+          "window": {
+            "id": "7d",
+            "label": "7 Day",
+            "durationMs": 604800000,
+            "resetsAt": 1794801600000
+          },
+          "amount": {
+            "used": 66,
+            "limit": 100,
+            "remaining": 34,
+            "usedFraction": 0.66,
+            "remainingFraction": 0.33999999999999997,
+            "unit": "percent"
+          },
+          "status": "ok"
+        },
+        {
+          "id": "anthropic:7d:fable",
+          "label": "Claude 7 Day (Fable)",
+          "scope": {
+            "provider": "anthropic",
+            "windowId": "7d",
+            "tier": "fable"
+          },
+          "window": {
+            "id": "7d",
+            "label": "7 Day",
+            "durationMs": 604800000,
+            "resetsAt": 1794801600157
+          },
+          "amount": {
+            "used": 28,
+            "limit": 100,
+            "remaining": 72,
+            "usedFraction": 0.28,
+            "remainingFraction": 0.72,
+            "unit": "percent"
+          },
+          "status": "ok"
+        }
+      ],
+      "metadata": {
+        "accountId": "36*",
+        "email": "kunihiko.*",
+        "orgId": "82*",
+        "endpoint": "https://api.anthropic.com/api/oauth/usage",
+        "headersUpdatedAt": 1794630417861
+      },
+      "resetCredits": {
+        "availableCount": 3,
+        "redeemableCount": 1,
+        "nextCreditId": "full-reset-2611",
+        "eligible": true,
+        "credits": [
+          {
+            "id": "full-reset-2611",
+            "title": "One full limit reset (November 2026)",
+            "program": "cedar_ember",
+            "remainingCount": 1,
+            "usable": true,
+            "requiresLimit": false,
+            "clears": [
+              "anthropic:7d",
+              "anthropic:reset:seven_day_overage_included"
+            ],
+            "blocking": [],
+            "usedFractions": {
+              "anthropic:7d": 0.67,
+              "anthropic:reset:seven_day_overage_included": 0.28
+            },
+            "grantedAt": "2026-11-10T21:30:00.000Z",
+            "expiresAt": "2026-12-10T22:00:00.000Z",
+            "status": "available"
+          },
+          {
+            "id": "launch-2610-fable",
+            "title": "New model launch: one Fable reset for Max, Team Premium and Enterprise Premium",
+            "program": "cedar_ember",
+            "remainingCount": 1,
+            "usable": false,
+            "requiresLimit": false,
+            "clears": [
+              "anthropic:reset:seven_day_overage_included"
+            ],
+            "blocking": [],
+            "usedFractions": {
+              "anthropic:reset:seven_day_overage_included": 0.28,
+              "anthropic:7d": 0.67
+            },
+            "grantedAt": "2026-11-09T18:00:00.000Z",
+            "expiresAt": "2027-03-09T07:59:00.000Z",
+            "status": "unavailable"
+          },
+          {
+            "id": "launch-2610-fable-6mo",
+            "title": "New model launch: one more Fable reset at 6 months' tenure",
+            "program": "cedar_ember",
+            "remainingCount": 1,
+            "usable": false,
+            "requiresLimit": false,
+            "clears": [
+              "anthropic:reset:seven_day_overage_included"
+            ],
+            "blocking": [],
+            "usedFractions": {
+              "anthropic:reset:seven_day_overage_included": 0.28,
+              "anthropic:7d": 0.67
+            },
+            "grantedAt": "2026-11-09T18:00:00.000Z",
+            "expiresAt": "2027-03-09T07:59:00.000Z",
+            "status": "unavailable"
+          }
+        ]
+      }
+    }
+  ],
+  "accountsWithoutUsage": [],
+  "disabledCredentials": [],
+  "capacity": {
+    "anthropic": [
+      {
+        "window": "7d",
+        "durationMs": 604800000,
+        "accounts": 1,
+        "usedAccounts": 0.66,
+        "remainingAccounts": 0.33999999999999997
+      },
+      {
+        "window": "7d",
+        "durationMs": 604800000,
+        "meter": "fable",
+        "accounts": 1,
+        "usedAccounts": 0.28,
+        "remainingAccounts": 0.72
+      }
+    ]
+  }
+}

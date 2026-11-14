@@ -39,8 +39,15 @@ func (d *Daemon) runPrivateAPI() {
 	t := time.NewTicker(d.opts.PrivateAPITick)
 	defer t.Stop()
 	sched := map[string]*usage.APISchedule{}
+	omp := &ompState{}
 	for {
-		d.callPrivateAPI(ctx, sched)
+		d.mu.Lock()
+		foreground := d.appForegroundLocked()
+		opened := d.apiOpened
+		d.apiOpened = false
+		d.mu.Unlock()
+		d.callPrivateAPI(ctx, sched, foreground, opened)
+		d.callOmp(ctx, omp, foreground, opened)
 		select {
 		case <-d.shutdown:
 			return
@@ -51,12 +58,9 @@ func (d *Daemon) runPrivateAPI() {
 }
 
 // callPrivateAPI calls the private API of each account that is on and due.
-func (d *Daemon) callPrivateAPI(ctx context.Context, sched map[string]*usage.APISchedule) {
+func (d *Daemon) callPrivateAPI(ctx context.Context, sched map[string]*usage.APISchedule, foreground, opened bool) {
 	d.mu.Lock()
 	on := d.eff.Usage.PrivateAPI
-	foreground := d.appForegroundLocked()
-	opened := d.apiOpened
-	d.apiOpened = false
 	d.mu.Unlock()
 	for _, h := range privateAPIHarnesses {
 		if !on.On(h) {

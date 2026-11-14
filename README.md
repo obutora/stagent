@@ -229,11 +229,16 @@ spent on the host (使用量) and the limit windows of their subscriptions
   front or its usage screen opens, at most every 15 minutes. The tokens
   are only read: never refreshed, never written, never logged or put in
   an error, a file or `doctor`.
+- When omp (oh-my-pi) is installed, the daemon runs `omp usage --history
+  --json` every 2 minutes and `omp usage --json` on the private API's
+  schedule (app in front, at most every 15 minutes) for the limit windows
+  of the Claude and Codex logins omp holds. omp makes the calls with its
+  own login; stagent reads no omp token.
 
 Coding agents can read the usage too; of what writes, they can send only
 the relay's report, and only within the bounds told above for agents
 (ADR 0004). The wire format is in
-[PROTOCOL.md](PROTOCOL.md) ("Usage", "Limit windows", "Private API").
+[PROTOCOL.md](PROTOCOL.md) ("Usage", "Limit windows", "Private API", "omp usage").
 
 ## Installation and removal
 
