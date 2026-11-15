@@ -144,7 +144,7 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 		s.s.TaskID = d.taskOfLocked(s)
 		s.track = s.track.holderReport(ws.State, ws.StateSource, now)
 		d.recomputeLocked(s, true)
-		d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+		d.sessionChangedLocked(s)
 		// A holder that reconnected while an approval was pending
 		// watches for its prompt again, and for the question in force.
 		if s.promptGen != 0 {
@@ -170,6 +170,7 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 	s.s.State, s.s.StateSource = s.track.merged()
 	s.logged = s.s.State
 	d.sessions[ws.ID] = s
+	d.adoptAgentLocked(s)
 	// A holder re-registering with a restarted daemon already has its
 	// session_started in the log.
 	known := d.log.Any(func(e *wire.Event) bool {
@@ -180,7 +181,7 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 			Harness: ws.Harness, Command: ws.Command, Cwd: ws.Cwd, Mode: ws.Mode,
 		})
 	}
-	d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+	d.sessionChangedLocked(s)
 	return res, nil
 }
 
@@ -249,7 +250,7 @@ func (d *Daemon) holderUpdate(cs *connState, p wire.SessionPatch) {
 	// rides along with the next real change or goes out after the interval.
 	if changed || (activity && now-s.pushedAt >= activityPushInterval.Milliseconds()) {
 		s.pushedAt = now
-		d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+		d.sessionChangedLocked(s)
 	}
 }
 
@@ -346,7 +347,10 @@ func (d *Daemon) endLocked(s *session, exitCode int, lost, hungUp bool) {
 		n.Level, n.Body = wire.LevelWarn, notify.Text(lang, notify.PhraseExitedCode, exitCode)
 	}
 	d.notifyLocked(s, n, nil)
-	d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+	if lost {
+		d.agentLostLocked(s) // before its record would be marked ended
+	}
+	d.sessionChangedLocked(s)
 	// A task this session prepared is interrupted.
 	d.reviewTasksLocked(time.Now())
 	if s.s.RunID != "" {

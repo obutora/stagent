@@ -118,5 +118,5 @@ func (d *Daemon) revertHarnessLocked(s *session) {
 	d.cancelApprovalsLocked(s.s.ID)
 	s.track = s.track.hookClear()
 	d.recomputeLocked(s, false)
-	d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+	d.sessionChangedLocked(s)
 }

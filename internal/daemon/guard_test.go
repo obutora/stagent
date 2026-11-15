@@ -42,8 +42,8 @@ func errCode(err error) string {
 // TestAgentRefusedMethods: a connection from a coding agent's process tree
 // may report hooks and read (schedules and their runs, a schedule's
 // preview included), but not change settings, presence or notifications,
-// create, update, remove, pause, resume or run a schedule now, nor stop
-// the daemon.
+// create, update, remove, pause, resume or run a schedule now, remove,
+// claim or unclaim a stopped agent, nor stop the daemon.
 func TestAgentRefusedMethods(t *testing.T) {
 	e := startDaemon(t, fastConfig(), Options{Guard: guardAs("claude")})
 	c, _ := e.client()
@@ -69,6 +69,9 @@ func TestAgentRefusedMethods(t *testing.T) {
 		{wire.MethodSchedulePause, wire.ScheduleRef{ID: "0123456789abcdef"}},
 		{wire.MethodScheduleResume, wire.ScheduleRef{ID: "0123456789abcdef"}},
 		{wire.MethodScheduleRunNow, wire.ScheduleRef{ID: "0123456789abcdef"}},
+		{wire.MethodStoppedRemove, wire.StoppedRef{ID: "0123456789abcdef"}},
+		{wire.MethodStoppedClaim, wire.StoppedClaimParams{ID: "0123456789abcdef", SessionID: "fedcba9876543210"}},
+		{wire.MethodStoppedUnclaim, wire.StoppedClaimParams{ID: "0123456789abcdef", SessionID: "fedcba9876543210"}},
 	} {
 		if err := do(m.method, m.params); errCode(err) != wire.ErrAgentRefused {
 			t.Errorf("%s from an agent: %v, want %s", m.method, err, wire.ErrAgentRefused)

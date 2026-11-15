@@ -193,6 +193,22 @@ wsl-shutdown`, or restarting the PC); WSL, Windows restarts and signing
 out of Windows still end them. `stagent doctor` reports it under
 `persistence.wsl`; lingering is never needed in WSL.
 
+A restart of the host ends every session. On Linux and macOS the daemon
+keeps a note of the coding agent running in each session (harness,
+conversation, directory, title, task; `~/.ssh-term/agent/state/agents.json`,
+mode 0600) together with the boot it was written in. When it starts after
+a reboot, those agents are listed in the app as stopped agents (止まった
+agent), and so is an agent whose session vanished otherwise — its holder
+killed, listed at once or when the daemon next starts — but not one that
+ended on its own. Nothing restarts by itself — an agent costs API usage — but from
+the app each one can be resumed: a new kept shell opens in the same
+directory, tied to the same task, running the harness's resume command
+(`claude --resume <id>`, `codex resume <id>`, `copilot --resume=<id>`,
+`omp --resume <id>`, `pi --session <id>`), and your login shell when the
+agent exits. A stopped agent stays listed until it is resumed, removed,
+continued some other way, or for 7 days. Coding agents cannot resume or
+remove them.
+
 ## Usage and limit windows
 
 With the agent features on, the app shows the tokens the coding agents

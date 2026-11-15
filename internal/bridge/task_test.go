@@ -97,11 +97,19 @@ type spawned struct {
 // answered by fake holders, against a fake daemon d.
 func startTaskBridge(t *testing.T, d *taskDaemon, opts ...func(*Bridge)) (*app, func() []spawned) {
 	t.Helper()
+	return startSpawnBridge(t, d.handle, opts...)
+}
+
+// startSpawnBridge runs a bridge whose holder starts are recorded and
+// answered by fake holders, against a fake daemon answering with daemon.
+// opts may replace the holder starts.
+func startSpawnBridge(t *testing.T, daemon rpc.Handler, opts ...func(*Bridge)) (*app, func() []spawned) {
+	t.Helper()
 	t.Setenv(daemonclient.EnvExe, fakeExe)
 	var mu sync.Mutex
 	var starts []spawned
 	var l interface{ HolderAddr(string) string }
-	opts = append(opts, func(b *Bridge) {
+	opts = append([]func(*Bridge){func(b *Bridge) {
 		l = b.l
 		b.spawnProc = func(exe string, args []string, dir string, env []string, logPath string) (int, error) {
 			id, cwd := args[slices.Index(args, "--id")+1], args[slices.Index(args, "--cwd")+1]
@@ -114,9 +122,9 @@ func startTaskBridge(t *testing.T, d *taskDaemon, opts ...func(*Bridge)) (*app, 
 			})
 			return 0, nil
 		}
-	})
+	}}, opts...)
 	lay, a := startBridge(t, opts...)
-	serveFake(t, lay.DaemonAddr, d.handle)
+	serveFake(t, lay.DaemonAddr, daemon)
 	return a, func() []spawned {
 		mu.Lock()
 		defer mu.Unlock()

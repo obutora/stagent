@@ -435,7 +435,7 @@ func (d *Daemon) taskForget(p wire.TaskRemoved) error {
 	for _, s := range d.sessions {
 		if s.s.TaskID == id {
 			s.s.TaskID = ""
-			d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+			d.sessionChangedLocked(s)
 		}
 	}
 	return nil
@@ -569,7 +569,7 @@ func (d *Daemon) rebindLocked() {
 		}
 		if id := d.taskOfLocked(s); id != s.s.TaskID {
 			s.s.TaskID = id
-			d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+			d.sessionChangedLocked(s)
 		}
 	}
 }

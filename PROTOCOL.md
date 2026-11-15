@@ -122,8 +122,9 @@ created its stdin pipe — the app — ends.
   GitHub screen, `host_screen_ios` only on macOS, where the host
   screen shows iOS simulators (the other kinds work on every OS and need
   none; a missing tool, such as Xcode, is told by `host_screen.list`),
-  and `schedules` only on Linux and macOS, where the daemon runs
-  schedules (定期実行).
+  `schedules` only on Linux and macOS, where the daemon runs
+  schedules (定期実行), and `stopped_agents` only on Linux and macOS,
+  where the daemon keeps stopped agents (止まった agent).
   `push_chat` is the one exception that does not depend on the OS: an
   older stagent stores `notify.chat` like any unknown config key and
   silently never sends to it, so the app configures chat destinations
@@ -147,6 +148,7 @@ created its stdin pipe — the app — ends.
 | `worktree.prs` | `{}` | `{prs[{path, number, state, url, merged}]}` — see "Worktrees" |
 | `worktree.watch` | `{add?, remove?}` | `{watch_folders[]}` — see "Worktrees" |
 | `worktree.remove` | `{path, force?, stop_sessions?, dry_run?}` | `{changes[]?, changes_truncated?, unpushed?, sessions[]?, kept_branch?, bytes?, entries[{name, bytes, dir}]?, removed_parent?}` — see "Worktrees" |
+| `stopped.resume` | `{id, cols, rows, env?{}}` | `{session, existed}` — continues a stopped agent in a new kept shell (since 0.21.0; see "Stopped agents") |
 
 `host_id` (32 lowercase hex chars) is 128 random bits stagent creates the
 first time it runs (`stagent install`, the bridge's `hello` or the daemon)
@@ -226,7 +228,8 @@ the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
 `push_chat`, `persist`, `worktrees`, on Windows `persist_shell` and
-`github`, on macOS `host_screen_ios`, and on Linux and macOS `schedules`.
+`github`, on macOS `host_screen_ios`, and on Linux and macOS `schedules`
+and `stopped_agents`.
 `push_chat` announces the chat destination (`notify.chat`) and
 `notify.test`'s `channels`: an older stagent stores `notify.chat` like
 any unknown key without sending to it, so an app configures chat
@@ -246,7 +249,11 @@ section and `start` of a simulator. `schedules` (Linux and macOS, since
 before it answers them `unknown_method`, and on any other OS the daemon
 answers them `unsupported`. `worktrees` (every OS, since 0.18.0)
 announces the `worktree.*` methods (see "Worktrees"); a stagent before it
-answers them `unknown_method`.
+answers them `unknown_method`. `stopped_agents` (Linux and macOS, since
+0.21.0) announces the stopped agents: `watch`'s `stopped`,
+`stopped.updated`, `stopped.remove` and `stopped.resume` (see "Stopped
+agents"); on any other OS `watch`'s `stopped` is always empty and the
+methods answer `unsupported`.
 
 #### Creating a task (`task.create`, `stagent task run`)
 
@@ -882,6 +889,79 @@ it is removed too and named in `removed_parent`. For a worktree the
 removal's session does this (`--folder`), so it is done when the bridge
 went first; before 0.19.0 the bridge did, and a closed connection left
 the empty folder behind.
+
+#### Stopped agents (`stopped.resume`, `stopped.remove`)
+
+(Since 0.21.0, #1583, capability `stopped_agents`, Linux and macOS.) A
+stopped agent (止まった agent; `StoppedAgent` below) is a coding agent that
+ran in a stagent session whose holder went away without the agent ending:
+the host restarted (`reason: reboot`), or the holder vanished otherwise
+(`reason: lost`). Its process is gone; only its conversation is left, which
+`stopped.resume` continues — never on its own: the user decides (an agent
+costs API usage).
+
+The daemon keeps a record of the agent of every live session — not
+ended, not a schedule run, an agent harness (not `other`) with a
+`conversation_id` — with its harness, conversation, `cwd`, `title`,
+`task_id` and `started_at`, updated with each `session.updated`. It keeps
+them in `state/agents.json` (`{boot_id, saved_at, running: [record],
+stopped: [StoppedAgent]}`, mode 0600, written like `tasks.json` about a
+second after a change and when the daemon stops) with the id of the host's
+current boot (Linux `/proc/sys/kernel/random/boot_id`, macOS `sysctl
+kern.bootsessionuuid`). An agent that leaves its session normally (the
+session ended with `holder.ended`, whatever its exit code, or the agent
+quit in a kept shell) keeps its record 30 s longer (`ended_at`): while the
+host shuts down, holders may report their end just before the daemon
+dies. A session whose holder went away without `holder.ended` (lost, after
+the 3 s grace) makes its agent a stopped agent at once with `reason:
+lost`, and `stopped.updated` goes out.
+
+When the daemon starts it reads the file back. If it was written in
+another boot, every record — an ended one still in the file included — is
+a stopped agent with `reason: reboot`, and a stopped agent found `lost`
+within 30 s of the file's last write (`saved_at`; its holder was killed as
+the host shut down) becomes `reboot` too. In the same boot (or when either
+boot id is unknown) an ended record is over, a running one whose holder
+still answers stays running (the holder registers again, and gets its
+conversation back without waiting for a hook), and any other is a stopped
+agent with `reason: lost`. `found_at` is when the daemon found it.
+
+A stopped agent stays listed (`watch`'s `stopped`, `stopped.updated`,
+newest `found_at` first, then newest `started_at`) until it is resumed,
+removed (`stopped.remove {id}` → `{}`, forwarded to the daemon,
+idempotent), continued another way — a live session carries the same
+`harness` and `conversation_id` — or 7 days after `found_at`. Nothing is
+pushed when the daemon finds stopped agents.
+
+`stopped.resume {id, cols, rows, env?}` runs on the spawn queue. It is
+refused with `agent_refused` to a coding agent's process tree before
+anything happens (ADR 0004), and answers `unsupported` on other OSes. The
+bridge first claims the stopped agent for the session it is about to start
+(daemon `stopped.claim`, local IPC): when a live session already carries
+the conversation — or an earlier resume of it started one — nothing starts
+and the answer is that session with `existed: true`; while another resume
+of it has not got its session registered (60 s at most) it is `busy`; an
+unknown `id` is `not_found`. Otherwise it starts a new detached session (a
+kept shell) in the agent's `cwd` (`bad_request` when that is no longer a
+directory), tied to its `task_id`, with the login shell's environment as
+for `session.spawn` (the harness's command looked up in the tool
+directories too; `env` entries override), running
+
+```
+["/bin/sh", "-c", "trap : INT; <resume argv>; exec '<login shell>' -l"]
+```
+
+`<resume argv>` continues the conversation the way the app's resume does:
+`claude --resume <id>`, `codex resume <id>`, `copilot --resume=<id>`, `omp
+--resume <id>`, `pi --session <id>` (the harness registry's `Resume`); the
+`conversation_id` must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`
+(`bad_request` otherwise). When the agent exits, the user is left in their
+login shell (`SHELL` of that environment, `/bin/sh` when unset) in the same
+session. `trap : INT` keeps the wrapper going when a SIGINT reaches the
+process group (zsh's `-c` would otherwise drop the rest). The answer is
+`{session, existed: false}`; the stopped agent leaves the list
+(`stopped.updated`) once the new session registers. A failure to start
+releases the claim (`stopped.unclaim`).
 
 #### GitHub screen (Windows only)
 
@@ -1564,7 +1644,7 @@ max 1 MiB.
 
 | method | params | result |
 |---|---|---|
-| `watch` | `{since}` | `{sessions[], approvals[], unwrapped[], tasks[], seq, missed[], truncated}` then `event` / `session.updated` / `session.removed` / `unwrapped.updated` / `task.updated` / `task.removed` notifications |
+| `watch` | `{since}` | `{sessions[], approvals[], unwrapped[], tasks[], stopped[], seq, missed[], truncated}` then `event` / `session.updated` / `session.removed` / `unwrapped.updated` / `task.updated` / `task.removed` / `stopped.updated` notifications |
 | `sessions.list` | – | `{sessions[]}` |
 | `conversations.list` | `{harness?[], limit?}` | `{conversations[]}` |
 | `transcript.get` | `{session_id? \| harness+conversation_id? \| path?, limit?, before?}` | `{path, harness, messages[], cursor}` |
@@ -1587,6 +1667,7 @@ max 1 MiB.
 | `schedule.run_now` | `{id}` | the run started (`trigger: now`); `busy` while the previous run runs; refused to a coding agent's process tree |
 | `schedule.output` | `{id, run_id, session_id?, before?, max_bytes?}` | `{data, start, end, first, gone?}` — a page of a try's output (`session_id`; omitted: the newest try) from the disk, as `session.scrollback`; `gone: true` once it is no longer kept |
 | `usage.get` | `{tz?, from?, to?, refresh_limits?}` | `{scanning, scanned_at?, counted[], days[], sessions[], limits[]}` — the tokens the agents spent on this host, by calendar day of `tz` (since 0.19.0, #1557; see "Usage"), and the limit windows measured (`limits`, since 0.19.0, #1559; see "Limit windows"). `refresh_limits: true` (since 0.19.0, #1563): the usage screen was opened, call the private API if allowed (see "Private API") |
+| `stopped.remove` | `{id}` | `{}` — the stopped agent taken off the list (nothing when it is not listed; since 0.21.0, see "Stopped agents"); refused to a coding agent's process tree |
 
 Nothing in the protocol answers an approval: the program's own screen does
 (the PC, Claude's Remote Control, or a client typing the option's key with
@@ -1605,6 +1686,22 @@ stagent session (`UnwrappedLaunch`, newest `last_activity_at` first; GLOSSARY
 `unwrapped.updated` replaces the whole list whenever it changes. See
 "Agents without a stagent session" under Harness hooks for what is recorded
 and for how long. A stagent before 0.4.0 omits the field.
+
+`stopped` (since 0.21.0) lists the stopped agents (`StoppedAgent`, newest
+`found_at` first; GLOSSARY 止まった agent; empty on hosts other than Linux
+and macOS), and `stopped.updated` replaces the whole list whenever it
+changes. See "Stopped agents". A stagent before 0.21.0 omits the field.
+
+The daemon's local IPC (not forwarded from the app) has two methods for
+the bridge's `stopped.resume`, both refused with `agent_refused` to a
+coding agent's process tree and `unsupported` off Linux and macOS:
+`stopped.claim {id, session_id}` → `{agent?, session?}` — `session`: the
+live session that carries the stopped agent's conversation (or that an
+earlier claim's session started), start nothing; `agent`: the stopped
+agent, now claimed for `session_id` until that session registers (which
+drops it from the list) or 60 s pass; `busy` while another `session_id`'s
+claim holds, `not_found` for an unknown id — and `stopped.unclaim {id,
+session_id}` → `{}`, releasing that claim.
 
 `config.set` applies its `config` merge patch to `config.json` as stored:
 only the keys present in the patch change, `null` deletes a key, nested
@@ -2779,7 +2876,9 @@ flight fail with `unavailable` and the bridge restores the watch itself:
 events the app missed arrive as `event`, every current session as
 `session.updated`, sessions that disappeared as `session.removed`, every
 current task as `task.updated`, tasks that disappeared as `task.removed`,
-and the current `unwrapped` list (empty after a restart) as `unwrapped.updated`. The
+the current `unwrapped` list (empty after a restart) as `unwrapped.updated`,
+and the current `stopped` list as `stopped.updated` (empty from a stagent
+before 0.21.0). The
 app needs no daemon-restart handling. Session requests go to the holders
 directly and are unaffected.
 
@@ -2848,6 +2947,7 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 | `closed` | `{id, exit_code}` |
 | `transcript` | `{session_id?, path, messages[]}` |
 | `unwrapped.updated` | `{unwrapped[]}` (the whole current list of `UnwrappedLaunch`; replaces the previous one) |
+| `stopped.updated` | `{stopped[]}` (the whole current list of `StoppedAgent`; replaces the previous one; since 0.21.0) |
 | `task.updated` | `Task` (full object, added or changed; replaces the previous one) |
 | `task.removed` | `{id, kept_branch?}` — `kept_branch`: the branch `task.remove` kept (see "Removing a task") |
 | `schedule.changed` | `{id, entry?}` — `entry`: the `ScheduleEntry` now, omitted when the schedule was removed (see "Schedules") |
@@ -3047,6 +3147,13 @@ in an SSH session, where the PowerShell wrapper does not wrap and the agent
 ends with the connection (start it in a kept shell); `no_terminal`
 (Windows) — no marker and no shell above the agent: a program started it
 without a terminal (cannot be shown).
+
+`StoppedAgent` (since 0.21.0): `id` (the old session's), `harness
+(claude|codex|omp|pi|copilot)`, `conversation_id`, `cwd`, `title?`,
+`task_id?`, `started_at` (the old session's), `found_at` (when the daemon
+found it stopped; unix ms, host clock), `reason (reboot|lost)`: `reboot` —
+the host restarted under it; `lost` — its holder went away otherwise (see
+"Stopped agents").
 
 `Message`: `role (user|assistant|tool|system), text, tool_name?, time?,
 ask?`. `ask` (since 0.20.0, #1550) marks the two rows of an agent's

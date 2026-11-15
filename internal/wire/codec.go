@@ -71,7 +71,8 @@ const (
 	// ErrBusy: task.remove found live sessions of the task it was not
 	// asked to stop, or could not stop them.
 	// schedule.run_now: the schedule's previous run is still running;
-	// schedule.remove: its running run did not stop.
+	// schedule.remove: its running run did not stop. stopped.resume
+	// (stopped.claim): another resume of the stopped agent is starting.
 	ErrBusy = "busy"
 	// ErrRefused: task.remove or worktree.remove found a refusal reason
 	// (RemoveRefusal), which neither force nor stop_sessions overrides;

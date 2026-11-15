@@ -91,12 +91,35 @@ func TestRegistryEntriesComplete(t *testing.T) {
 			t.Errorf("entry %+v: id empty, other or duplicated", h)
 		}
 		seen[h.ID] = true
-		if h.Command == "" || len(h.Packages) == 0 || h.TranscriptRoot == nil {
-			t.Errorf("%s: command, package and transcript root are required", h.ID)
+		if h.Command == "" || len(h.Packages) == 0 || h.TranscriptRoot == nil || h.Resume == nil {
+			t.Errorf("%s: command, package, transcript root and resume are required", h.ID)
 		}
 		if Name(h.Command) != h.ID {
 			t.Errorf("%s: its command %q is judged %q", h.ID, h.Command, Name(h.Command))
 		}
+	}
+}
+
+// Each harness continues a conversation the way the app's resumeCommand
+// does; an unknown harness has none.
+func TestResumeArgv(t *testing.T) {
+	want := map[string][]string{
+		wire.HarnessClaude:  {"claude", "--resume", "c1"},
+		wire.HarnessCodex:   {"codex", "resume", "c1"},
+		wire.HarnessCopilot: {"copilot", "--resume=c1"},
+		wire.HarnessOmp:     {"omp", "--resume", "c1"},
+		wire.HarnessPi:      {"pi", "--session", "c1"},
+	}
+	if m := Missing(want); len(m) > 0 {
+		t.Fatalf("no expected resume command for %v", m)
+	}
+	for id, argv := range want {
+		if got, ok := ResumeArgv(id, "c1"); !ok || !slices.Equal(got, argv) {
+			t.Errorf("%s: resume %q, %v; want %q", id, got, ok, argv)
+		}
+	}
+	if got, ok := ResumeArgv(wire.HarnessOther, "c1"); ok {
+		t.Errorf("other: resume %q", got)
 	}
 }
 

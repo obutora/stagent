@@ -293,6 +293,8 @@ func (b *Bridge) dispatch(m *wire.Msg) {
 		b.enqueue(targetSpawn, m, b.spawn)
 	case m.Method == wire.MethodTaskCreate:
 		b.enqueue(targetSpawn, m, b.taskCreate)
+	case m.Method == wire.MethodStoppedResume:
+		b.enqueue(targetSpawn, m, b.stoppedResume)
 	case m.Method == wire.MethodTaskRemove:
 		b.enqueue(targetRemove, m, b.taskRemove)
 	case m.Method == wire.MethodTaskPreview:
@@ -356,6 +358,10 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	// The daemon runs schedules on Linux and macOS only.
 	if wire.SchedulesServedOn(b.goos) {
 		caps = append(caps, wire.CapSchedules)
+	}
+	// The daemon keeps stopped agents on Linux and macOS only.
+	if wire.StoppedAgentsServedOn(b.goos) {
+		caps = append(caps, wire.CapStoppedAgents)
 	}
 	res := wire.HelloResult{
 		Protocol:     version.Protocol,
@@ -747,6 +753,11 @@ func (b *Bridge) noteWatch(dc *daemonConn, result json.RawMessage, publish bool)
 		unwrapped = []wire.UnwrappedLaunch{}
 	}
 	b.out.Notify(wire.NotifyUnwrappedUpdated, wire.UnwrappedUpdatedParams{Unwrapped: unwrapped})
+	stopped := res.Stopped
+	if stopped == nil {
+		stopped = []wire.StoppedAgent{}
+	}
+	b.out.Notify(wire.NotifyStoppedUpdated, wire.StoppedUpdatedParams{Stopped: stopped})
 }
 
 // resubscribe restores the app's watch after the daemon connection dropped

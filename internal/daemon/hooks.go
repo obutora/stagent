@@ -121,7 +121,7 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 		d.notifyLocked(s, wire.NotificationData{Title: label, Body: notify.Text(lang, notify.PhraseTurnComplete), Level: wire.LevelInfo, Reason: reasonTurnComplete}, nil)
 	}
 	if changed && s != nil {
-		d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+		d.sessionChangedLocked(s)
 	}
 	d.mu.Unlock()
 
@@ -313,7 +313,7 @@ func (d *Daemon) resolveLocked(ap *approval) {
 	}
 	s.track = s.track.hookClear()
 	if d.recomputeLocked(s, false) {
-		d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+		d.sessionChangedLocked(s)
 	}
 }
 

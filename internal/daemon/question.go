@@ -93,7 +93,7 @@ func (d *Daemon) holderQuestionGone(cs *connState, p wire.HolderPromptGoneParams
 	changed := d.recomputeLocked(s, false)
 	d.settlePushLocked(s)
 	if changed {
-		d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+		d.sessionChangedLocked(s)
 	}
 }
 

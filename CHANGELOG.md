@@ -3,6 +3,34 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.21.0
+
+### Added
+
+- Stopped agents (止まった agent, #1583): on Linux and macOS the daemon
+  keeps a note of the coding agent of every live session (harness,
+  conversation, cwd, title, task; schedule runs excluded) in
+  `state/agents.json` with the host's boot id (Linux
+  `/proc/sys/kernel/random/boot_id`, macOS `kern.bootsessionuuid`). When
+  it starts after a reboot those agents are stopped agents (`reason:
+  reboot`); one whose holder went away without the agent ending is
+  (`reason: lost`) — at once while the daemon runs, or at its next start
+  in the same boot when the holder no longer answers. An agent that ended
+  normally is not. `watch` lists them (`stopped`, `StoppedAgent`) and
+  `stopped.updated` replaces the list; the bridge sends it again after
+  restoring a watch. A stopped agent stays until it is resumed, removed
+  (`stopped.remove`), continued in another session, or 7 days. The
+  bridge's `stopped.resume {id, cols, rows, env?}` starts a new kept shell
+  in the agent's cwd, tied to its task, running `/bin/sh -c "trap : INT;
+  <resume command>; exec '<login shell>' -l"` (the harness registry's
+  `Resume`: `claude --resume <id>`, `codex resume <id>`, `copilot
+  --resume=<id>`, `omp --resume <id>`, `pi --session <id>`), or answers
+  the live session that already carries the conversation (`existed:
+  true`). Coding agents' process trees are refused (ADR 0004).
+  Capability `stopped_agents` (PROTOCOL.md "Stopped agents"). A holder
+  that registers again after a daemon restart gets its agent's
+  conversation back at once instead of at the agent's next hook.
+
 ## 0.20.0
 
 ### Added

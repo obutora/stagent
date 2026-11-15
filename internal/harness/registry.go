@@ -43,6 +43,10 @@ type Harness struct {
 	// choice question ("" when it has none): its hooks and transcript rows
 	// naming it are a question (PROTOCOL.md "Questions").
 	QuestionTool string
+	// Resume is the arguments after Command that continue conversation id
+	// in the terminal UI: what the app's resumeCommand runs and what
+	// stopped.resume starts (ResumeArgv).
+	Resume func(id string) []string
 }
 
 // Batch describes the arguments that make a harness run without its
@@ -75,6 +79,7 @@ var All = []Harness{
 		},
 		HookHeldForPrompt: true,
 		QuestionTool:      "AskUserQuestion",
+		Resume:            func(id string) []string { return []string{"--resume", id} },
 	},
 	{
 		ID:      wire.HarnessCodex,
@@ -92,6 +97,7 @@ var All = []Harness{
 			return filepath.Join(home, ".codex")
 		},
 		QuestionTool: "request_user_input",
+		Resume:       func(id string) []string { return []string{"resume", id} },
 	},
 	{
 		ID:       wire.HarnessOmp,
@@ -102,6 +108,7 @@ var All = []Harness{
 			return filepath.Join(home, ".omp", "agent", "sessions")
 		},
 		QuestionTool: "ask",
+		Resume:       func(id string) []string { return []string{"--resume", id} },
 	},
 	{
 		ID:      wire.HarnessPi,
@@ -121,6 +128,7 @@ var All = []Harness{
 		TranscriptRoot: func(home string, getenv func(string) string) string {
 			return filepath.Join(PiAgentDir(home, getenv), "sessions")
 		},
+		Resume: func(id string) []string { return []string{"--session", id} },
 	},
 	{
 		ID:      wire.HarnessCopilot,
@@ -140,6 +148,7 @@ var All = []Harness{
 		TranscriptRoot: func(home string, getenv func(string) string) string {
 			return filepath.Join(CopilotHome(home, getenv), "session-state")
 		},
+		Resume: func(id string) []string { return []string{"--resume=" + id} },
 	},
 }
 
@@ -205,6 +214,16 @@ func QuestionToolHarness(tool string) (Harness, bool) {
 func Known(id string) bool {
 	_, ok := Lookup(id)
 	return ok
+}
+
+// ResumeArgv is the command line that continues conversation conv of
+// harness id (its Command first); false for an unknown harness.
+func ResumeArgv(id, conv string) ([]string, bool) {
+	h, ok := Lookup(id)
+	if !ok {
+		return nil, false
+	}
+	return append([]string{h.Command}, h.Resume(conv)...), true
 }
 
 // ClaudeConfigDir is the directory Claude Code keeps its files in, the

@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/obutora/stagent/internal/bootid"
 	"github.com/obutora/stagent/internal/bootstrap"
 	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/eventlog"
@@ -111,6 +112,10 @@ type Options struct {
 	OmpBin          func() string
 	Omp             usage.OmpUsage
 	OmpHistoryEvery time.Duration
+	// BootID reads the id of the host's current boot ("" when unknown;
+	// default bootid.Get): agents.json recorded in another boot means the
+	// host restarted (stopped.go).
+	BootID func() string
 }
 
 const (
@@ -205,6 +210,18 @@ type Daemon struct {
 	apiOpened bool
 	apiMu     sync.Mutex
 
+	// Stopped agents (stopped.go): bootID is the current boot's; agents
+	// the records of live sessions' agents, by session id; stopped the
+	// stopped agents; claims the stopped.claim in force, by stopped agent
+	// id; resumed the session that continued each stopped agent that went
+	// that way; agentsSave the pending write of agents.json.
+	bootID     string
+	agents     map[string]*agentRec
+	stopped    []wire.StoppedAgent
+	claims     map[string]stoppedClaim
+	resumed    map[string]string
+	agentsSave *time.Timer
+
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
 	wg           sync.WaitGroup
@@ -289,6 +306,9 @@ func New(opts Options) (*Daemon, error) {
 	if opts.OmpHistoryEvery <= 0 {
 		opts.OmpHistoryEvery = defaultOmpHistoryEvery
 	}
+	if opts.BootID == nil {
+		opts.BootID = bootid.Get
+	}
 	l := opts.Layout
 	if err := l.EnsureDirs(); err != nil {
 		return nil, err
@@ -359,6 +379,10 @@ func New(opts Options) (*Daemon, error) {
 		alerts:     usage.OpenAlerts(l.UsageAlerts),
 		usageNudge: make(chan struct{}, 1),
 		apiNudge:   make(chan struct{}, 1),
+
+		agents:  map[string]*agentRec{},
+		claims:  map[string]stoppedClaim{},
+		resumed: map[string]string{},
 	}
 	// Errors of a private API turned off while the daemon was down.
 	for _, h := range privateAPIHarnesses {
@@ -376,6 +400,7 @@ func New(opts Options) (*Daemon, error) {
 		d.sender.SendDigest(cfg, ns)
 	})
 	d.restoreChat()
+	d.restoreAgents()
 	// A preparing task's holder registers again shortly after a restart;
 	// the review fails those whose session does not come back. A removal
 	// the restart cut short is over: the task is ready again, its stage
@@ -491,6 +516,18 @@ func (d *Daemon) Shutdown() {
 		if d.usageTimer != nil {
 			d.usageTimer.Stop()
 		}
+		// A pending write of agents.json is done now (the host may be
+		// shutting down).
+		if d.agentsSave != nil {
+			d.agentsSave.Stop()
+			d.agentsSave = nil
+			d.saveAgentsLocked()
+		}
+		for _, r := range d.agents {
+			if r.prune != nil {
+				r.prune.Stop()
+			}
+		}
 		conns := make([]*connState, 0, len(d.conns))
 		var holders []*rpc.Conn
 		for cs := range d.conns {
@@ -571,8 +608,9 @@ func (d *Daemon) serveConn(nc net.Conn) {
 
 // agentRefusal is the error for the methods a connection from a coding
 // agent's process tree may not call (ADR 0004): those that change settings
-// or stop the daemon, and those that change tasks or schedules. Hooks,
-// holders and readers (task.list, schedule.list included) are served.
+// or stop the daemon, and those that change tasks, schedules or stopped
+// agents (or start one: stopped.claim). Hooks, holders and readers
+// (task.list, schedule.list included) are served.
 func (d *Daemon) agentRefusal(cs *connState) *wire.Error {
 	if cs.refusal != nil && !cs.logged {
 		cs.logged = true
@@ -588,7 +626,8 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		wire.MethodTaskSetup, wire.MethodTaskAwaitSetup,
 		wire.MethodScheduleCreate,
 		wire.MethodScheduleUpdate, wire.MethodScheduleRemove, wire.MethodSchedulePause, wire.MethodScheduleResume,
-		wire.MethodScheduleRunNow:
+		wire.MethodScheduleRunNow,
+		wire.MethodStoppedRemove, wire.MethodStoppedClaim, wire.MethodStoppedUnclaim:
 		if werr := d.agentRefusal(cs); werr != nil {
 			return nil, werr
 		}
@@ -599,6 +638,12 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		wire.MethodScheduleRunNow, wire.MethodScheduleOutput:
 		if !schedulesServed {
 			return nil, wire.Errorf(wire.ErrUnsupported, "%s: schedules run on Linux and macOS only", m.Method)
+		}
+	}
+	switch m.Method {
+	case wire.MethodStoppedRemove, wire.MethodStoppedClaim, wire.MethodStoppedUnclaim:
+		if !stoppedServed {
+			return nil, wire.Errorf(wire.ErrUnsupported, "%s: stopped agents are kept on Linux and macOS only", m.Method)
 		}
 	}
 	switch m.Method {
@@ -797,6 +842,28 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		}
 		return d.taskAwaitSetup(cs.c, m.ID, p)
 
+	// bridge → daemon (stopped agents)
+	case wire.MethodStoppedRemove:
+		var p wire.StoppedRef
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		d.stoppedRemove(p.ID)
+		return struct{}{}, nil
+	case wire.MethodStoppedClaim:
+		var p wire.StoppedClaimParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return d.stoppedClaim(p)
+	case wire.MethodStoppedUnclaim:
+		var p wire.StoppedClaimParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		d.stoppedUnclaim(p)
+		return struct{}{}, nil
+
 	// install / doctor → daemon
 	case wire.MethodDaemonStatus:
 		return d.status(), nil
@@ -960,6 +1027,7 @@ func (d *Daemon) watch(cs *connState, id *int64, p wire.WatchParams) {
 		Approvals: d.approvalListLocked(),
 		Unwrapped: d.unwrappedListLocked(),
 		Tasks:     d.taskListLocked(),
+		Stopped:   d.stoppedListLocked(),
 		Seq:       d.log.Seq(),
 		Missed:    missed,
 		Truncated: truncated,

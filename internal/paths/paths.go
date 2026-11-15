@@ -55,7 +55,11 @@ type Layout struct {
 	// <StateDir>/schedule-runs
 	Schedules    string
 	ScheduleRuns string
-	UsageIndex   string // <StateDir>/usage-index.json — the usage counted from the transcripts; only the daemon writes it
+	// StoppedAgents holds the agents of live sessions and the stopped
+	// agents (止まった agent) with the boot they were recorded in; only
+	// the daemon writes it: <StateDir>/agents.json
+	StoppedAgents string
+	UsageIndex    string // <StateDir>/usage-index.json — the usage counted from the transcripts; only the daemon writes it
 	// UsageLimits holds the last value of every limit window (上限の枠),
 	// per account; only the daemon writes it: <StateDir>/usage-limits.json
 	UsageLimits string
@@ -127,6 +131,7 @@ func resolve(home string, isolated bool) (*Layout, error) {
 	l.SetupApprovals = filepath.Join(l.StateDir, "setup-approvals.json")
 	l.Schedules = filepath.Join(l.StateDir, "schedules.json")
 	l.ScheduleRuns = filepath.Join(l.StateDir, "schedule-runs")
+	l.StoppedAgents = filepath.Join(l.StateDir, "agents.json")
 	l.UsageIndex = filepath.Join(l.StateDir, "usage-index.json")
 	l.UsageLimits = filepath.Join(l.StateDir, "usage-limits.json")
 	l.UsageAlerts = filepath.Join(l.StateDir, "usage-alerts.json")

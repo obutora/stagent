@@ -60,6 +60,7 @@ var DaemonMethods = map[string]bool{
 	MethodScheduleRunNow: true,
 	MethodScheduleOutput: true,
 	MethodUsageGet:       true,
+	MethodStoppedRemove:  true,
 }
 
 // HolderMethods are forwarded by the bridge to the session's holder.
@@ -134,9 +135,13 @@ type WatchResult struct {
 	Unwrapped []UnwrappedLaunch `json:"unwrapped"`
 	// Tasks: every task, in the order they were created; task.updated and
 	// task.removed follow the changes.
-	Tasks  []Task  `json:"tasks"`
-	Seq    int64   `json:"seq"` // latest seq at subscription time
-	Missed []Event `json:"missed"`
+	Tasks []Task `json:"tasks"`
+	// Stopped: the stopped agents (Linux and macOS; empty elsewhere),
+	// newest found_at first; stopped.updated replaces the list. Older
+	// stagent versions omit it.
+	Stopped []StoppedAgent `json:"stopped"`
+	Seq     int64          `json:"seq"` // latest seq at subscription time
+	Missed  []Event        `json:"missed"`
 	// Truncated: events between Since and Missed[0] were dropped by retention.
 	Truncated bool `json:"truncated"`
 }

@@ -421,6 +421,7 @@ func TestWatchIsRestoredAfterDaemonRestart(t *testing.T) {
 		return wire.WatchResult{
 			Sessions: []wire.Session{{ID: idA}, {ID: "cccccccccccccccc"}},
 			Missed:   []wire.Event{{Seq: 7, Kind: wire.EventSessionEnded, SessionID: idB}},
+			Stopped:  []wire.StoppedAgent{{ID: idB, Harness: wire.HarnessClaude, ConversationID: "conv-b", Reason: wire.StoppedLost}},
 			Seq:      7,
 		}, nil
 	})
@@ -456,6 +457,12 @@ func TestWatchIsRestoredAfterDaemonRestart(t *testing.T) {
 	// app's list is replaced by an empty one.
 	if p := a.nextNotify(t, wire.NotifyUnwrappedUpdated).Params; string(p) != `{"unwrapped":[]}` {
 		t.Fatalf("unwrapped.updated after resubscribe = %s", p)
+	}
+	// The stopped agents the restarted daemon found replace the app's.
+	var stopped wire.StoppedUpdatedParams
+	json.Unmarshal(a.nextNotify(t, wire.NotifyStoppedUpdated).Params, &stopped)
+	if len(stopped.Stopped) != 1 || stopped.Stopped[0].ID != idB || stopped.Stopped[0].Reason != wire.StoppedLost {
+		t.Fatalf("stopped.updated after resubscribe = %+v", stopped)
 	}
 	select {
 	case fg := <-foreground:
