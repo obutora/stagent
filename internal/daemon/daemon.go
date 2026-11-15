@@ -608,9 +608,10 @@ func (d *Daemon) serveConn(nc net.Conn) {
 
 // agentRefusal is the error for the methods a connection from a coding
 // agent's process tree may not call (ADR 0004): those that change settings
-// or stop the daemon, and those that change tasks, schedules or stopped
-// agents (or start one: stopped.claim). Hooks, holders and readers
-// (task.list, schedule.list included) are served.
+// or stop the daemon, those that change tasks, schedules or stopped agents
+// (or start one: stopped.claim), and session.end, which ends a session.
+// Hooks, holders and readers (task.list, schedule.list included) are
+// served.
 func (d *Daemon) agentRefusal(cs *connState) *wire.Error {
 	if cs.refusal != nil && !cs.logged {
 		cs.logged = true
@@ -627,7 +628,8 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		wire.MethodScheduleCreate,
 		wire.MethodScheduleUpdate, wire.MethodScheduleRemove, wire.MethodSchedulePause, wire.MethodScheduleResume,
 		wire.MethodScheduleRunNow,
-		wire.MethodStoppedRemove, wire.MethodStoppedClaim, wire.MethodStoppedUnclaim:
+		wire.MethodStoppedRemove, wire.MethodStoppedClaim, wire.MethodStoppedUnclaim,
+		wire.MethodSessionEnd:
 		if werr := d.agentRefusal(cs); werr != nil {
 			return nil, werr
 		}
@@ -863,6 +865,17 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		}
 		d.stoppedUnclaim(p)
 		return struct{}{}, nil
+
+	// bridge → daemon (a session whose holder does not answer)
+	case wire.MethodSessionEnd:
+		var p wire.SessionEndParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		// Answered once the end is recorded, which can take endGrace,
+		// without holding up the connection's other requests meanwhile.
+		go func() { cs.c.ReplyResult(m.ID, struct{}{}, d.sessionEnd(p)) }()
+		return rpc.Async, nil
 
 	// install / doctor → daemon
 	case wire.MethodDaemonStatus:

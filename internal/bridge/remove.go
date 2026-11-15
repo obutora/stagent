@@ -450,16 +450,15 @@ func (b *Bridge) stopAll(ctx context.Context, dc *daemonConn, of func(wire.Sessi
 
 // stopSessions hangs up the sessions ids, kills those still live after
 // stopHangupWait and returns the ones still live stopKillWait after that.
+// A session whose holder does not answer is ended by the daemon
+// (endSession).
 func (b *Bridge) stopSessions(ctx context.Context, dc *daemonConn, of func(wire.Session) bool, ids []string) ([]string, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	signal := func(ids []string, sig string) {
 		for _, id := range ids {
-			if c, err := b.holderConn(id); err == nil {
-				var none struct{}
-				c.Call(ctx, wire.MethodSessionSignal, wire.SignalParams{ID: id, Signal: sig}, &none)
-			}
+			b.endSession(ctx, id, sig)
 		}
 	}
 	await := func(ids []string, d time.Duration) ([]string, error) {

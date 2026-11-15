@@ -1567,6 +1567,30 @@ code (see "Push notifications"). On Windows, a passthrough session whose
 console closes (the user closes the window it runs in; Windows has no
 handoff) is hung up the same way and recorded as a `hangup` too.
 
+A `terminate`, `kill` or `hangup` whose holder does not answer (since
+0.21.1) — nothing serves its socket (`stagent uninstall --level purge` or
+a tmp cleaner deleted it, the holder stopped accepting), the holder went
+away, or it gave no answer within 5 seconds — is carried out by the
+daemon, which may still list the session as live: the bridge sends it
+`session.end {id, signal}` (local IPC, refused to a coding agent's
+process tree) and answers `{}` once the end is recorded. The daemon gives
+the session's program (its process group, and the terminal's foreground
+job) the signal (Windows: `TerminateProcess(…, 1)`), waits up to 3
+seconds for the holder to report the exit (`holder.ended`; a `hangup`
+counts as one even though the holder did not get it), and otherwise
+records the end itself — the signal's exit code (`128 + signal`, 137 when
+the program had to be killed; Windows 1), `hung_up` for a `hangup` —
+and kills the program's process group and the holder. It finds them by
+the `pid` and `holder_pid` the holder registered: the holder counts when
+it holds the session's holder connection or started when the session did
+(`started_at`), the program when it is that holder's child or started
+when the session did, so a reused pid is left alone. A session the daemon
+does not list as live is already over: `{}`. A daemon before 0.21.1
+answers `unknown_method`, and the bridge answers `not_found` (`no holder
+answers`, `holder went away` or `holder does not answer`). `interrupt` is
+never carried out this way. Removing a task or a worktree hangs its
+sessions up the same way.
+
 `session.input` `local: true` is what a client relaying a person's typing
 at a terminal sends: `stagent attach`, and the desktop app's terminal tab
 (with the focus reports, when the program turned them on). It counts as

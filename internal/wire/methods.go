@@ -388,6 +388,15 @@ const (
 	// naming its question tool, which is answered at once.
 	MethodHookEvent = "hook.event" // HookEventParams → {}
 
+	// bridge → daemon (since 0.21.1), SessionEndParams → {}: end a session
+	// its holder does not answer for — its socket is gone, nothing accepts
+	// on it, or the holder went away or stayed silent on session.signal.
+	// The daemon signals the session's program (and kills it and the
+	// holder when they outlast the grace) and records the end; a session it
+	// does not list as live is already over. Refused to coding agents'
+	// process trees.
+	MethodSessionEnd = "session.end"
+
 	// install / doctor → daemon
 	MethodDaemonStatus   = "daemon.status"   // → DaemonStatus
 	MethodDaemonShutdown = "daemon.shutdown" // → {}
@@ -412,6 +421,13 @@ const (
 
 type HolderRegisterResult struct {
 	IdleAfterMs int `json:"idle_after_ms"`
+}
+
+// SessionEndParams names the session session.end ends and the signal
+// (SignalHangup, SignalTerminate or SignalKill) its program gets first.
+type SessionEndParams struct {
+	ID     string `json:"id"`
+	Signal string `json:"signal"`
 }
 
 // HolderPromptWatchParams starts (on) or ends a prompt watch. Gen names

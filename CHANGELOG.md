@@ -3,6 +3,30 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.21.1
+
+### Fixed
+
+- Ending a session whose holder does not answer (終了 failing with "no
+  holder answers"): a holder can stay registered — its session listed as
+  live — while nothing answers on its socket: `stagent uninstall --level
+  purge` (the app's "remove stagent from the server") or a tmp cleaner
+  deleted it, the holder stopped accepting, or it hangs. `session.signal`
+  `hangup`, `terminate` or `kill` then failed and the session stayed in
+  the list until its program exited on its own. When no holder answers —
+  no socket, the holder went away, or no answer within 5 s — the bridge
+  now has the daemon end the session (local IPC `session.end {id,
+  signal}`): it gives the program's process group and the terminal's
+  foreground job the signal, waits up to 3 s for the holder to report the
+  exit, then kills the program and the holder and records the end itself
+  (a hangup still counts as one). The processes are found by the pids
+  the holder registered, and count only as the holder's child or the
+  process holding its daemon connection, or by a start time matching the
+  session's: a reused pid is left alone. Holders started before the
+  update are ended the same way. Removing a task or a worktree ends such
+  sessions too instead of failing with sessions that did not stop. A
+  daemon before 0.21.1 answers as before (PROTOCOL.md "Session").
+
 ## 0.21.0
 
 ### Added

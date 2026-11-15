@@ -61,6 +61,11 @@ const (
 	maxResubBackoff = 5 * time.Second
 	resubscribeFor  = 2 * time.Minute
 	drainWait       = 3 * time.Second
+	// holderEndWait: how long a holder may take to answer a session.signal
+	// that ends its session before the daemon ends it (endSession).
+	holderEndWait = 5 * time.Second
+	// daemonEndWait bounds session.end (the daemon's endGrace and more).
+	daemonEndWait = 15 * time.Second
 )
 
 // Queue keys of the per-target workers (holders use "h:<session id>").
@@ -84,6 +89,7 @@ type Bridge struct {
 	dialHolder        func(id string, timeout time.Duration) (net.Conn, error)
 	blocked           func() *paths.OwnerError // see ipc.Blocked
 	spawnWait         time.Duration
+	holderEndWait     time.Duration
 	resubscribeFor    time.Duration
 	// agentRefusal tells whether this bridge runs in a coding agent's
 	// process tree, where the holders it starts refuse it (ADR 0004).
@@ -146,6 +152,7 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 	b := &Bridge{
 		l:              l,
 		spawnWait:      spawnWait,
+		holderEndWait:  holderEndWait,
 		resubscribeFor: resubscribeFor,
 		ctx:            ctx,
 		cancel:         cancel,
@@ -515,13 +522,94 @@ func (b *Bridge) forward(c *rpc.Client, m *wire.Msg, lost *wire.Error, onResult 
 // ---------------------------------------------------------------------------
 // Holders
 
+// forwardHolder forwards m to the holder of session id. A session.signal
+// that ends the session goes through endSession.
 func (b *Bridge) forwardHolder(id string, m *wire.Msg) {
+	if sig, ok := endingSignal(m); ok {
+		resp, err := b.endSession(b.ctx, id, sig)
+		switch {
+		case err != nil:
+			b.replyResult(m.ID, nil, err)
+		case resp != nil:
+			b.relayResponse(m.ID, resp)
+		default:
+			b.out.Reply(m.ID, struct{}{})
+		}
+		return
+	}
 	c, err := b.holderConn(id)
 	if err != nil {
 		b.out.ReplyError(m.ID, upstreamError(err, wire.Errorf(wire.ErrNotFound, "session %s: no holder answers", id)))
 		return
 	}
 	b.forward(c, m, wire.Errorf(wire.ErrNotFound, "session %s: holder went away", id), nil)
+}
+
+// endingSignal returns the signal of a session.signal that ends the
+// session: hangup, terminate or kill.
+func endingSignal(m *wire.Msg) (string, bool) {
+	if m.Method != wire.MethodSessionSignal {
+		return "", false
+	}
+	var p wire.SignalParams
+	if rpc.Decode(m, &p) != nil {
+		return "", false
+	}
+	switch p.Signal {
+	case wire.SignalHangup, wire.SignalTerminate, wire.SignalKill:
+		return p.Signal, true
+	}
+	return "", false
+}
+
+// endSession sends the ending signal sig (hangup, terminate, kill) to the
+// holder of session id and returns its answer. When no holder answers —
+// its socket is gone or nothing accepts on it, it went away, or it stayed
+// silent for holderEndWait — the daemon ends the session (session.end; a
+// nil answer): such a holder can stay registered, its session listed as
+// live, and nothing else would ever end it. A daemon before 0.21.0 cannot:
+// then the error says no holder answers.
+func (b *Bridge) endSession(ctx context.Context, id, sig string) (*wire.Msg, error) {
+	params, err := json.Marshal(wire.SignalParams{ID: id, Signal: sig})
+	if err != nil {
+		return nil, err
+	}
+	unreachable := wire.Errorf(wire.ErrNotFound, "session %s: no holder answers", id)
+	c, err := b.holderConn(id)
+	var oe *paths.OwnerError
+	switch {
+	case errors.As(err, &oe):
+		return nil, upstreamError(err, nil) // another user's socket
+	case err == nil:
+		hctx, cancel := context.WithTimeout(ctx, b.holderEndWait)
+		resp, cerr := c.CallRaw(hctx, wire.MethodSessionSignal, params)
+		cancel()
+		if cerr == nil {
+			return resp, nil
+		}
+		if errors.Is(cerr, rpc.ErrClosed) {
+			unreachable = wire.Errorf(wire.ErrNotFound, "session %s: holder went away", id)
+		} else {
+			unreachable = wire.Errorf(wire.ErrNotFound, "session %s: holder does not answer", id)
+		}
+	}
+	dc, err := b.daemonConn(b.dialDaemon)
+	if err != nil {
+		return nil, unreachable
+	}
+	dctx, cancel := context.WithTimeout(ctx, daemonEndWait)
+	defer cancel()
+	err = dc.c.Call(dctx, wire.MethodSessionEnd, wire.SessionEndParams{ID: id, Signal: sig}, nil)
+	var we *wire.Error
+	switch {
+	case err == nil:
+		return nil, nil
+	case errors.As(err, &we) && we.Code == wire.ErrUnknownMethod:
+		return nil, unreachable
+	case we != nil:
+		return nil, we
+	}
+	return nil, wire.Errorf(wire.ErrUnavailable, "%s; the daemon did not end it: %v", unreachable.Message, err)
 }
 
 // holderConn returns the cached connection to a session's holder, dialing

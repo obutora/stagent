@@ -76,6 +76,11 @@ type session struct {
 	// with, cwd the session's cwd made canonical (task.CanonicalPath).
 	taskWant string
 	cwd      string
+
+	// endSignal is the signal session.end gave the session's program
+	// (sessionend.go): a hangup there is a hangup when the holder reports
+	// the exit it caused.
+	endSignal string
 }
 
 func (s *session) stopTimers() {
@@ -295,7 +300,7 @@ func (d *Daemon) holderEnded(cs *connState, p wire.ClosedParams) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if s := d.liveSessionLocked(cs, p.ID); s != nil {
-		d.endLocked(s, p.ExitCode, false, p.HungUp)
+		d.endLocked(s, p.ExitCode, false, p.HungUp || s.endSignal == wire.SignalHangup)
 	}
 }
 

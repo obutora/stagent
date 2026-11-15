@@ -43,7 +43,7 @@ func errCode(err error) string {
 // may report hooks and read (schedules and their runs, a schedule's
 // preview included), but not change settings, presence or notifications,
 // create, update, remove, pause, resume or run a schedule now, remove,
-// claim or unclaim a stopped agent, nor stop the daemon.
+// claim or unclaim a stopped agent, end a session, nor stop the daemon.
 func TestAgentRefusedMethods(t *testing.T) {
 	e := startDaemon(t, fastConfig(), Options{Guard: guardAs("claude")})
 	c, _ := e.client()
@@ -72,6 +72,7 @@ func TestAgentRefusedMethods(t *testing.T) {
 		{wire.MethodStoppedRemove, wire.StoppedRef{ID: "0123456789abcdef"}},
 		{wire.MethodStoppedClaim, wire.StoppedClaimParams{ID: "0123456789abcdef", SessionID: "fedcba9876543210"}},
 		{wire.MethodStoppedUnclaim, wire.StoppedClaimParams{ID: "0123456789abcdef", SessionID: "fedcba9876543210"}},
+		{wire.MethodSessionEnd, wire.SessionEndParams{ID: "0123456789abcdef", Signal: wire.SignalHangup}},
 	} {
 		if err := do(m.method, m.params); errCode(err) != wire.ErrAgentRefused {
 			t.Errorf("%s from an agent: %v, want %s", m.method, err, wire.ErrAgentRefused)
