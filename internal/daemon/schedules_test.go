@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,24 +16,6 @@ import (
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/wire"
 )
-
-// fakeClock is the wall clock schedules see; tests move it.
-type fakeClock struct {
-	mu sync.Mutex
-	t  time.Time
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.t
-}
-
-func (c *fakeClock) Set(t time.Time) {
-	c.mu.Lock()
-	c.t = t
-	c.mu.Unlock()
-}
 
 // spawned is one holder the daemon started for a schedule run.
 type spawned struct {

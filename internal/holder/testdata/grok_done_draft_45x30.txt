@@ -1,0 +1,31 @@
+|
+|  /V/S/o/n/s/v/gr… 120 / 128K │ [Dashboard]
+|
+|
+|     ❯ go #approval               1:30 AM
+|
+|
+|     ◈ Created mock_write.txt, ran 1 comm
+|
+|     All done: ran the command    1:30 AM
+|     and wrote mock_write.txt.
+|
+|     Worked for 9.2s
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  ╭───────────────────────────────────────╮
+|  │ ❯ draft one line from the PC          │
+|  │   second line                         │
+|  │   third line                          │
+|  ╰───────────── Mock (chat_completions) ─╯
+|
+|  Enter:send  │  Opt+Enter:newline
+|
+cursor=16,25 alt=true appCursor=false

@@ -20,7 +20,7 @@ import (
 const (
 	createBreakawayFromJob = 0x01000000
 	createNewProcessGroup  = 0x00000200
-	detachedProcess        = 0x00000008
+	createNoWindow         = 0x08000000
 )
 
 // TaskFolder is the Task Scheduler folder holding fallback spawn tasks.
@@ -28,6 +28,12 @@ const (
 const TaskFolder = `\stagent\`
 
 // SpawnDetached starts exe with args outside the caller's console and job.
+//
+// The process gets a console of its own that has no window
+// (CREATE_NO_WINDOW), not none at all (DETACHED_PROCESS): the console
+// programs it runs (git, gh, omp, codex …) share that hidden console. A
+// process without a console makes Windows open a new console window for
+// each of them, which flashed on screen whenever the daemon polled.
 //
 // Win32-OpenSSH puts every session in a kill-on-close job object, so a plain
 // child dies when the SSH connection closes. The process is first created
@@ -50,7 +56,7 @@ func start(exe string, args []string, dir string, env []string, logPath string) 
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: createBreakawayFromJob | createNewProcessGroup | detachedProcess,
+		CreationFlags: createBreakawayFromJob | createNewProcessGroup | createNoWindow,
 		HideWindow:    true,
 	}
 	if logPath != "" {

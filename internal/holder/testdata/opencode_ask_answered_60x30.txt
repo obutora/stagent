@@ -1,0 +1,31 @@
+|   Mock title                    +
+|  ┃
+|
+|     + 1 command
+|
+|     Build · Mock Model · 930ms · 606.1 tok/s · 3ms ttft ·
+|     interrupted
+|
+|  ┃
+|  ┃  pick one #ask
+|  ┃
+|
+|  ┃
+|  ┃  # Questions
+|  ┃
+|  ┃  Which color do you prefer?
+|  ┃  Green
+|  ┃
+|
+|     Thanks for answering.
+|
+|     Build · Mock Model · 15.1s · 240.0 tok/s · 3ms ttft
+|
+|  ┃
+|  ┃
+|  ┃
+|  ┃  Build · Mock Model Mock
+|  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+|  /…/ssh-…/verify/opencode/work  120 (0%)  ctrl+p commands
+|
+cursor=5,24 alt=true appCursor=false

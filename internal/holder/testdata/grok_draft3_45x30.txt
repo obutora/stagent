@@ -1,0 +1,31 @@
+|
+|  /V/S/o/n/s/v/g… 1.3K / 128K │ [Dashboard]
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  ╭───────────────────────────────────────╮
+|  │ ❯ draft one line from the PC          │
+|  │   second line                         │
+|  │   third line                          │
+|  ╰───────────── Mock (chat_completions) ─╯
+|
+|  Enter:send  │  Opt+Enter:newline
+|
+cursor=16,25 alt=true appCursor=false

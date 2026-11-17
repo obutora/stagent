@@ -1,0 +1,29 @@
+  [38;5;103m┌──────────────────────────────────────────────────────┐[39m
+  [38;5;103m│[39m [1m[38;5;183m>_ Qwen Code[0m[38;5;103m (v0.27.4)[39m                               [38;5;103m│[39m
+  [38;5;103m│[39m                                                      [38;5;103m│[39m
+  [38;5;103m│[39m [38;5;103mAPI Key | mock-model (/model to change)[39m              [38;5;103m│[39m
+  [38;5;103m│[39m [38;5;103m/Volumes/.../verify/qwen/work/proj[39m                   [38;5;103m│[39m
+  [38;5;103m└──────────────────────────────────────────────────────┘[39m
+  [38;5;103mTips: Add a QWEN.md file to give Qwen Code persistent [39m
+  [38;5;103mproject context.[39m
+  ●︎ No failed request to retry.
+  ●︎ Prompt stashed. It will be restored next time.
+  ●︎ Read context files: ~/.qwen/output-language.md
+
+  [38;5;183m>[39m [38;5;183mrun it #approval[39m
+  [38;5;103m?[39m [1mShell[0m [38;5;103mecho hello-from-mock > mock_shell.txt && cat [39m  ←
+    [38;5;103mmock_shell.txt (Run a command for the mock scenario)[39m
+
+     [38;5;153mecho hello-from-mock > mock_shell.txt && cat [39m
+     [38;5;153mmock_shell.txt[39m
+
+   Allow execution of: 'echo'?
+
+     1. Yes, allow once
+   [38;5;151m›[39m [38;5;151m2.[39m [38;5;151mAlways allow run 'echo *' commands in this pro…[39m
+     3. Always allow run 'echo *' commands for this us…
+     4. No, suggest changes (esc)
+
+
+  ⠏ [38;5;183mWaiting for user confirmation...[39m
+

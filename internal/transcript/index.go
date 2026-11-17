@@ -76,11 +76,14 @@ type format struct {
 }
 
 var formats = map[string]format{
-	wire.HarnessClaude:  claudeFormat,
-	wire.HarnessCodex:   codexFormat,
-	wire.HarnessOmp:     ompFormat,
-	wire.HarnessPi:      piFormat,
-	wire.HarnessCopilot: copilotFormat,
+	wire.HarnessClaude:   claudeFormat,
+	wire.HarnessCodex:    codexFormat,
+	wire.HarnessOmp:      ompFormat,
+	wire.HarnessPi:       piFormat,
+	wire.HarnessCopilot:  copilotFormat,
+	wire.HarnessQwen:     qwenFormat,
+	wire.HarnessOpenCode: openCodeFormat,
+	wire.HarnessGrok:     grokFormat,
 }
 
 // entry is the cached metadata of one transcript file.

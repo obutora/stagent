@@ -94,6 +94,45 @@ func TestLocateCopilotLauncherAndNativeBinary(t *testing.T) {
 	}
 }
 
+// Qwen Code runs in one node process, by the path it was invoked as (the
+// bin link qwen) or its package's script (a managed update), plus a
+// caffeinate it starts while it works.
+func TestLocateQwen(t *testing.T) {
+	tr := sshTree()
+	tr.add(102, 101, "node", "node", "/home/u/.npm-global/bin/qwen", "--approval-mode", "default", "--resume", "a2730fef").fg()
+	tr.add(103, 102, "caffeinate", "caffeinate", "-is").fg()
+	tr.add(104, 101, "node", "node", "--expose-gc", "/home/u/.qwen/updates/npm/x/versions/0.27.4/node_modules/@qwen-code/qwen-code/cli.js").bg()
+	loc := testLocator(&fakeMux{}).locate(tr.snapshot())
+	if got, want := summary(loc), "none|||qwen[102]* qwen[104]"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// OpenCode's terminal UI (its native binary, opencode.exe, by the path it
+// was invoked as) runs its private server as a child: one agent. The
+// server runs in a process group of its own, without the terminal.
+func TestLocateOpenCode(t *testing.T) {
+	tr := sshTree()
+	tr.add(102, 101, "opencode.exe", "/home/u/.npm/bin/opencode", "--standalone", "--session", "ses_1").fg()
+	tr.add(103, 102, "opencode.exe", "/home/u/.npm/lib/node_modules/@opencode/cli/bin/opencode.exe", "serve", "--stdio", "--port", "0").bg()
+	loc := testLocator(&fakeMux{}).locate(tr.snapshot())
+	if got, want := summary(loc), "none|||opencode[102 103]*"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// Grok Build is one native process, named after the binary its link
+// points to on macOS (cut to 15 characters) and run by the link's path.
+func TestLocateGrok(t *testing.T) {
+	tr := sshTree()
+	tr.add(102, 101, "grok-macos-aarc", "/home/u/.grok/bin/grok", "--resume", "01a1e529").fg()
+	tr.add(104, 101, "grok", "/home/u/.grok/bin/grok").bg()
+	loc := testLocator(&fakeMux{}).locate(tr.snapshot())
+	if got, want := summary(loc), "none|||grok[102]* grok[104]"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestLocateTmuxPane(t *testing.T) {
 	tr := sshTree()
 	// Linux names a tmux client "tmux: client" (macOS keeps "tmux").

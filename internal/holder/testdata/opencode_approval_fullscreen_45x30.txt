@@ -1,0 +1,31 @@
+| ! Mock title                    +
+|  ┃
+|  ┃  △ Permission required
+|  ┃
+|  ┃  $ echo hello-from-mock
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃   Allow once   Always allow   Reject
+|  ┃
+|  ┃  ctrl+f minimize  ⇆ select  enter confirm
+|  ┃
+|
+cursor=45,27 alt=true appCursor=false

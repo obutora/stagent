@@ -1,0 +1,31 @@
+|  └──────────────────────────────────────────────────────┘
+|  Tips: Type / to open the command popup; Tab
+|  autocompletes slash commands and saved prompts.
+|  ●︎ No failed request to retry.
+|  ●︎ Prompt stashed. It will be restored next time.
+|  ●︎ Read context files: ~/.qwen/output-language.md
+|
+|  > run it #approval
+|  ✓ Shell echo hello-from-mock > mock_shell.txt && cat
+|    mock_shell.txt (Run a command for the mock scenario)
+|    hello-from-mock
+|  - WriteFile Writing to mock_write.txt
+|    1 written by the mock model
+|
+|  > again #shell
+|  ✓ Shell echo hello-from-mock (Run a command for the mock
+|     scenario)
+|    hello-from-mock
+|
+|  ◆︎ The command printed hello-from-mock.
+|
+|  > take your time #slow
+|
+|  ◆︎ Finished after a slow think.
+|
+|────────────────────────────────────────────────────────────
+|>   Type your message or @path/to/file
+|────────────────────────────────────────────────────────────
+|  ➜ proj · mock-model
+|  ⏸ Ask permissions (shift + tab to cycle)
+cursor=2,26 alt=true appCursor=false

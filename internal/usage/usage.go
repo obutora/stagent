@@ -55,6 +55,9 @@ type reader struct {
 	// parse reads the request one complete line records, if any. st is
 	// what the earlier lines of the file said; parse updates it.
 	parse func(st *lineState, line []byte) (record, bool)
+	// start, when set, is what a file's path tells before its first line
+	// (Grok Build: the session and its directory are in the path).
+	start func(path string) lineState
 }
 
 // lineState is what the earlier lines of a file tell about its later ones
@@ -75,11 +78,14 @@ type lineState struct {
 // entry is a harness whose usage is not counted. Copilot CLI writes the
 // output tokens of a reply but not its input, so it is not counted.
 var readers = map[string]*reader{
-	wire.HarnessClaude:  claudeReader,
-	wire.HarnessCodex:   codexReader,
-	wire.HarnessOmp:     ompReader,
-	wire.HarnessPi:      ompReader,
-	wire.HarnessCopilot: nil,
+	wire.HarnessClaude:   claudeReader,
+	wire.HarnessCodex:    codexReader,
+	wire.HarnessOmp:      ompReader,
+	wire.HarnessPi:       ompReader,
+	wire.HarnessCopilot:  nil,
+	wire.HarnessQwen:     qwenReader,
+	wire.HarnessOpenCode: openCodeReader,
+	wire.HarnessGrok:     grokReader,
 }
 
 // Counted lists, in the order of harness.All, the harnesses whose usage is
@@ -267,6 +273,8 @@ func (s *Scanner) Scan(stop <-chan struct{}) (Stats, error) {
 		from, state := int64(0), lineState{}
 		if !reread {
 			from, state = prev.offset, prev.state
+		} else if c.r.start != nil {
+			state = c.r.start(c.path)
 		}
 		if s.BeforeFile != nil {
 			s.BeforeFile(c.path)

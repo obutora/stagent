@@ -58,6 +58,16 @@ func TestWrapperBatchMatchesRegistry(t *testing.T) {
 				[]string{b.Mode, "json"}, []string{b.Mode, b.ModeInteractive, "x"}, []string{b.Mode},
 				[]string{b.Mode + "=json"}, []string{b.Mode + "=" + b.ModeInteractive, "x"})
 		}
+		if b.Prompt {
+			argvs = append(argvs, []string{}, []string{"-"}, []string{"-y", "hi"})
+			for _, o := range b.Interactive {
+				argvs = append(argvs, []string{o, "hi"}, []string{"hi", o, "x"}, []string{o + "=hi"}, []string{o})
+			}
+			for _, o := range b.Values {
+				argvs = append(argvs, []string{o, "x"})
+			}
+			argvs = append(argvs, []string{b.Values[0], "x", "hi"}, []string{b.Values[0] + "=x"}, []string{b.Values[0] + "=x", "hi"})
+		}
 	}
 	type call struct {
 		argv []string
@@ -129,6 +139,8 @@ func TestRestartNoteOnlyWhenChanged(t *testing.T) {
 		{wire.HarnessOmp, noteOmpRestart},
 		{wire.HarnessPi, notePiRestart},
 		{wire.HarnessCopilot, noteCopilotRestart},
+		{wire.HarnessQwen, noteQwenRestart},
+		{wire.HarnessGrok, noteGrokRestart},
 	} {
 		te := newTestEnv(t, "linux")
 		h, _ := harness.Lookup(c.id)
@@ -152,6 +164,9 @@ func TestRemovalFollowsRecordedDir(t *testing.T) {
 	for _, c := range []struct{ id, env, file string }{
 		{wire.HarnessPi, "PI_CODING_AGENT_DIR", filepath.Join("extensions", "ssh-term-stagent.ts")},
 		{wire.HarnessCopilot, "COPILOT_HOME", filepath.Join("hooks", "ssh-term-stagent.json")},
+		{wire.HarnessQwen, "QWEN_HOME", filepath.Join("extensions", "stagent", "qwen-extension.json")},
+		{wire.HarnessOpenCode, "OPENCODE_CONFIG_DIR", filepath.Join("plugins", "ssh-term-stagent.js")},
+		{wire.HarnessGrok, "GROK_HOME", filepath.Join("hooks", "ssh-term-stagent.json")},
 	} {
 		for _, how := range []string{"unhook", "remove"} {
 			te := newTestEnv(t, "linux")

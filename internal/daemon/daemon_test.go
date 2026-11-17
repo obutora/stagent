@@ -28,6 +28,24 @@ import (
 	"github.com/obutora/stagent/internal/wire"
 )
 
+// fakeClock is the wall clock schedules and timers see; tests move it.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) Set(t time.Time) {
+	c.mu.Lock()
+	c.t = t
+	c.mu.Unlock()
+}
+
 const sid = "0123456789abcdef"
 
 type testEnv struct {
@@ -132,6 +150,20 @@ func await(t *testing.T, ch chan *wire.Msg, what string, pred func(*wire.Msg) bo
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
+// drain hands the notifications of ch to take until done reports true,
+// or for at most 5s: the assertions after it tell what is missing.
+func drain(ch chan *wire.Msg, take func(*wire.Msg), done func() bool) {
+	deadline := time.After(5 * time.Second)
+	for !done() {
+		select {
+		case m := <-ch:
+			take(m)
+		case <-deadline:
+			return
 		}
 	}
 }

@@ -115,6 +115,9 @@ type Holder struct {
 	// question watches the screen for the UI of the question in force
 	// while the daemon asks (holder.question_watch).
 	question *promptWatch
+	// rules are the screen rules the watches and the menu check read the
+	// screen with, read at start.
+	rules *screenRules
 
 	sbWarned         bool
 	lastActivityWake int64 // pump goroutine only
@@ -208,6 +211,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 		h.logf("stagent run: %v", infraErr)
 	}
 	cfg := loadConfig(l)
+	h.rules = loadScreenRules(l.ScreenRules, h.logf)
 
 	env := o.Env
 	if env == nil {
@@ -220,8 +224,9 @@ func Run(ctx context.Context, o Options) (int, error) {
 	}
 	penv := buildEnv(env, id, o.Detached)
 	// The session keeps the command as given; only the program sees
-	// codex's --no-daemon and PowerShell's working-directory hook.
-	p, err := pty.Start(powershellCommand(runtime.GOOS, codexCommand(o.Command, dir, penv)), dir, penv, cols, rows)
+	// codex's --no-daemon, OpenCode's --standalone and PowerShell's
+	// working-directory hook.
+	p, err := pty.Start(powershellCommand(runtime.GOOS, openCodeCommand(codexCommand(o.Command, dir, penv), dir, penv)), dir, penv, cols, rows)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 			return ExitNotFound, err
@@ -266,8 +271,8 @@ func Run(ctx context.Context, o Options) (int, error) {
 		respond = h.in.tryPush
 	}
 	h.scr = screen.New(cols, rows, respond)
-	h.prompt = newPromptWatch(h.scr.Lines, permissionMenu, h.link.promptGone)
-	h.question = newPromptWatch(h.scr.Lines, questionMenu, h.link.questionGone)
+	h.prompt = newPromptWatch(h.scr.Lines, h.rules.permissionMenu, h.link.promptGone)
+	h.question = newPromptWatch(h.scr.Lines, h.rules.questionMenu, h.link.questionGone)
 	h.in.menuUp = h.menuShown
 	// vt.NewEmulator allocates a 4 MiB parser buffer and 10,000-line
 	// scrollbacks that screen.New immediately shrinks; hand those pages back
@@ -598,6 +603,7 @@ func (h *Holder) applySize(cols, rows int) {
 		h.mu.Unlock()
 		return
 	}
+	h.det.Resized() // before the program sees the new size and redraws
 	if err := h.pty.Resize(cols, rows); err != nil {
 		h.logf("stagent run: resize: %v", err)
 	}

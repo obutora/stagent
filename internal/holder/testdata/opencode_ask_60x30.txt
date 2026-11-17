@@ -1,0 +1,31 @@
+| ? Mock title                    +
+|  ┃
+|
+|     + 1 command
+|
+|     Build · Mock Model · 930ms · 606.1 tok/s · 3ms ttft ·
+|     interrupted
+|
+|  ┃
+|  ┃  pick one #ask
+|  ┃
+|
+|     → Asked 1 question
+|
+|  ┃
+|  ┃  Questions
+|  ┃
+|  ┃  Which color do you prefer?
+|  ┃
+|  ┃  1. Red
+|  ┃     A warm color
+|  ┃  2. Green
+|  ┃     The color of leaves
+|  ┃  3. Blue
+|  ┃     The color of the sky
+|  ┃  4. Type your own answer
+|  ┃
+|  ┃  ↑↓ select  enter submit  esc dismiss
+|  ┃
+|
+cursor=2,0 alt=true appCursor=false

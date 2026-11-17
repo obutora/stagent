@@ -1,0 +1,31 @@
+|   Mock title                    +
+|
+|  ┃
+|  ┃  run it #approval
+|  ┃
+|
+|     + 1 command, 1 edit
+|
+|     All done: ran the command and wrote mock_write.txt.
+|
+|     Build · Mock Model · 1m 23s · 365.9 tok/s · 9ms ttft
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  ┃
+|  ┃
+|  ┃
+|  ┃  Build · Mock Model Mock
+|  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+|  /…/ssh-…/verify/opencode/work  120 (0%)  ctrl+p commands
+|
+cursor=5,24 alt=true appCursor=false

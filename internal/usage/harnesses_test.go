@@ -38,10 +38,13 @@ type tree struct {
 func newTree(t *testing.T) *tree {
 	dir := t.TempDir()
 	return &tree{t: t, index: filepath.Join(dir, "usage-index.json"), roots: transcript.Roots{
-		wire.HarnessClaude: filepath.Join(dir, ".claude", "projects"),
-		wire.HarnessCodex:  filepath.Join(dir, ".codex"),
-		wire.HarnessOmp:    filepath.Join(dir, ".omp", "agent", "sessions"),
-		wire.HarnessPi:     filepath.Join(dir, ".pi", "agent", "sessions"),
+		wire.HarnessClaude:   filepath.Join(dir, ".claude", "projects"),
+		wire.HarnessCodex:    filepath.Join(dir, ".codex"),
+		wire.HarnessOmp:      filepath.Join(dir, ".omp", "agent", "sessions"),
+		wire.HarnessPi:       filepath.Join(dir, ".pi", "agent", "sessions"),
+		wire.HarnessQwen:     filepath.Join(dir, ".qwen", "projects"),
+		wire.HarnessOpenCode: filepath.Join(dir, ".ssh-term", "agent", "state", "opencode"),
+		wire.HarnessGrok:     filepath.Join(dir, ".grok", "sessions"),
 	}}
 }
 
@@ -227,6 +230,9 @@ func TestTotalIsSumOfHarnesses(t *testing.T) {
 	tr.write(wire.HarnessCodex, codexRel, fixture(t, "codex.jsonl"))
 	tr.write(wire.HarnessOmp, "p/2026-11-13T18-53-44-997Z_"+ompSession+".jsonl", fixture(t, "omp.jsonl"))
 	tr.write(wire.HarnessPi, "p/2026-11-13T18-58-48-274Z_"+piSession+".jsonl", fixture(t, "pi.jsonl"))
+	tr.write(wire.HarnessQwen, "p/chats/"+qwenSession+".jsonl", fixture(t, "qwen.jsonl"))
+	tr.write(wire.HarnessOpenCode, openCodeSession+".jsonl", fixture(t, "opencode.jsonl"))
+	tr.write(wire.HarnessGrok, "%2Fp/"+grokSession+"/updates.jsonl", fixture(t, "grok.jsonl"))
 	s := tr.open()
 	scan(t, s)
 	r := report(t, s, wire.UsageGetParams{})
@@ -239,7 +245,7 @@ func TestTotalIsSumOfHarnesses(t *testing.T) {
 		addTokens(&sum, h)
 	}
 	all := total(r)
-	if all.Requests != 2+2+2+2 || all.Total() != sum.Total() {
+	if all.Requests != 2+2+2+2+10+9+13 || all.Total() != sum.Total() {
 		t.Fatalf("total %+v, sum of harnesses %+v", all, sum)
 	}
 }

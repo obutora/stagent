@@ -132,11 +132,19 @@ const (
 	hookSessionEnd        = "SessionEnd"
 	hookUserPromptSubmit  = "UserPromptSubmit"
 	hookStop              = "Stop"
+	hookStopFailure       = "StopFailure" // the turn ended on an API error (Qwen Code)
 	hookNotification      = "Notification"
 	hookPermissionRequest = "PermissionRequest"
 	hookPreToolUse        = "PreToolUse"
 	hookPostToolUse       = "PostToolUse"
-	codexNotify           = "notify"
+	// hookPermissionReplied: the harness's permission menu was answered,
+	// wherever that happened (OpenCode's permission.replied).
+	hookPermissionReplied = "PermissionReplied"
+	// hookStopCancelled: the user cut the turn short, turning a permission
+	// menu down or dismissing it (Grok Build), or stopping the turn
+	// (OpenCode's session.execution.interrupted).
+	hookStopCancelled = "StopCancelled"
+	codexNotify       = "notify"
 )
 
 // hookPayload is the union of the fields stagent reads from hook payloads
@@ -189,9 +197,11 @@ type hookEffect struct {
 	// questions.
 	ask bool
 	// permissionCheck: the harness checks a tool call's permission and
-	// may show its menu next (daemonHarness.checksFirst); the tool is kept
+	// may show its menu next (daemonHarness.checkHook); the tool is kept
 	// for that menu's approval.
 	permissionCheck bool
+	// answered: the session's pending approvals were answered.
+	answered bool
 }
 
 // classifyHook maps a hook event of harness harnessID to its effect. event
@@ -203,36 +213,46 @@ func classifyHook(harnessID, event string, p hookPayload) hookEffect {
 	if event == codexNotify || p.Type == "agent-turn-complete" {
 		event = hookStop
 	}
-	checksFirst := daemonHarnesses[harnessID].checksFirst
+	dh := daemonHarnesses[harnessID]
 	e := hookEffect{event: event}
 	switch event {
 	case hookUserPromptSubmit:
 		e.state = wire.StateWorking
-	case hookStop:
+	case hookStop, hookStopFailure:
 		e.state = wire.StateIdle
 		e.turnComplete = true
 	case hookPermissionRequest:
-		if isQuestionTool(p.ToolName) {
+		if isQuestionTool(harnessID, p.ToolName) {
 			e.state, e.ask = wire.StateWaitingInput, true
 			break
 		}
-		if checksFirst {
+		if dh.checkHook == hookPermissionRequest {
 			e.permissionCheck = true
 			break
 		}
 		e.state = wire.StateNeedsApproval
 		e.approval = true
 	case hookPreToolUse:
-		if isQuestionTool(p.ToolName) {
+		if isQuestionTool(harnessID, p.ToolName) {
 			e.state, e.ask = wire.StateWaitingInput, true
+		} else if dh.checkHook == hookPreToolUse {
+			e.permissionCheck = true
 		}
 	case hookPostToolUse:
-		if isQuestionTool(p.ToolName) {
+		if isQuestionTool(harnessID, p.ToolName) {
 			e.state = wire.StateWorking
 		}
 	case hookNotification:
 		e.state = notificationState(p)
-		e.approval = checksFirst && p.NotificationType == "permission_prompt"
+		// A harness that checks first shows its menu with this one.
+		e.approval = dh.checkHook != "" && p.NotificationType == "permission_prompt"
+	case hookStopCancelled:
+		// The turn ended without its approvals, by the user's own hand:
+		// nothing to tell them.
+		e.state, e.answered = wire.StateIdle, true
+	case hookPermissionReplied:
+		// Allowed, the tool runs; turned down, the turn ends (Stop).
+		e.state, e.answered = wire.StateWorking, true
 	case hookSessionEnd:
 		e.clear = true
 	}

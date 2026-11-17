@@ -1,0 +1,29 @@
+  [38;5;103m│[39m [38;5;103mAPI Key | mock-model (/model to change)[39m              [38;5;103m│[39m
+  [38;5;103m│[39m [38;5;103m/Volumes/.../verify/qwen/work/untrusted[39m              [38;5;103m│[39m
+  [38;5;103m└──────────────────────────────────────────────────────┘[39m
+  [38;5;103mTips: You can run any shell commands from Qwen Code [39m
+  [38;5;103musing ! (e.g. !ls).[39m
+   [38;5;223m╭──────────────────────────────────────────────────────[39m
+   [38;5;223m│[39m
+   [38;5;223m│[39m [1mDo you trust this folder?
+[0m   [38;5;223m│[39m Trusting a folder allows Qwen Code to execute
+   [38;5;223m│[39m commands it suggests. This is a security feature to
+   [38;5;223m│[39m prevent accidental execution in untrusted
+   [38;5;223m│[39m directories.
+   [38;5;223m│[39m
+   [38;5;223m│[39m [38;5;151m›[39m [38;5;151m1.[39m [38;5;151mTrust folder (untrusted)[39m
+   [38;5;223m│[39m   2. Trust parent folder (work)
+   [38;5;223m│[39m   3. Don't trust (esc)
+   [38;5;223m│[39m
+   [38;5;223m╰──────────────────────────────────────────────────────[39m
+
+
+
+
+
+
+
+
+
+
+

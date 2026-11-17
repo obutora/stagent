@@ -152,6 +152,25 @@ func TestClassifyHook(t *testing.T) {
 		{"ask answered", "", "PostToolUse", `{"tool_name":"AskUserQuestion"}`, hookEffect{event: hookPostToolUse, state: working}},
 		{"other pre tool use", "", "PreToolUse", `{"tool_name":"Bash"}`, hookEffect{event: hookPreToolUse}},
 		{"other post tool use", "", "PostToolUse", `{"tool_name":"Bash"}`, hookEffect{event: hookPostToolUse}},
+		// Qwen Code runs its PermissionRequest hook only for a call it
+		// shows its menu for: the hook is the approval. A turn that ends
+		// on an API error sends StopFailure instead of Stop.
+		{"qwen permission", "qwen", "PermissionRequest", `{"tool_name":"run_shell_command","tool_input":{"command":"ls"}}`, hookEffect{event: hookPermissionRequest, state: needsAp, approval: true}},
+		{"qwen ask", "qwen", "PermissionRequest", `{"tool_name":"ask_user_question","tool_input":{"questions":[{"question":"Which?"}]}}`, hookEffect{event: hookPermissionRequest, state: waiting, ask: true}},
+		{"qwen stop failure", "qwen", "StopFailure", `{"error":"rate_limit"}`, hookEffect{event: hookStopFailure, state: idle, turnComplete: true}},
+		// OpenCode tells when its permission menu was answered, wherever:
+		// the approval closes and the session works on (a rejection ends
+		// the turn with the Stop that follows).
+		{"opencode replied", "opencode", "PermissionReplied", `{"reply":"once"}`, hookEffect{event: hookPermissionReplied, state: working, answered: true}},
+		{"opencode question", "opencode", "PreToolUse", `{"tool_name":"question","tool_input":{"questions":[{"question":"Which?"}]}}`, hookEffect{event: hookPreToolUse, state: waiting, ask: true}},
+		// Grok Build has no PermissionRequest: its PreToolUse names the
+		// tool it checks next, its permission_prompt notification the
+		// menu; a turn cut short ends with StopCancelled, no turn_complete.
+		{"grok check", "grok", "PreToolUse", `{"tool_name":"run_terminal_command","tool_input":{"command":"ls"}}`, hookEffect{event: hookPreToolUse, permissionCheck: true}},
+		{"grok ask", "grok", "PreToolUse", `{"tool_name":"ask_user_question","tool_input":{"questions":[{"question":"Which?"}]}}`, hookEffect{event: hookPreToolUse, state: waiting, ask: true}},
+		{"grok menu", "grok", "Notification", `{"notification_type":"permission_prompt","message":"Tool permission requested"}`, hookEffect{event: hookNotification, state: needsAp, approval: true}},
+		{"grok cancelled", "grok", "StopCancelled", `{"reason":"permission_rejected","cancelledBy":"user"}`, hookEffect{event: hookStopCancelled, state: idle, answered: true}},
+		{"claude pre tool", "claude", "PreToolUse", `{"tool_name":"Bash","tool_input":{"command":"ls"}}`, hookEffect{event: hookPreToolUse}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

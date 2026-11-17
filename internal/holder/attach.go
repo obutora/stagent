@@ -208,6 +208,16 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 			return nil, wire.Errorf(wire.ErrBadRequest, "unknown signal %q", p.Signal)
 		}
 		return struct{}{}, nil
+
+	case wire.MethodSessionExplain:
+		var p wire.ScreenExplainParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		if err := h.checkID(p.ID); err != nil {
+			return nil, err
+		}
+		return h.rules.explain(h.scr.Lines(), h.explainHarness(p.Harness)), nil
 	}
 	return nil, wire.Errorf(wire.ErrUnknownMethod, "%s", m.Method)
 }

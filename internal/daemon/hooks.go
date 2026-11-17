@@ -39,17 +39,28 @@ type approval struct {
 func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (any, error) {
 	pl := parseHookPayload(p.Payload)
 	eff := classifyHook(p.Harness, p.Event, pl)
-	now := nowMs()
+	now := d.opts.Now().UnixMilli()
 
 	d.mu.Lock()
 	s := d.hookSessionLocked(p, pl)
 	changed := false
 	if s != nil {
 		s.hookGen++
+		s.stopReplyIdle() // any hook of the session voids its idle_prompt
 		s.remoteControl = p.RemoteControl
 		changed = d.hookMetaLocked(s, p.Harness, pl)
 	}
 	d.noteUnwrappedLocked(p, pl, eff, s != nil, now)
+	// An idle_prompt of a harness that sends one with every reply (Qwen
+	// Code) is told apart from the others by the hooks around it.
+	if eff.event == hookNotification && pl.NotificationType == "idle_prompt" && daemonHarnesses[p.Harness].idleEveryReply {
+		if s == nil || s.track.question() == nil {
+			d.replyIdleLocked(s, now)
+		}
+		eff = hookEffect{event: eff.event}
+	} else if s != nil {
+		s.hookAt = now
+	}
 	// While the session waits on a question, a notification is about that
 	// question (claude sends a permission_prompt for AskUserQuestion), not
 	// an approval.
@@ -84,7 +95,7 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 		if s != nil {
 			s.track = s.track.hookQuestion(q, now)
 			changed = d.recomputeLocked(s, false) || changed
-		} else if eff.event == questionShownHook(pl.ToolName) {
+		} else if eff.event == questionShownHook(p.Harness, pl.ToolName) {
 			// Outside stagent sessions: in-app only, once per question,
 			// by the hook that comes when it shows (claude's
 			// PermissionRequest follows its PreToolUse).
@@ -108,6 +119,10 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 			s.track = s.track.hookClear()
 			changed = d.recomputeLocked(s, false) || changed
 		}
+	}
+	if eff.answered && s != nil {
+		// After its state: the session works on, not idle in between.
+		d.cancelApprovalsLocked(s.s.ID)
 	}
 	if eff.turnComplete {
 		if s != nil {
@@ -173,17 +188,21 @@ func (d *Daemon) hookSessionLocked(p wire.HookEventParams, pl hookPayload) *sess
 }
 
 // daemonHarness is what the daemon does its own way for one harness's hooks
-// (claude.go, codex.go, omp.go, pi.go, copilot.go).
+// (claude.go, codex.go, omp.go, pi.go, copilot.go, qwen.go, opencode.go,
+// grok.go).
 type daemonHarness struct {
 	// watchPrompt: while an approval of the harness is pending, the
 	// session's holder watches the screen for its permission menu
 	// (prompt.go).
 	watchPrompt bool
-	// checksFirst: the harness's PermissionRequest hook runs before its
-	// own permission checks, which may allow the tool without a menu; the
-	// menu comes with a permission_prompt Notification, which registers
-	// the approval (named by the tool the latest check named).
-	checksFirst bool
+	// checkHook is the hook that names the tool a harness checks the
+	// permission of next, for a harness whose checks come before its menu
+	// and may allow the tool without one ("": none, its PermissionRequest
+	// is its menu): Copilot CLI's PermissionRequest, Grok Build's
+	// PreToolUse (it has no PermissionRequest). Its menu then comes with
+	// a permission_prompt Notification, which registers the approval
+	// (named by the tool the latest check named).
+	checkHook string
 	// launch tells how the agent of a sessionless hook was started, from
 	// what the harness reports about itself (unwrapped.go); nil when it
 	// reports nothing.
@@ -192,15 +211,22 @@ type daemonHarness struct {
 	// question tool (harness.Harness.QuestionTool) shows; "" is its
 	// PreToolUse.
 	questionShown string
+	// idleEveryReply: the harness sends the idle_prompt notification at
+	// the end of every reply of its model, also amid a turn; only one that
+	// comes alone counts (replyIdleLocked).
+	idleEveryReply bool
 }
 
 // daemonHarnesses has an entry for every harness of the registry.
 var daemonHarnesses = map[string]daemonHarness{
-	wire.HarnessClaude:  claudeDaemon,
-	wire.HarnessCodex:   codexDaemon,
-	wire.HarnessOmp:     ompDaemon,
-	wire.HarnessPi:      piDaemon,
-	wire.HarnessCopilot: copilotDaemon,
+	wire.HarnessClaude:   claudeDaemon,
+	wire.HarnessCodex:    codexDaemon,
+	wire.HarnessOmp:      ompDaemon,
+	wire.HarnessPi:       piDaemon,
+	wire.HarnessCopilot:  copilotDaemon,
+	wire.HarnessQwen:     qwenDaemon,
+	wire.HarnessOpenCode: openCodeDaemon,
+	wire.HarnessGrok:     grokDaemon,
 }
 
 // hookMetaLocked records what a hook tells about the session: harness,

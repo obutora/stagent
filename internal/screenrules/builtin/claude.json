@@ -1,0 +1,11 @@
+{
+  "menu": {
+    "cursor": "❯",
+    "dialog_edge": "solid_rule",
+    "permission_label": "^Yes"
+  },
+  "unnumbered": {
+    "kind": "titled_dialog",
+    "title": "Accessing workspace:"
+  }
+}

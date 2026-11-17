@@ -7,6 +7,7 @@ package detect
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/obutora/stagent/internal/wire"
@@ -40,6 +41,10 @@ func (realClock) AfterFunc(d time.Duration, f func()) Timer { return time.AfterF
 // completion); the state still changes on each bell.
 const bellInterval = time.Second
 
+// redrawGrace: output this soon after a resize is the program redrawing
+// for the new size (full-screen TUIs repaint on SIGWINCH), not work.
+const redrawGrace = 1500 * time.Millisecond
+
 // Config configures a Detector. Callbacks run synchronously, one at a time,
 // with the detector locked: they must not call back into the detector.
 type Config struct {
@@ -57,6 +62,10 @@ type Config struct {
 //   - Any output: idle → working. waiting_input is sticky until input is
 //     written to the program (Input): a program that asked for the user
 //     usually redraws its prompt afterwards, which is not work.
+//   - Output within redrawGrace of a resize (Resized) starts no work: the
+//     program redraws for the new size. Reopening a session from the app
+//     resizes it, and that redraw must neither list the session as working
+//     nor override its hook-derived state.
 //   - No output for IdleAfter while working → idle (one timer, re-armed
 //     lazily: it fires at most once per IdleAfter while output flows).
 //   - OSC 9 / 777;notify / 99, or BEL outside a string sequence →
@@ -74,6 +83,10 @@ type Detector struct {
 	armed      bool
 	lastBell   time.Time
 	p          parser
+	// redrawUntil: unix ns until which output starts no work (Resized).
+	// Atomic so that the holder can mark a resize under its own lock,
+	// which the state callbacks take after the detector's.
+	redrawUntil atomic.Int64
 }
 
 // New returns a detector in state working (the program just started) with
@@ -113,7 +126,8 @@ func (d *Detector) SetIdleAfter(v time.Duration) {
 // Feed processes a chunk of program output. Escape sequences may be split
 // across chunks. A chunk of DEC private mode sets and resets only (`CSI ?
 // Pm h/l`) changes nothing on screen and is not work: Oh My Pi on Windows
-// re-enables bracketed paste every second while it waits.
+// re-enables bracketed paste every second while it waits. Neither is
+// output within redrawGrace of a resize (notifications in it still count).
 func (d *Detector) Feed(b []byte) {
 	if len(b) == 0 {
 		return
@@ -127,7 +141,11 @@ func (d *Detector) Feed(b []byte) {
 	if onlyModeChanges(b) {
 		return
 	}
-	d.lastOutput = d.cfg.Clock.Now()
+	now := d.cfg.Clock.Now()
+	if now.UnixNano() < d.redrawUntil.Load() {
+		return
+	}
+	d.lastOutput = now
 	switch {
 	case d.state == wire.StateIdle,
 		d.state == wire.StateWaitingInput && !d.awaitInput:
@@ -155,6 +173,13 @@ func onlyModeChanges(b []byte) bool {
 		b = b[i+1:]
 	}
 	return true
+}
+
+// Resized records that the terminal was resized: output for redrawGrace
+// from now is the program redrawing, not work. Safe to call under locks the
+// state callbacks take.
+func (d *Detector) Resized() {
+	d.redrawUntil.Store(d.cfg.Clock.Now().Add(redrawGrace).UnixNano())
 }
 
 // Input records that input was written to the program, which ends a sticky

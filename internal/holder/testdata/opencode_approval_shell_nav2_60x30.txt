@@ -1,0 +1,31 @@
+| ! Mock title                    +
+|
+|  ┃
+|  ┃  run it #approval
+|  ┃
+|
+|  ┃
+|  ┃  ⠹ echo hello-from-mock > mock_shell.txt && cat mock
+|  ┃    _shell.txt
+|  ┃
+|
+|
+|
+|
+|
+|
+|
+|
+|  ┃
+|  ┃  △ Permission required
+|  ┃
+|  ┃  $ echo hello-from-mock > mock_shell.txt && cat
+|  ┃  mock_shell.txt
+|  ┃
+|  ┃
+|  ┃   Allow once   Always allow   Reject
+|  ┃
+|  ┃  ctrl+f fullscreen  ⇆ select  enter confirm
+|  ┃
+|
+cursor=6,7 alt=true appCursor=false

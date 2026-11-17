@@ -1,0 +1,8 @@
+{
+  "menu": {
+    "cursor": "❯",
+    "dialog_edge": "box_top",
+    "frame": "box",
+    "permission_label": "^Yes"
+  }
+}

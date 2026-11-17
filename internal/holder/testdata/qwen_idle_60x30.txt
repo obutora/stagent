@@ -1,0 +1,31 @@
+|  ┌──────────────────────────────────────────────────────┐
+|  │ >_ Qwen Code (v0.27.4)                               │
+|  │                                                      │
+|  │ API Key | mock-model (/model to change)              │
+|  │ /Volumes/.../verify/qwen/work/proj                   │
+|  └──────────────────────────────────────────────────────┘
+|  Tips: Add a QWEN.md file to give Qwen Code persistent
+|  project context.
+|
+|────────────────────────────────────────────────────────────
+|>   Type your message or @path/to/file
+|────────────────────────────────────────────────────────────
+|  ➜ proj · mock-model
+|  ⏸ Ask permissions (shift + tab to cycle)
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=2,10 alt=true appCursor=false

@@ -1,0 +1,31 @@
+|  Tips: You can resume a previous conversation by running  │
+|   qwen --continue or qwen --resume.                       │
+|  ●︎ Auto mode enabled.                                     │
+|       An LLM classifier evaluates each tool call — safe   │
+|    actions auto-approve,                                  │
+|       risky ones are blocked. Exit: Shift+Tab or          █
+|    /approval-mode default.                                █
+|  ●︎ Read context files: ~/.qwen/output-language.md         █
+|                                                           █
+|  > auto #approval                                         █
+|  ? Shell echo hello-from-mock > mock_shell.txt && cat   ← █
+|    mock_shell.txt (Run a command for the mock scenario)   █
+|                                                           █
+|     ⚠ Auto Mode couldn't classify this action             █
+|     (Classifier stage 1 unavailable). Review it           █
+|     manually. Switching to Default Mode is                █
+|     recommended if you want to continue without the       █
+|     classifier.                                           █
+|                                                           █
+|     echo hello-from-mock > mock_shell.txt && cat          █
+|     mock_shell.txt                                        █
+|                                                           █
+|   Allow execution of: 'echo'?                             █
+|                                                           █
+|   › 1. Yes, allow once                                    █
+|     2. Switch to Default Mode and allow once (recomme…    █
+|     3. No, suggest changes (esc)                          █
+|                                                           █
+|
+|  ⠏ Waiting for user confirmation...
+cursor=36,29 alt=true appCursor=false

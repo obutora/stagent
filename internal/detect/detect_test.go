@@ -161,6 +161,41 @@ func TestModeChangesAloneAreNotWork(t *testing.T) {
 	}
 }
 
+// A resize makes the program redraw for the new size; that output is not
+// work. Output after the grace is, and a notification in the redraw still
+// counts.
+func TestRedrawAfterResizeIsNotWork(t *testing.T) {
+	d, clk, r := newDetector(t)
+	clk.Advance(3 * time.Second) // idle
+	d.Resized()
+	d.Feed([]byte("\x1b[2J\x1b[Hfull repaint"))
+	clk.Advance(redrawGrace - time.Millisecond)
+	d.Feed([]byte("rest of the repaint"))
+	if want := []string{"idle/activity"}; !reflect.DeepEqual(r.states, want) {
+		t.Fatalf("states after the redraw = %v, want %v", r.states, want)
+	}
+	clk.Advance(time.Millisecond)
+	d.Feed([]byte("work"))
+	if want := []string{"idle/activity", "working/activity"}; !reflect.DeepEqual(r.states, want) {
+		t.Fatalf("states after the grace = %v, want %v", r.states, want)
+	}
+
+	// Working: the redraw does not keep it working past the quiet period.
+	clk.Advance(2 * time.Second)
+	d.Resized()
+	d.Feed([]byte("repaint"))
+	clk.Advance(time.Second)
+	if want := []string{"idle/activity", "working/activity", "idle/activity"}; !reflect.DeepEqual(r.states, want) {
+		t.Fatalf("states after a redraw while working = %v, want %v", r.states, want)
+	}
+
+	d.Resized()
+	d.Feed([]byte("repaint\x1b]9;Done\x07"))
+	if st, _ := d.State(); st != wire.StateWaitingInput || len(r.notes) != 1 {
+		t.Fatalf("state %s, notes %+v after a notification in the redraw", st, r.notes)
+	}
+}
+
 func TestOSC9SplitAcrossChunksIsStickyUntilInput(t *testing.T) {
 	d, clk, r := newDetector(t)
 	for _, chunk := range []string{"work\x1b", "]9;Build", " done", "\x07prompt redraw"} {

@@ -1,0 +1,7 @@
+{
+  "question": {
+    "kind": "bottom_box",
+    "title": "^╭─ [^─\\s]",
+    "cursor": "❯"
+  }
+}

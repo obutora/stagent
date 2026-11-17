@@ -196,6 +196,8 @@ const (
 	noteOmpRestart          = "omp_restart"
 	notePiRestart           = "pi_restart"
 	noteCopilotRestart      = "copilot_restart"
+	noteQwenRestart         = "qwen_restart"
+	noteGrokRestart         = "grok_restart"
 	noteCodexTrust          = "codex_trust"
 	noteCodexNotifyFallback = "codex_notify_fallback" // args: reason (codexReason*)
 	noteCodexNotifyKept     = "codex_notify_kept"     // args: command

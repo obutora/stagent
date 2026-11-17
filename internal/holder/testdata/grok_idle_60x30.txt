@@ -1,0 +1,31 @@
+|
+|  /V/S/o/n/s/v/grok/work
+|
+|                       ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄
+|                       ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀
+|                       ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀
+|                       ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀
+|                       ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀
+|                       ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀
+|                       ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+|
+|     Resume session                               ctrl+r
+|     New worktree                                 ctrl+w
+|     Changelog
+|     Quit                                         ctrl+q
+|
+|     Changelog
+|
+|     • Quote copy now preserves & in links and double-c…
+|     • MCP server connections no longer restart unneces…
+|     • Ctrl+L now works on more screens and copy hints …
+|
+|
+|
+|  ╭──────────────────────────────────────────────────────╮
+|  │ ❯                                                    │
+|  ╰──────────────────────────── Mock (chat_completions) ─╯
+|
+|             Logged in with API key  │  Grok Build  1.0.77
+|
+cursor=6,25 alt=true appCursor=false

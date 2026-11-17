@@ -2,7 +2,6 @@ package holder
 
 import (
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,16 +10,16 @@ import (
 	"unicode/utf8"
 
 	"github.com/obutora/stagent/internal/harness"
-	"github.com/obutora/stagent/internal/wire"
 )
 
-// Prompt watch (holder.prompt_watch): while the daemon has a claude, Codex
-// or Copilot CLI approval of the session pending, the holder looks for the
-// program's permission menu on the screen and reports once the menu it saw
-// is gone (holder.prompt_gone): the prompt was answered, wherever that
-// happened. The programs themselves do not tell — claude's hook lives on
-// until the approved tool finished, and Codex's and Copilot CLI's returned
-// before their prompt showed.
+// Prompt watch (holder.prompt_watch): while the daemon has an approval of
+// the session pending from a harness whose menu it watches on screen (the
+// daemon's watchPrompt), the holder looks for the program's permission
+// menu on the screen and reports once the menu it saw is gone
+// (holder.prompt_gone): the prompt was answered, wherever that happened.
+// The programs themselves do not tell — claude's hook lives on until the
+// approved tool finished, and the others' returned before their prompt
+// showed (or with it).
 //
 // A menu is told apart from the next one by its signature (menuSignature):
 // claude shows parallel tool calls' prompts one after the other, switching
@@ -223,30 +222,53 @@ func awaited(tracks []*promptTrack, sig string) bool {
 // Enter as their highlighted option just as an approval menu would; for
 // claude's that is No, which ends claude.
 func (h *Holder) menuShown() bool {
-	_, ok := liveMenu(h.scr.Lines())
+	_, ok := h.rules.liveMenu(h.scr.Lines())
 	return ok
 }
 
 // ---------------------------------------------------------------------------
 // Menu recognition, after the app's screen reader
 // (lib/services/terminal_chat/agent_activity.dart): numbered options with
-// one under a harness's cursor (menuStyle.cursor: claude's and Copilot
-// CLI's ❯, Codex's ›) and a key hint below them. Of those menus, the
-// permission dialogs are the ones whose first option is "1. Yes…": claude's
+// one under a harness's cursor (claude's and Copilot CLI's ❯, Codex's and
+// Qwen Code's ›) and a key hint below them. Of those menus, the permission
+// dialogs are the ones whose first option is "1. Yes…": claude's
 // permission prompt ("Do you want to …?" → "1. Yes") and plan approval
 // ("Would you like to proceed?" → "1. Yes, and …"), Codex's approval
 // ("Would you like to run the following command?" → "1. Yes, proceed
 // (y)"), Copilot CLI's ("Do you want to run this command?" → "1. Yes", in a
 // box). A harness may have a menu without numbers too, recognized its own
-// way (menuStyle.unnumbered: claude's workspace trust prompt).
+// way (claude's workspace trust prompt), menus with no key hint below
+// them, told by their own end (Qwen Code's permission menu, whose labels
+// are translated), dialogs right of a bar told by their rows and key hints
+// instead (OpenCode's, Grok Build's), and a question UI that is no menu
+// (Codex's, omp's).
+//
+// What is data and what is code. The screen rules (internal/screenrules:
+// built in as builtin/<name>.json, overridden per host by
+// ~/.ssh-term/agent/screen-rules/<name>.json, read when the holder starts)
+// hold what a harness's screen shows: its cursor, the label of a
+// permission prompt's first option, the patterns of key hints, transcript
+// marks, headers, titles, rows and menu ends, and how many rows to look
+// at. They pick by name the way to find a dialog's top edge (dialogEdges,
+// barDialogEdge), a frame (boxFramed), a menu without numbers
+// (titledDialogMenu), a menu's own end (markedLastOption), a dialog right
+// of a bar (barDialogKinds) and a question UI (hintAndHeaderQuestion,
+// bottomBoxQuestion). Those ways stay code, as do walking the rows
+// (numberedMenu, promptHintFollows, menuSignature), the option line
+// (optionPattern, radioRow) and the rule and box characters
+// (promptRuleChars, promptEdgeChars).
 
-// menuStyle is how one harness draws its menus (prompt_<harness>.go). A
-// prompt watch names the harness whose menu it looks for; a chat message
-// and an older daemon's watch do not, and every style is tried.
+// menuStyle is how one harness draws its menus, after its rules
+// (newScreenRules). A prompt watch names the harness whose menu it looks
+// for; a chat message and an older daemon's watch do not, and every style
+// is tried.
 type menuStyle struct {
+	id string // the harness
 	// cursor marks the highlighted option of the harness's numbered
 	// menus; "" when it has none.
 	cursor string
+	// permission matches the label of a permission menu's first option.
+	permission *regexp.Regexp
 	// dialogEdge reports whether a line above the options is the top edge
 	// of the harness's dialog (menuSignature).
 	dialogEdge func(line string) bool
@@ -256,27 +278,32 @@ type menuStyle struct {
 	// framed, for a harness that draws its menus in a box, returns what
 	// each of lines shows inside a box: the text between its side
 	// borders, or outsideFrame for a line of no box. Its numbered menus
-	// are read there only, an option's wrapped label continuing at the
-	// column of its number.
+	// are read there only (with option), an option's wrapped label
+	// continuing at the column of its number.
 	framed func(lines []string) []string
+	option *regexp.Regexp
 	// question reports whether lines show the UI of a question the
 	// harness asked through its question tool (questionShown), for a
-	// harness that draws it as no menu of its own; nil: its menus are.
-	question func(lines []string) bool
+	// harness that draws it as no menu of its own, and the lines that
+	// tell; nil: its menus are. questionRule names the rule it is read
+	// with (question, or dialogs for a question dialog).
+	question     func(lines []string) (at []int, ok bool)
+	questionRule string
+	// ends, for a harness whose menus may have no key hint below them,
+	// reports whether the numbered options group (one under cursor, read
+	// with option) end a menu of its own on lines; nil: a key hint must
+	// follow them. With endsPermission, such a menu is a permission menu.
+	ends           func(lines []string, group []promptItem) bool
+	endsPermission bool
+	// dialogs, for a harness that draws its dialogs right of a bar,
+	// returns the options of the first of them lines show and its name
+	// (dialogPermission, dialogQuestion, dialogTrust).
+	dialogs func(lines []string) (options []promptItem, dialog string, ok bool)
 }
 
 // outsideFrame stands for a line outside the boxes in a menuStyle.framed
 // view: neither blank nor a key hint, it ends a menu above it.
 const outsideFrame = "\x00"
-
-// menuStyles has an entry for every harness of the registry.
-var menuStyles = map[string]menuStyle{
-	wire.HarnessClaude:  claudeMenus,
-	wire.HarnessCodex:   codexMenus,
-	wire.HarnessOmp:     ompMenus,
-	wire.HarnessPi:      piMenus,
-	wire.HarnessCopilot: copilotMenus,
-}
 
 // optionPattern matches an option line, `❯ 1. Yes` or `  2. No`, of a menu
 // with one of cursors.
@@ -287,41 +314,6 @@ func optionPattern(cursors []string) *regexp.Regexp {
 	}
 	return regexp.MustCompile(`^(\s*)(?:(` + strings.Join(quoted, "|") + `)\s*)?(\d{1,2})\.\s+(\S.*)$`)
 }
-
-// promptOption: `❯ 1. Yes` (claude), `› 1. Yes, proceed (y)` (Codex),
-// `  2. No`; the cursors are those of the menuStyles drawn without a
-// frame.
-var promptOption = func() *regexp.Regexp {
-	var cursors []string
-	for _, h := range harness.All {
-		if s := menuStyles[h.ID]; s.cursor != "" && s.framed == nil && !slices.Contains(cursors, s.cursor) {
-			cursors = append(cursors, s.cursor)
-		}
-	}
-	return optionPattern(cursors)
-}()
-
-// framedOption holds the option pattern of each framed menuStyle, by its
-// cursor.
-var framedOption = func() map[string]*regexp.Regexp {
-	m := map[string]*regexp.Regexp{}
-	for _, s := range menuStyles {
-		if s.framed != nil {
-			m[s.cursor] = optionPattern([]string{s.cursor})
-		}
-	}
-	return m
-}()
-
-// promptHint: key hints every captured menu shows under its options (`Esc
-// to cancel · Tab to amend`, `ctrl+g to edit in Vim` under plan approval).
-// A numbered list in the transcript has none.
-var promptHint = regexp.MustCompile(`(?i)\besc\b|\benter\b|↑/↓|ctrl\+g`)
-
-// promptTranscriptMark: transcript entries (`● `, `⎿`, `✻ …`, Codex's `• `
-// and its status line's bullet blinking to `◦`) and prompts the user sent
-// (`❯ `); a list above one is part of the conversation.
-var promptTranscriptMark = regexp.MustCompile(`^(?:[●•◦⏺⎿✻✢✳✶✽✔✗■]|[›❯]\s)`)
 
 // promptRuleChars make up horizontal rules and box edges.
 const promptRuleChars = "─━═╌╍┄┅┈┉├┤┌┐└┘╭╮╰╯┬┴┼┝┥┠┨╞╡"
@@ -340,48 +332,75 @@ type promptItem struct {
 
 // liveMenu returns the options of the menu lines (a screen, top to bottom)
 // show, if any, as any harness draws its menus.
-func liveMenu(lines []string) (options []promptItem, ok bool) {
-	m, ok := findMenu(lines, "")
+func (r *screenRules) liveMenu(lines []string) (options []promptItem, ok bool) {
+	m, ok := r.findMenu(lines, "")
 	return m.options, ok
 }
 
 // foundMenu is a menu on the screen and the style of the harness that drew
-// it.
+// it; unnumbered: it is the style's menu without numbers; dialog: it is
+// the style's dialog of that name (menuStyle.dialogs).
 type foundMenu struct {
-	options []promptItem
-	style   menuStyle
+	options    []promptItem
+	style      menuStyle
+	unnumbered bool
+	dialog     string
 }
 
 // findMenu returns the menu lines show as harnessID draws its menus, or as
 // any harness does when harnessID is "" or has no menus: the lowest
 // numbered list with one option under the cursor and a key hint below it,
 // in the harness's boxes for a framed style, or else a harness's menu
-// without numbers (menuStyle.unnumbered).
-func findMenu(lines []string, harnessID string) (foundMenu, bool) {
-	own := menuStyles[harnessID]
+// without numbers (menuStyle.unnumbered) or a dialog right of a bar
+// (menuStyle.dialogs). A harness with menus of its own (a cursor, menus
+// without numbers or dialogs) has no other harness's menus.
+func (r *screenRules) findMenu(lines []string, harnessID string) (foundMenu, bool) {
+	own := r.styles[harnessID]
+	mine := own.cursor != "" || own.unnumbered != nil || own.dialogs != nil
 	if own.framed != nil {
-		return framedMenu(lines, own)
+		return r.framedMenu(lines, own)
 	}
-	if group, ok := numberedMenu(lines, promptOption, false); ok {
+	if group, ok := r.numberedMenu(lines, r.option, false, r.hintFollows); ok && (own.cursor != "" || !mine) {
 		s := own
 		if s.cursor == "" {
-			s = plainStyle(group)
+			s = r.plainStyle(group)
 		}
-		return foundMenu{group, s}, true
+		return foundMenu{options: group, style: s}, true
 	}
-	for _, h := range harness.All {
-		if find := menuStyles[h.ID].unnumbered; find != nil {
-			if options, ok := find(lines); ok {
-				return foundMenu{options, menuStyles[h.ID]}, true
+	if own.ends != nil {
+		return r.endedMenu(lines, own)
+	}
+	if !mine {
+		for _, h := range harness.All {
+			if s := r.styles[h.ID]; s.ends != nil {
+				if m, ok := r.endedMenu(lines, s); ok {
+					return m, true
+				}
 			}
 		}
 	}
-	if own.cursor != "" {
+	for _, h := range harness.All {
+		if mine && h.ID != harnessID {
+			continue
+		}
+		s := r.styles[h.ID]
+		if s.unnumbered != nil {
+			if options, ok := s.unnumbered(lines); ok {
+				return foundMenu{options: options, style: s, unnumbered: true}, true
+			}
+		}
+		if s.dialogs != nil {
+			if options, dialog, ok := s.dialogs(lines); ok {
+				return foundMenu{options: options, style: s, dialog: dialog}, true
+			}
+		}
+	}
+	if mine {
 		return foundMenu{}, false
 	}
 	for _, h := range harness.All {
-		if s := menuStyles[h.ID]; s.framed != nil {
-			if m, ok := framedMenu(lines, s); ok {
+		if s := r.styles[h.ID]; s.framed != nil {
+			if m, ok := r.framedMenu(lines, s); ok {
 				return m, true
 			}
 		}
@@ -390,20 +409,34 @@ func findMenu(lines []string, harnessID string) (foundMenu, bool) {
 }
 
 // framedMenu returns the numbered menu in the boxes of style s.
-func framedMenu(lines []string, s menuStyle) (foundMenu, bool) {
-	group, ok := numberedMenu(s.framed(lines), framedOption[s.cursor], true)
-	return foundMenu{group, s}, ok
+func (r *screenRules) framedMenu(lines []string, s menuStyle) (foundMenu, bool) {
+	group, ok := r.numberedMenu(s.framed(lines), s.option, true, r.hintFollows)
+	return foundMenu{options: group, style: s}, ok
+}
+
+// endedMenu returns the numbered menu under the cursor of style s that its
+// ends tells, a key hint below it or not.
+func (r *screenRules) endedMenu(lines []string, s menuStyle) (foundMenu, bool) {
+	group, ok := r.numberedMenu(lines, s.option, false, func(lines []string, group []promptItem) bool {
+		return r.hintFollows(lines, group) || s.ends(lines, group)
+	})
+	return foundMenu{options: group, style: s}, ok
+}
+
+// hintFollows: a key hint follows the options of group (promptHintFollows).
+func (r *screenRules) hintFollows(lines []string, group []promptItem) bool {
+	return r.promptHintFollows(lines, group[len(group)-1].end)
 }
 
 // plainStyle is the style of the harness whose cursor highlights an
 // option of group, of those drawing their menus without a frame.
-func plainStyle(group []promptItem) menuStyle {
+func (r *screenRules) plainStyle(group []promptItem) menuStyle {
 	for _, it := range group {
 		if it.cursor == "" {
 			continue
 		}
 		for _, h := range harness.All {
-			if s := menuStyles[h.ID]; s.cursor == it.cursor && s.framed == nil {
+			if s := r.styles[h.ID]; s.cursor == it.cursor && s.framed == nil {
 				return s
 			}
 		}
@@ -412,10 +445,11 @@ func plainStyle(group []promptItem) menuStyle {
 }
 
 // numberedMenu returns the lowest numbered list of lines that option
-// matches with one option under the cursor and a key hint below it. A
-// line indented deeper than an option continues it (a wrapped label, a
-// description); with hanging, so does one at the column of its number.
-func numberedMenu(lines []string, option *regexp.Regexp, hanging bool) ([]promptItem, bool) {
+// matches with one option under the cursor and its end told by ends (a key
+// hint below it: hintFollows). A line indented deeper than an option
+// continues it (a wrapped label, a description); with hanging, so does one
+// at the column of its number.
+func (r *screenRules) numberedMenu(lines []string, option *regexp.Regexp, hanging bool, ends func(lines []string, group []promptItem) bool) ([]promptItem, bool) {
 	var groups [][]promptItem
 	cur := -1 // index in groups of the menu being read
 	// Blank lines and rules since the last line of the current menu; one is
@@ -470,7 +504,7 @@ func numberedMenu(lines []string, option *regexp.Regexp, hanging bool) ([]prompt
 		if first := group[0].start; first > 0 && isPromptRule(strings.TrimSpace(lines[first-1])) {
 			continue
 		}
-		if !promptHintFollows(lines, group[len(group)-1].end) {
+		if !ends(lines, group) {
 			continue
 		}
 		return group, true
@@ -480,18 +514,40 @@ func numberedMenu(lines []string, option *regexp.Regexp, hanging bool) ([]prompt
 
 // permissionMenu reports whether lines (a screen, top to bottom) show a
 // permission menu of harnessID (claude's permission or plan approval menu,
-// Codex's or Copilot CLI's approval menu), or of any harness when
+// the approval menu or dialog of the others), or of any harness when
 // harnessID is "", and its signature.
-func permissionMenu(lines []string, harnessID string) (sig string, ok bool) {
-	m, ok := findMenu(lines, harnessID)
-	if !ok || m.options[0].number != 1 || !strings.HasPrefix(m.options[0].label, "Yes") {
+func (r *screenRules) permissionMenu(lines []string, harnessID string) (sig string, ok bool) {
+	m, ok := r.findMenu(lines, harnessID)
+	if !ok || !m.permission(lines) {
 		return "", false
 	}
-	edge := m.style.dialogEdge
-	if edge == nil {
-		edge = isDialogEdge
+	return menuSignature(lines, m.options[0].start, m.edge()), true
+}
+
+// permission reports whether m, on lines, is a permission menu: the
+// style's permission dialog, or a menu whose first option, 1, has the
+// label of one (menuStyle.permission) or that its own end tells
+// (menuStyle.endsPermission).
+func (m foundMenu) permission(lines []string) bool {
+	if m.dialog != "" {
+		return m.dialog == dialogPermission
 	}
-	return menuSignature(lines, m.options[0].start, edge), true
+	first := m.options[0]
+	if first.number != 1 {
+		return false
+	}
+	if p := m.style.permission; p != nil && p.MatchString(first.label) {
+		return true
+	}
+	return m.style.endsPermission && m.style.ends(lines, m.options)
+}
+
+// edge is the top edge of m's dialog (menuSignature).
+func (m foundMenu) edge() func(line string) bool {
+	if m.style.dialogEdge != nil {
+		return m.style.dialogEdge
+	}
+	return isDialogEdge
 }
 
 // menuSignature identifies the dialog whose first option is on line first:
@@ -502,10 +558,11 @@ func permissionMenu(lines []string, harnessID string) (sig string, ok bool) {
 // differs between the prompts of two tool calls, and stays the same while
 // the dialog is up, whatever happens below it (the cursor moving between
 // the options, Tab to amend) or above it (the blinking ● of the tool line,
-// the transcript). Blanks, rule and box characters and the ●/⏺ marks are
-// left out, so the same dialog wrapped at another width has the same
-// signature. Two prompts for the very same tool call text share a
-// signature: the second is not told apart from the first.
+// the transcript). Blanks, rule and box characters, the bars left of Grok
+// Build's dialogs and the ●/⏺ marks are left out, so the same dialog
+// wrapped at another width has the same signature. Two prompts for the
+// very same tool call text share a signature: the second is not told apart
+// from the first.
 func menuSignature(lines []string, first int, edge func(line string) bool) string {
 	top := 0
 	for j := first - 1; j >= 0; j-- {
@@ -517,7 +574,7 @@ func menuSignature(lines []string, first int, edge func(line string) bool) strin
 	var b strings.Builder
 	for _, line := range lines[top:first] {
 		for _, r := range line {
-			if !unicode.IsSpace(r) && r != '●' && r != '⏺' && r != '│' &&
+			if !unicode.IsSpace(r) && r != '●' && r != '⏺' && r != '│' && r != '┃' && r != '┆' &&
 				!strings.ContainsRune(promptRuleChars, r) && !strings.ContainsRune(promptEdgeChars, r) {
 				b.WriteRune(r)
 			}
@@ -561,17 +618,17 @@ func parsePromptItem(option *regexp.Regexp, text string, line int) (promptItem, 
 	return it, true
 }
 
-// promptHintFollows reports a key hint within the few lines under the
-// options, or nothing but blanks below them. A transcript entry below means
-// the list is part of the conversation, e.g. a numbered prompt the user
-// sent. When the bottom edge of a box beside the options comes right under
-// them (claude's question with previews), what is in that column below it
-// — its notes field, a note typed there however many lines it wraps to —
-// is not counted.
-func promptHintFollows(lines []string, end int) bool {
+// promptHintFollows reports a key hint within the few lines (hintRows)
+// under the options, or nothing but blanks below them. A transcript entry
+// below means the list is part of the conversation, e.g. a numbered prompt
+// the user sent. When the bottom edge of a box beside the options comes
+// right under them (claude's question with previews), what is in that
+// column below it — its notes field, a note typed there however many
+// lines it wraps to — is not counted.
+func (r *screenRules) promptHintFollows(lines []string, end int) bool {
 	side := 0 // the column of the box beside the options
 	seen := 0
-	for j := end + 1; j < len(lines) && seen < 4; j++ {
+	for j := end + 1; j < len(lines) && seen < r.hintRows; j++ {
 		t := strings.TrimSpace(lines[j])
 		if side == 0 && seen == 0 && strings.HasPrefix(t, "└") {
 			side = indentOf(lines[j])
@@ -579,10 +636,10 @@ func promptHintFollows(lines []string, end int) bool {
 		if t == "" || isPromptRule(t) || side > 0 && indentOf(lines[j]) >= side {
 			continue
 		}
-		if promptTranscriptMark.MatchString(t) {
+		if r.transcriptMark.MatchString(t) {
 			return false
 		}
-		if promptHint.MatchString(t) {
+		if r.hint.MatchString(t) {
 			return true
 		}
 		seen++

@@ -1,0 +1,31 @@
+| ! Mock title                    +
+|
+|  ┃
+|  ┃  run it #approval
+|  ┃
+|
+|     + 1 command
+|     ← Write mock_write.txt
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  ┃
+|  ┃  △ Permission required
+|  ┃    → Edit mock_write.txt
+|  ┃
+|  ┃  This will always allow edit for this project.
+|  ┃
+|  ┃
+|  ┃   Allow once   Always allow   Reject
+|  ┃
+|  ┃  ctrl+f fullscreen  ⇆ select  enter confirm
+|  ┃
+|
+cursor=32,25 alt=true appCursor=false

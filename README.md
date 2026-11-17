@@ -8,7 +8,7 @@ binaries were built from this code.
 ## What it does
 
 SSH Term's **chat view** shows the conversation of the coding agent (Claude
-Code, Codex, Oh My Pi) running in a terminal tab, also when it runs inside
+Code, Codex, Oh My Pi, Pi, Copilot CLI, Qwen Code, OpenCode, Grok Build) running in a terminal tab, also when it runs inside
 tmux, zellij, screen or herdr. For that the app runs `stagent follow` over an
 SSH exec channel on the terminal's own connection. It:
 
@@ -17,7 +17,10 @@ SSH exec channel on the terminal's own connection. It:
   by the shell's `SSH_CONNECTION`, and the pane a multiplexer client in it
   shows,
 - finds the agent process in that shell or pane and the conversation file it
-  writes (`~/.claude`, `~/.codex`, `~/.omp`),
+  writes (`~/.claude`, `~/.codex`, `~/.omp`, `~/.pi`, `~/.copilot`,
+  `~/.qwen`; for OpenCode, which keeps its sessions in a database, the
+  record stagent keeps of each session under `~/.ssh-term/agent/state/opencode`,
+  read from `opencode session export`; `~/.grok/sessions` for Grok Build),
 - streams new messages of that file as JSON lines until the app closes the
   channel.
 
@@ -73,10 +76,13 @@ the server:
   command starts, `stagent run` tells you in one line how many agent
   sessions are held on the host (see `stagent ls`), if any.
 - Shell wrappers installed with `stagent integrate --shell-wrapper` make
-  `claude`, `codex` and `omp` typed in an interactive terminal run as
-  `stagent run --handoff=auto -- …`, so they survive the terminal by
-  default. Non-interactive runs (`claude -p`, `codex exec`, `omp -p`,
-  `omp --mode json`) are left alone. To have the agent end with the
+  `claude`, `codex`, `omp`, `pi`, `copilot`, `qwen`, `opencode` and `grok` typed in an
+  interactive terminal run as `stagent run --handoff=auto -- …`, so they
+  survive the terminal by default. Non-interactive runs (`claude -p`,
+  `codex exec`, `omp -p`, `omp --mode json`, `qwen -p`, `qwen "a prompt"`
+  without `-i`, `opencode run` and OpenCode's other commands, `grok -p`
+  and Grok Build's commands but `dashboard`) are left alone. OpenCode 2 is started with `--standalone`, a server of its own,
+  so its plugin reports to this session. To have the agent end with the
   terminal instead, set `STAGENT_HANDOFF=0` in that shell, or turn on
   `disable_handoff` in `config.json` (what the app's switch sets);
   `STAGENT_HANDOFF=1` overrides the config.
@@ -89,8 +95,9 @@ the server:
   among the agents the list cannot show.
 
 Coding agents cannot drive the sessions. On Linux and macOS a holder
-refuses every connection from a process that claude, codex or omp started
-(stagent walks the connecting process's parents), and the daemon refuses
+refuses every connection from a process that a coding agent (any harness
+of the registry, `internal/harness`) started (stagent walks the connecting
+process's parents), and the daemon refuses
 them `config.set`, `presence.set`, `notify.test` and `daemon.shutdown`;
 hooks and the statusLine relay still report, and the session list can
 still be read (the relay's `usage.report` is taken only for a Claude
@@ -204,7 +211,9 @@ ended on its own. Nothing restarts by itself — an agent costs API usage — bu
 the app each one can be resumed: a new kept shell opens in the same
 directory, tied to the same task, running the harness's resume command
 (`claude --resume <id>`, `codex resume <id>`, `copilot --resume=<id>`,
-`omp --resume <id>`, `pi --session <id>`), and your login shell when the
+`omp --resume <id>`, `pi --session <id>`, `qwen --resume <id>`,
+`opencode --standalone --session <id>`, `grok --resume <id>`), and your
+login shell when the
 agent exits. A stopped agent stays listed until it is resumed, removed,
 continued some other way, or for 7 days. Coding agents cannot resume or
 remove them.
@@ -218,7 +227,10 @@ spent on the host (使用量) and the limit windows of their subscriptions
 - `stagent daemon` reads, every 10 s and when the app asks, what is new in
   the conversation files of claude (`$CLAUDE_CONFIG_DIR` or `~/.claude`,
   `projects/`, sub-agents included), codex (`$CODEX_HOME` or `~/.codex`,
-  `sessions/`), omp and pi — only the token counts, models, times and
+  `sessions/`), omp, pi and Qwen Code (`$QWEN_RUNTIME_DIR`, `$QWEN_HOME` or
+  `~/.qwen`, `projects/*/chats/`), Grok Build (`$GROK_HOME` or `~/.grok`,
+  `sessions/*/*/updates.jsonl`, by turn) and stagent's records of OpenCode's
+  sessions — only the token counts, models, times and
   working directories, and the `rate_limits` Codex writes in its rollouts.
   It keeps what it counted in `~/.ssh-term/agent/state/usage-index.json`,
   the last value of each limit window in `state/usage-limits.json` and
@@ -255,6 +267,42 @@ Coding agents can read the usage too; of what writes, they can send only
 the relay's report, and only within the bounds told above for agents
 (ADR 0004). The wire format is in
 [PROTOCOL.md](PROTOCOL.md) ("Usage", "Limit windows", "Private API", "omp usage").
+
+## Screen rules
+
+A session's holder watches the screen for the coding agent's approval
+menus and question UIs, to tell when one was answered on the host and to
+keep a chat message from landing on a menu. How each agent draws them —
+its cursor, the wording of its key hints and headers, how many rows to
+look at — is in rules files, one per harness and `common.json` for all.
+They are built into stagent
+([internal/screenrules/builtin](internal/screenrules/builtin)); when an
+agent's screen changes before a stagent release follows it, put a file of
+the same name in `~/.ssh-term/agent/screen-rules/` with just what to
+change, e.g. a new header of Codex's question UI in
+`~/.ssh-term/agent/screen-rules/codex.json`:
+
+```json
+{"question": {"header": "^\\s+Frage \\d+/\\d+"}}
+```
+
+Sessions started afterwards use it; running ones keep the rules they
+started with. A file stagent cannot use (unreadable, not JSON, an unknown
+member, a pattern that is no regular expression) is ignored in favour of
+the built-in rules, and `stagent doctor` names it with the reason
+(`screen_rules`, `problems`).
+
+To see which rule matched a screen — and whether it is built in or your
+override:
+
+```sh
+stagent explain --session <id>               # a live session (stagent ls)
+tmux capture-pane -p | stagent explain --file - --harness codex
+stagent explain --session <id> --json
+```
+
+The file format, the rules and the output are in
+[PROTOCOL.md](PROTOCOL.md) ("Screen rules").
 
 ## Installation and removal
 

@@ -44,7 +44,7 @@ another user (see `hello`'s `blocked`). Nothing was sent there. The
 message names the location and its owner.
 
 `agent_refused`: the local connection came from a process that a coding
-agent (claude, codex, omp, pi, copilot) started — stagent walks its parents — or, on
+agent (claude, codex, omp, pi, copilot, qwen, opencode, grok) started — stagent walks its parents — or, on
 macOS, from a process in a sandbox (Seatbelt, which coding agents run
 their commands in), or from one it could not check: it exited first, or
 its parents were more than 256 deep or kept changing (ADR 0004). A
@@ -953,7 +953,9 @@ directories too; `env` entries override), running
 
 `<resume argv>` continues the conversation the way the app's resume does:
 `claude --resume <id>`, `codex resume <id>`, `copilot --resume=<id>`, `omp
---resume <id>`, `pi --session <id>` (the harness registry's `Resume`); the
+--resume <id>`, `pi --session <id>`, `qwen --resume <id>`, `opencode --standalone
+--session <id>`, `grok --resume <id>` (the harness
+registry's `Resume`); the
 `conversation_id` must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`
 (`bad_request` otherwise). When the agent exits, the user is left in their
 login shell (`SHELL` of that environment, `/bin/sh` when unset) in the same
@@ -2397,6 +2399,37 @@ others are not counted):
   request) is not a request.
 - **copilot**: not counted. Copilot CLI's `events.jsonl` has the output
   tokens of a reply but no input or cache tokens per request.
+- **qwen** (since #1587): every `projects/<project>/chats/<id>.jsonl`
+  below Qwen Code's runtime directory (`$QWEN_RUNTIME_DIR`, else
+  `$QWEN_HOME`, else `~/.qwen`; the `.ledger.jsonl` sidecars not). Each
+  `type: "assistant"` record with a `usageMetadata` is one request, keyed
+  by the record's `uuid`: `promptTokenCount` less
+  `cachedContentTokenCount` is `input`, `cachedContentTokenCount`
+  `cache_read`, `candidatesTokenCount` plus `thoughtsTokenCount` `output`;
+  the record's `model`, `cwd`, `sessionId` and `timestamp`. A reply that
+  spent nothing is not a request. Qwen Code writes no cache writes.
+- **opencode** (since #1589): stagent's own records of OpenCode sessions
+  (`<root>/<session id>.jsonl`, see "OpenCode" under Harness hooks; the
+  `.proc` sidecars not). Each finished `type: "assistant"` message with
+  `tokens` is one request, keyed by its `id`: `tokens.input` is `input`,
+  `tokens.output` plus `tokens.reasoning` `output`, `tokens.cache.read`
+  `cache_read`, `tokens.cache.write` `cache_write_5m`, `cost` (US dollars)
+  `agent_cost`; the message's `model.id` and `time.completed`, the session
+  record's `id` and `directory`. A reply that spent nothing is not a
+  request.
+- **grok** (since #1590): every `<cwd>/<id>/updates.jsonl` below Grok
+  Build's `sessions` (`$GROK_HOME`, else `~/.grok`). Each `turn_completed`
+  update (method `_x.ai/session/update`) is one request, keyed by the
+  session (the file's directory) and its `prompt_id`: Grok Build writes
+  its usage per turn, not per model call. `usage.inputTokens` less
+  `cachedReadTokens` is `input` [INFERENCE: xAI counts the cached part in
+  the input; to check with a real model, #1591], `cachedReadTokens`
+  `cache_read`, `cacheCreationTokens` `cache_write_5m`, `outputTokens` plus
+  `reasoningTokens` `output`; the model that spent the most of the turn's
+  `totalTokens` (`modelUsage`), the line's `agentTimestampMs`; the project
+  is the session's directory, its name decoded (or the `.cwd` file of a
+  directory named by a slug and a hash). A turn that spent nothing is not
+  a request.
 
 One request is one key: Claude `message.id:requestId` (no `requestId`:
 `message.id`; neither: `uuid`); codex the line's `timestamp` with its
@@ -2981,8 +3014,8 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 
 ## Objects
 
-`Session`: `id, harness (claude|codex|omp|pi|copilot|other), command_harness
-(claude|codex|omp|pi|copilot|other), command[], cwd, pid,
+`Session`: `id, harness (claude|codex|omp|pi|copilot|qwen|opencode|grok|other), command_harness
+(claude|codex|omp|pi|copilot|qwen|opencode|grok|other), command[], cwd, pid,
 holder_pid, mode (passthrough|detached), attached, state (working|idle|
 waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
 process), title?, conversation_id?, transcript_path?, last_message?,
@@ -3095,8 +3128,8 @@ tells when the prompt is answered: claude does not stop the hook (it runs
 until the approved tool finished), and an Esc on Codex's prompt ends the
 turn without Stop while Codex blinks its terminal title for as long as the
 prompt is up, so no output activity marks the answer. The session's holder
-therefore watches its screen (local IPC only): while a claude, Codex or
-Copilot CLI approval of the session is pending, the daemon sends the holder
+therefore watches its screen (local IPC only): while a claude, Codex,
+Copilot CLI or Qwen Code approval of the session is pending, the daemon sends the holder
 `holder.prompt_watch {id, gen, on: true, harness}` (a new `gen` with every
 approval; `harness` (since 0.16.0) names the harness whose menu to read:
 Copilot CLI draws its menu in a box `╭─╮ │ │ ╰─╯` with claude's `❯` cursor,
@@ -3108,7 +3141,20 @@ for the session), so that hook returns at once and registers nothing; the
 sends with its menu registers the approval, `tool_name` and `summary` from
 the latest PermissionRequest of the session (else the notification's
 `message`). It closes like a Codex approval (prompt watch, output activity,
-Stop).
+Stop). Qwen Code (since #1587) runs its PermissionRequest hook only for a
+call it shows its menu for, and shows the menu only once the hook
+returned: the hook registers the approval and returns at once; it closes
+like a Codex approval too. OpenCode (since #1589) is not watched: its
+plugin's `PermissionRequest` registers the approval and returns at once,
+and its `PermissionReplied` (OpenCode's `permission.replied`, sent
+whoever answered the menu: the PC or SSH Term typing its keys) closes it.
+Grok Build (since #1590) has no `PermissionRequest`: its `PreToolUse`
+comes before it checks the call's permission and is kept as Copilot CLI's
+PermissionRequest is (named by its `tool_name`), and the `Notification`
+`permission_prompt` that comes with its menu registers the approval; it
+closes like a Codex approval (prompt watch, output activity, Stop) and at
+`StopCancelled` — Grok Build sends no hook for an answer that allows until
+the tool finished.
 The holder takes the permission menu — numbered options starting with `1.
 Yes`, one under the cursor (claude's `❯`, Codex's `›`), a key hint below
 them, claude's plan approval included — that is on the screen during the
@@ -3118,7 +3164,24 @@ above that starts in the first column, i.e. the transcript entry over the
 dialog; that is the title, command or file with its preview, question; the
 cursor, the options and the transcript above do not count). Once no menu
 of that text has been on the screen for 400 ms — none, or another
-prompt's — it sends `holder.prompt_gone {id, gen}`, once per `gen`.
+prompt's — it sends `holder.prompt_gone {id, gen}`, once per `gen`. Qwen
+Code's menu (since #1587) has Codex's `›` but no key hint below its options
+— only its spinner line (`⠏ Waiting for user confirmation...`) — and its
+labels are translated and cut off to the width: it is the numbered menu
+under `›` whose last option ends in the key that turns it down in
+parentheses (`(esc)`, `(Esc)`, `(échap)`) with nothing but blanks before
+the spinner or the bottom of the screen; its text is read from the nearest
+line above the options at the transcript's indent (two columns or less).
+Grok Build's menu (since #1590) is drawn right of a bar (`┃`), its rows
+numbered with a radio mark after the number and `●` on the highlighted one
+(`┃  2 (●) Yes, proceed`), its title starting with `›` (no cursor), and its
+key hint under the bar (`1/4:select  │  Tab:next option`, or
+`Tab/Space:permission  │ …` while Esc parked the focus in the
+scrollback); its text is read from the line above the bar, the bars and
+`┆` left out. Its question card (rows `1 (○) …` to `z (○) Type your answer
+here`, its key hint `↑/↓ navigate · … Enter:submit` in the bar) and its
+folder trust prompt (`Do you trust the contents of this directory?`,
+`Yes, proceed  y` / `No, quit  n`) are menus but no approval.
 claude shows parallel tool calls' prompts one after the other, so a watch
 whose menu is still up when the next one starts keeps being watched (the
 next one does not take that menu) and is reported when it goes. The
@@ -3156,7 +3219,7 @@ sessions are tied to tasks by `Session.task_id`, not by it.
 `setup_pending` (`{script, hash}`, since 0.19.0) is the `scripts.setup` a
 `preparing` task waits on for the app to run or skip (`task.setup`).
 
-`UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp|pi|copilot), cwd, reason
+`UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp|pi|copilot|qwen|opencode|grok), cwd, reason
 (old_terminal|bypassed|ide|ssh|no_terminal), first_seen_at,
 last_activity_at` (unix ms, host clock: the first and the latest hook of
 the conversation). `reason`:
@@ -3173,7 +3236,7 @@ ends with the connection (start it in a kept shell); `no_terminal`
 without a terminal (cannot be shown).
 
 `StoppedAgent` (since 0.21.0): `id` (the old session's), `harness
-(claude|codex|omp|pi|copilot)`, `conversation_id`, `cwd`, `title?`,
+(claude|codex|omp|pi|copilot|qwen|opencode|grok)`, `conversation_id`, `cwd`, `title?`,
 `task_id?`, `started_at` (the old session's), `found_at` (when the daemon
 found it stopped; unix ms, host clock), `reason (reboot|lost)`: `reboot` —
 the host restarted under it; `lost` — its holder went away otherwise (see
@@ -3255,7 +3318,7 @@ is `bad_request`.
 ## `stagent follow` (terminal chat view, follow protocol 1)
 
 `stagent follow` streams the transcript of the coding agent (Claude Code,
-Codex, omp, Pi, Copilot CLI) running in a terminal tab. The app runs it over
+Codex, omp, Pi, Copilot CLI, Qwen Code, OpenCode, Grok Build) running in a terminal tab. The app runs it over
 an exec channel **on the same SSH connection as the tab's shell**, with the
 command forms of
 "Starting the bridge" (`follow` instead of `bridge`). It needs no daemon,
@@ -3388,7 +3451,10 @@ user's own processes). When stagent's own `SSH_CONNECTION` is unset there
 is then no tab to find: the target is `no_terminal`.
 
 In the tab's process tree, agents are recognized by process name or argv
-(`claude`, `codex`, `omp`, `pi`, `copilot`, also `node|bun … <script>` of
+(`claude`, `codex`, `omp`, `pi`, `copilot`, `qwen`, `opencode` (its native
+binary `opencode.exe`, its private server a child of the same binary),
+`grok` (its native binary, which macOS names after the file the link
+points to, `grok-macos-aarch64`, cut short), also `node|bun … <script>` of
 their npm packages; Pi sets its process title to `pi`, which Linux shows as
 its name and macOS as its argv, `["pi", "", …]`, its arguments
 overwritten); a process of the same harness below an agent belongs to it
@@ -3442,7 +3508,7 @@ match wins:
    overwrite it (Windows);
 4. the harness's newest conversation in the agent's working directory
    written since the agent started that no other running agent process
-   (Codex, omp, Pi, Copilot CLI) has open or names on its command line,
+   (Codex, omp, Pi, Copilot CLI, Qwen Code, OpenCode, Grok Build) has open or names on its command line,
    and no other listed agent already follows. An agent that starts a new
    conversation (no resume / continue) prefers one created since it
    started.
@@ -3458,9 +3524,55 @@ the session `--resume[=]<id>`, `-r <id>` or `--session-id[=]<id>` names,
 else 4. Its records are read tolerantly: types not read and lines that do
 not parse are skipped.
 
+Qwen Code (`node …/qwen` or `node …/@qwen-code/qwen-code/…`, one
+process): `projects/<project>/chats/<id>.jsonl` (the project's path with
+every character but `[A-Za-z0-9]` a `-`, lowercased first on Windows) of
+the chats directory one of its processes has a file of open, else the
+conversation whose `<id>.runtime.json` beside it names one of its
+processes (`pid`) started when it did (`started_at`), looked for in the
+projects of its working directory and the directories above it, else the
+conversation `--resume[=]<id>`, `-r <id>` or `--session-id[=]<id>` names,
+else 4 (`-c` / `--continue` and `-r` without an id are a resume there). Its
+records are read tolerantly like Copilot CLI's: `user` (also
+`mid_turn_user_message`), the model's texts (not its thoughts) and tool
+calls of `assistant`, the answers of `ask_user_question` from its
+`tool_result`; `system` records, other types and lines that do not parse
+are skipped, and so are the sidecars beside the conversations
+(`<id>.title.json`, whose `displayName` titles the conversation,
+`.runtime.json`, `.ledger.jsonl`, …).
+
+OpenCode V2 (`opencode`, its native binary, and its private server
+`opencode serve --stdio` below it): its sessions are in a database; its
+transcript is stagent's record of the session (see "OpenCode" under Harness
+hooks), the one whose `<id>.proc` sidecar names one of its processes
+(`pid`) started when it did (`started`), else the session `--session[=]<id>`
+or `-s <id>` names, else 4.
+
+Grok Build (`grok`, one native process): `sessions/<cwd>/<id>/updates.jsonl`
+(`<cwd>` the working directory percent-encoded: every byte but `A-Z a-z
+0-9 - . _ ~`; a longer one than 255 bytes encoded is a slug and a hash,
+with the directory in a `.cwd` file there) of the session directory one of
+its processes has a file of open (it holds a `.lock` beside each of its
+files), else the session `--resume[=]<id>`, `-r <id>` or
+`--session-id[=]<id>` / `-s <id>` names, looked up in every directory's
+sessions (the id is a UUIDv7), else 4 (`-c` / `--continue` and `-r`
+without an id are a resume there). Its records are read tolerantly:
+`session/update` `user_message_chunk` (the prompt), `agent_message_chunk`
+(the model's text, one row per record), `tool_call` (a tool row named by
+`_meta["x.ai/tool"].name`, else `title`, summarized by `rawInput`; an
+`ask_user_question` call a question row) and the `tool_call_update` that
+ends a question (`rawOutput.UserAnswered.answers[].picked`; a failed one
+closes it unanswered); thinking (`agent_thought_chunk`), Grok Build's own
+`_x.ai/session/update` records (`turn_completed`, `hook_execution`, …),
+other updates and lines that do not parse are skipped. `summary.json`
+beside the file names the session's `cwd` (`info.cwd`) and titles it
+(`generated_title`, else `session_summary`, else the first prompt).
+
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` (Pi's sessions
-are in its `sessions`, default `~/.pi/agent/sessions`) and `COPILOT_HOME`
-(default `~/.copilot`) are read from the agent's environment.
+are in its `sessions`, default `~/.pi/agent/sessions`), `COPILOT_HOME`
+(default `~/.copilot`), `QWEN_RUNTIME_DIR` / `QWEN_HOME` (default
+`~/.qwen`), `STAGENT_HOME` (where stagent's OpenCode records are) and
+`GROK_HOME` (default `~/.grok`) are read from the agent's environment.
 
 ### Security
 
@@ -3504,7 +3616,7 @@ success (non-zero with `{"error": "..."}` on failure).
 |---|---|
 | `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, replaced_daemon?, changes[], notes[{code, text, args?}]}` — creates directories and the manifest and completes an update (below); idempotent |
 | `stagent doctor --json` | `DoctorReport` |
-| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp,pi,copilot] [--shell-wrapper] [--service] [--linger] [--terminal] [--execution-policy] [--wsl-keep-running] [--statusline] [--remove claude,codex,omp,pi,copilot,shell-wrapper,service,linger,terminal,wsl-keep-running,statusline]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
+| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp,pi,copilot,qwen,opencode,grok] [--shell-wrapper] [--service] [--linger] [--terminal] [--execution-policy] [--wsl-keep-running] [--statusline] [--remove claude,codex,omp,pi,copilot,qwen,opencode,grok,shell-wrapper,service,linger,terminal,wsl-keep-running,statusline]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
 | `stagent uninstall --json --level stop\|unhook\|purge [--uploads] [--linger]` | `{level, steps[{action, target, ok, error?}], removed[], failed[{path, reason, sessions[]}], remaining[]}` |
 | `stagent wsl-shutdown --json` | (WSL) runs `wsl.exe --shutdown`, which normally ends this command, see below |
 
@@ -3694,6 +3806,8 @@ code it does not know.
 | `omp_restart` | – | running omp sessions load the extension only after a restart (given when the extension changes and omp is on the host) |
 | `pi_restart` | – | running Pi sessions load the extension only after a restart (or `/reload`) (given when the extension changes and pi is on the host) |
 | `copilot_restart` | – | running Copilot CLI sessions load the hooks (`$COPILOT_HOME/hooks/ssh-term-stagent.json`, default `~/.copilot/hooks/`) only after a restart (given when the hooks file changes and copilot is on the host) |
+| `qwen_restart` | – | running Qwen Code sessions load the extension's hooks (`$QWEN_HOME/extensions/stagent/qwen-extension.json`, default `~/.qwen/extensions/`) only after a restart (given when the extension changes and qwen is on the host) |
+| `grok_restart` | – | running Grok Build sessions load the hooks (`$GROK_HOME/hooks/ssh-term-stagent.json`, default `~/.grok/hooks/`) only after a restart or `/hooks` → `r` (given when the hooks file changes and grok is on the host) |
 | `codex_trust` | – | Codex asks to review and trust the new hooks at its next start; stagent writes no trust entries |
 | `codex_notify_fallback` | `reason` | Codex is integrated through the notify program (turn complete only, no approvals); `reason`: `inline_features` (`features` is an inline table), `hooks_removed` (this Codex removed the hooks feature), `no_hooks_feature` (this Codex has none) |
 | `codex_notify_kept` | `command` | Codex already has another notify program (`command`); stagent left it, so turn-complete events are not reported |
@@ -3736,9 +3850,11 @@ time>`), and the backup is deleted. When the file changed since, only
 stagent's elements are taken out and the backup stays, as the only copy
 of the content before stagent: `doctor` lists it (`purge` level) and
 `uninstall --level purge` deletes it. A directory holding anything else
-stays. Pi's extension and Copilot CLI's hooks file are also removed where
-the manifest records them, so one written under another
-`PI_CODING_AGENT_DIR` / `COPILOT_HOME` than the current one goes too
+stays. Pi's extension, Copilot CLI's hooks file, Qwen Code's extension,
+OpenCode's plugin and Grok Build's hooks file are also removed where the manifest records them, so one written under
+another `PI_CODING_AGENT_DIR` / `COPILOT_HOME` / `QWEN_HOME` /
+`OPENCODE_CONFIG_DIR` / `XDG_CONFIG_HOME` / `GROK_HOME` than the
+current one goes too
 (`doctor` lists it there until then).
 
 `install` completes an update of the binary (the app runs it after
@@ -3807,6 +3923,8 @@ in tmp when socket paths would be too long there.
   "powershell": null,
   "redirection_guard": null,
   "notify": {"last_error": {"ntfy": {"at": 1767225600000, "status": 429, "error": "429 Too Many Requests"}}},
+  "screen_rules": {"dir": "/home/u/.ssh-term/agent/screen-rules",
+                   "files": [{"path": "/home/u/.ssh-term/agent/screen-rules/codex.json", "name": "codex", "used": true}]},
   "unwrapped": [{"conversation_id": "…", "harness": "claude", "cwd": "/home/u/api", "reason": "old_terminal",
                  "first_seen_at": 1767225600000, "last_activity_at": 1767225900000}],
   "orphans": [{"target": "/home/u/.claude/settings.json", "detail": "..."}],
@@ -3872,6 +3990,11 @@ treats it as a known limitation.
 `unwrapped` is the running daemon's list of agents started without a
 stagent session (`UnwrappedLaunch`, the same as `watch`'s); `[]` when the
 daemon does not run.
+
+`screen_rules` lists the override files of the screen rules in `dir` (see
+"Screen rules"): `files[]` `{path, name, used, error?}`, by file name,
+`[]` when there are none. A file that is not `used` keeps the built-in
+rules; `error` says why, and `problems` has a line naming the file.
 
 `statusline` (since 0.19.0, #1559) is the statusLine relay of
 `integrate --statusline`, over the `settings.json` files it edits (and
@@ -4061,9 +4184,20 @@ Codex otherwise runs its threads in one shared `codex app-server
 that started it, so the hooks of every later session would carry that
 session's `STAGENT_SESSION_ID`. The session's `command` stays as given.
 
+Likewise an OpenCode 2 or later (`opencode --version`, `opencode v2.3.0`;
+asked the same way) running its terminal UI — not one of its commands
+(the shell wrapper's batch rule), not given `--standalone` or `--server`
+already — is started with `--standalone` added right after the program
+(#1589): it then runs a server of its own as its child, with the session's
+environment, where stagent's plugin runs. Otherwise the UI connects to
+OpenCode's background service, which keeps the environment of whoever
+started it, so the plugin's hooks would carry another session's
+`STAGENT_SESSION_ID` (or none). OpenCode 1 has no such flag and is left
+as it is.
+
 The shell wrappers (`integrate --shell-wrapper`; bash/zsh block, fish file,
-PowerShell profile block) define functions `claude`, `codex`, `omp`, `pi`
-and `copilot` (every harness stagent knows)
+PowerShell profile block) define functions `claude`, `codex`, `omp`, `pi`,
+`copilot`, `qwen`, `opencode` and `grok` (every harness stagent knows)
 that run the real command as `stagent run --handoff=auto -- <name>
 <args…>` when the shell is interactive, stdin and stdout are terminals, the
 shell is not already inside a stagent session (`STAGENT_SESSION_ID` unset)
@@ -4077,7 +4211,30 @@ argument `install`, `remove`, `uninstall`, `update`, `list`, `config`,
 or a first argument that is one of its subcommands (`login`, `help`,
 `init`, `config`, `update`, `version`, `workflow`, `sessions`, `memories`,
 `plugin`, `mcp`, `skill`, `instruction`, `lsp`, `sandbox`, `completion`,
-`app`). The block also exports `STAGENT_SHELL_WRAPPER=1`, marking shells
+`app`), qwen with `-p` / `--prompt` / `--prompt=…` / `--acp` / `-o` /
+`--output-format` / `--output-format=…`, a first argument that is one of
+its subcommands (`agents`, `attach`, `autofix-pr`, `auth`, `batch`,
+`board`, `channel`, `extensions`, `hooks`, `mcp`, `memory`, `review`,
+`sandbox`, `serve`, `daemon`, `sessions`, `update`), or a positional
+argument — its prompt, which it runs once and exits with — without `-i` /
+`--prompt-interactive` (also `--prompt-interactive=…`), which runs it in
+the terminal UI: an argument that is no option (a lone `-` is no option) and not
+the value of an option that takes one (`-m`, `--approval-mode`, `-r`,
+`--resume`, … as `qwen --help` lists them), or any argument after `--`;
+opencode with `-h` / `--help` / `-v` / `--version` / `--completions` /
+`--completions=…` or a first argument that is one of its commands (`run`,
+`serve`, `service`, `session`, `api`, `debug`, `auth`, `mcp`, `plugin`,
+`models`, `stats`, `upgrade`, `update`, `uninstall`, `acp`, `reload`,
+`pair`, and `mini`, its minimal interface, which the app does not read);
+grok with `-p` / `--single` / `--prompt-file` / `--prompt-json` (also
+`--single=…`, `--prompt-file=…`, `--prompt-json=…`), `-h` / `--help` / `-v`
+/ `--version`, or a first argument that is one of its commands (`agent`,
+`clone`, `completions`, `doctor`, `du`, `disk-usage`, `export`, `help`,
+`inspect`, `leader`, `login`, `logout`, `mcp`, `memory`, `models`,
+`plugin`, `sessions`, `setup`, `trace`, `update`, `usage`, `version`, `v`,
+`worker`, `worktree`, `wrap`; not `dashboard`, a view of its terminal UI —
+a positional argument is the terminal UI's first prompt).
+The block also exports `STAGENT_SHELL_WRAPPER=1`, marking shells
 that have the wrapper.
 The wrapper itself does not look at `STAGENT_HANDOFF`; `stagent run
 --handoff=auto` does. The PowerShell block also wraps the prompt defined
@@ -4145,6 +4302,97 @@ ends, the relay waits for the report only until 150 ms after its own
 start. An input that is not JSON, one without `rate_limits`, or a daemon
 that does not run changes nothing but the report.
 
+## Screen rules
+
+The holder reads its session's screen to tell the coding agents' menus
+and question UIs apart: the permission menu of a prompt watch
+(`holder.prompt_watch`), the question UI of a question watch
+(`holder.question_watch`) and any menu, on which a chat message is refused
+(`menu_open`). What it looks for is in rules files, one per harness
+(`claude`, `codex`, `omp`, `pi`, `copilot`, `qwen`, `opencode`, `grok`)
+and one every harness shares (`common`). The ones stagent ships are built in
+(`internal/screenrules/builtin/<name>.json`); a host overrides them with
+a file of the same name in `~/.ssh-term/agent/screen-rules/`
+(`<name>.json`). A holder reads them when it starts, so an override
+applies to the sessions started after it, with the stagent already
+installed; a running session keeps the rules it started with. There is
+no remote update of the rules.
+
+An override is laid over the built-in file: the members it names replace
+the built-in ones, an object member by member, and `null` turns a rule
+off. `{"question": {"header": "^\\s+Frage \\d+/\\d+"}}` in `codex.json`
+changes the header of Codex's question UI and nothing else. A file is
+not used — its rules stay built-in, the holder logs it, `doctor` lists
+it with the reason (`screen_rules`) and adds a `problems` line — when it
+cannot be read, is not one JSON object, has a member stagent does not
+know, a pattern that is no regular expression, a missing or invalid
+value, or a name that is no rules file (`gemini.json`). Other files than
+`*.json` are ignored. Patterns are Go regular expressions (RE2).
+
+| rule | members |
+|---|---|
+| `common.menu` | `hint`: the pattern of the key hint under a menu's options; `hint_rows`: the rows under the options it may be on (a list with only blanks below is a menu too); `transcript_mark`: the pattern of a transcript entry or a sent prompt, which below a list makes it part of the conversation |
+| `<harness>.menu` | `cursor`: the mark of the highlighted option of the harness's numbered menus; `dialog_edge`: how to find its dialog's top edge, the nearest line above the options that is `solid_rule` (a rule of `─━═▔` from the first column), `first_column` (text in the first column) or `box_top` (text starting with `╭`) or `shallow_indent` (text indented two columns at most) — the text from there to the options is a permission menu's signature; `frame`: `box` when its menus are drawn in `│ … │` and read there only (omitted: none); `permission_label`: the pattern of the first option's label (number 1) of a permission menu (may be omitted with `ends.permission`); `ends`: a menu with no key hint below it, told by its own end — the last option's label matches `last_label` and within `rows` rows under it there are only blanks before a line matching `below` (a spinner) or the bottom of the screen, `scroll_bar` (a mark drawn in the last column) left out; with `permission` `true` such a menu is a permission menu whatever its first label |
+| `<harness>.unnumbered` | `kind` `titled_dialog`: a menu without numbers, options in one column with one under `menu.cursor` and a key hint below, recognized in a dialog (under its `menu.dialog_edge`) whose first line is `title` only |
+| `<harness>.question` | the question UI of a harness that draws it as no menu: `kind` `hint_and_header` — `hint` among the last `hint_rows` rows and above it `header`, nothing between starting in the first column (or, the header scrolled away, indented rows up to the top); or `bottom_box` — a box at the bottom of the screen whose top edge matches `title` (or, scrolled away, rows up to the top with an option under `cursor`). A harness without one has its menus read for its questions |
+| `<harness>.dialogs` | dialogs drawn right of a bar (`bar`, e.g. `┃`; `scroll_bar`: a mark in the last column, left out), told by their rows and key hints, not by a cursor: `permission`, `question` (the harness's question UI; not with `<harness>.question`) and `trust` (a folder trust prompt, a menu only), the first the screen shows being the harness's menu. `dialog_edge`: `outside_bar` (a line out of the bar) or `title_mark` (a line holding `title_mark`). Each dialog's `kind`: `choice_row` — all options on one row matching `row`, two or more spaces apart, `hint` on one of the `hint_rows` non-blank lines under it; `numbered_rows` — options `1. label` (a description indented under each) without a cursor, right above the lowest line matching `hint`; `radio_rows` — consecutive rows in the bar `N (○) label` numbered from 1 (`z`, a typed answer, last; `●` on the highlighted one), `hint` on one of the `hint_rows` non-blank lines under them; `titled_rows` — under a line reading `title`, consecutive lines matching `rows` one by one. `hint_place`: `bar` or `outside_bar` when the hint must be in or out of the bar (omitted: either) |
+
+Built in, `claude` has `menu` and `unnumbered` (its workspace trust
+prompt), `codex` `menu` and `question` (`hint_and_header`), `copilot`
+`menu` with `frame` `box`, `omp` `question` (`bottom_box`), `pi` none,
+`qwen` `menu` with `ends` (its permission menu, translated, with no key
+hint), `opencode` `dialogs` (`choice_row` permission, `numbered_rows`
+question) and `grok` `dialogs` (`radio_rows` permission and question,
+`titled_rows` trust).
+Walking the rows, the box and rule characters and the ways the names
+above stand for stay code (the comment at the top of
+`internal/holder/prompt.go` draws the line).
+
+`stagent explain (--session ID | --file SCREEN) [--harness H] [--json]`
+shows which rule matched a screen. `--session` asks the session's holder
+(local IPC `session.explain {id, harness?}` → `ScreenExplain`, not
+forwarded from the app; a holder of a stagent before it answers
+`unknown_method`) to read its screen with the rules it started with;
+`--file` reads a screen saved as plain text, a row per line (`tmux
+capture-pane -p`; `-` for stdin), with the rules in force now. The screen
+is read as harness `H` draws it, else as the session's harness; a file,
+and a session that runs no harness, as no harness in particular, and
+then the question UI of every harness that draws one of its own is
+checked. Without `--json` it prints the same for a person. It exits 0
+whatever matched, 1 when the screen cannot be read, 2 on a usage error.
+
+```json
+{
+  "harness": "codex",
+  "rules_dir": "/home/u/.ssh-term/agent/screen-rules",
+  "files": [{"path": "/home/u/.ssh-term/agent/screen-rules/codex.json", "name": "codex", "used": true}],
+  "checks": [
+    {"check": "menu", "harness": "", "matched": true,
+     "rules": [{"id": "codex.menu", "origin": "builtin", "rule": {"cursor": "›", "dialog_edge": "first_column", "permission_label": "^Yes"}},
+               {"id": "common.menu", "origin": "builtin", "rule": {"hint": "…", "hint_rows": 4, "transcript_mark": "…"}}],
+     "lines": [{"line": 23, "text": "  › 1. Red"}, {"line": 24, "text": "    2. Blue"}]},
+    {"check": "permission", "harness": "codex", "matched": false,
+     "rules": [{"id": "codex.menu", "origin": "builtin", "rule": {"cursor": "›", "dialog_edge": "first_column", "permission_label": "^Yes"}},
+               {"id": "common.menu", "origin": "builtin", "rule": {"hint": "…", "hint_rows": 4, "transcript_mark": "…"}}],
+     "lines": []},
+    {"check": "question", "harness": "codex", "matched": true,
+     "rules": [{"id": "codex.question", "origin": "override", "file": "/home/u/.ssh-term/agent/screen-rules/codex.json",
+                "rule": {"kind": "hint_and_header", "header": "^\\s+Frage \\d+/\\d+", "hint": "\\benter to submit (?:answer|all)\\b", "hint_rows": 3}}],
+     "lines": [{"line": 20, "text": "  Frage 1/2 (2 unanswered)"}, {"line": 28, "text": "  tab to add notes | enter to submit answer"}]}
+  ]
+}
+```
+
+`checks[]` are `menu` (a menu of any harness), `permission` (a prompt
+watch's menu, with its `signature`) and `question` (a question watch's
+UI), each with the `harness` it reads as (`""`: any). `rules` are the
+rules that matched, `<name>.<rule>` with the rule as it is in force and
+its `origin`, `builtin` or `override` (with the `file`); for no match,
+the rules of that harness that were tried (none for any harness).
+`lines` are what matched, 1 being the top row: a menu's options with
+their wrapped lines, a question UI's header and hint, or its box's top
+and bottom edges. `files` are the override files as `doctor` lists them.
+
 ## Harness hooks
 
 Installed hook commands call `stagent hook <harness>` with the harness's
@@ -4196,11 +4444,147 @@ doubled), and skips a missing binary as the bash command does: `if
 (Test-Path -LiteralPath 'C:\…\stagent.exe') { & 'C:\…\stagent.exe' hook
 copilot <event> }`.
 
+Qwen Code (since #1587) reads the hooks of an extension of stagent's,
+`$QWEN_HOME/extensions/stagent/qwen-extension.json` (default
+`~/.qwen/extensions/`), along with those of its settings and in a folder it
+does not trust too; stagent never edits Qwen Code's `settings.json` (JSON
+with comments). The manifest (`name` `stagent`, `version` `1.0.0`) holds
+Claude Code's hooks form for `SessionStart`, `SessionEnd`,
+`UserPromptSubmit`, `Stop`, `StopFailure` (a turn that ended on an API
+error, read as `Stop`), `Notification`, `PermissionRequest`, `PreToolUse`
+and `PostToolUse` (every tool: no `matcher`), each one command hook
+`stagent hook qwen <event>` with `timeout` 10 (seconds) and no `async`,
+so Qwen Code waits for it and the events keep their order. The command is
+bash's (`[ -x '<bin>' ] && '<bin>' hook qwen <event> || true`), on Windows
+Copilot CLI's PowerShell one with `"shell": "powershell"`. The payloads are
+Claude Code's (snake_case `session_id`, `transcript_path`, `cwd`,
+`notification_type`, `tool_name`, `tool_input`, `last_assistant_message`)
+and are read as they are. Its `PermissionRequest` hook returns at once:
+Qwen Code shows its menu only once the hook returned, and runs it only for
+a call it asks about. Qwen Code sends `Notification` `idle_prompt`
+whenever a reply of its model ends: amid a turn, in the same millisecond
+as the `PreToolUse` of each tool call it asks for (either first), and some
+50 ms after `Stop`. One counts (the session waits for input, as for
+claude) only when no other hook of the session came within 500 ms before
+it and none comes within 500 ms after it: after the user turned its menu
+down (Esc), for which it sends no other hook. Outside a stagent session it
+is not told. `qwen -p` sends `SessionStart`, `UserPromptSubmit` and `Stop`
+(`parent_batch` tells it). `stagent integrate --apply --remove qwen`
+deletes the extension's directory. Qwen Code runs no hooks with
+`disableAllHooks: true` in its settings (`doctor` notes it), with `--bare`
+or in its safe mode.
+
+OpenCode (V2, since #1589) loads a plugin of stagent's, `ssh-term-stagent.js`
+in its global plugin directory
+(`$OPENCODE_CONFIG_DIR/plugins`, else `$XDG_CONFIG_HOME/opencode/plugins`,
+else `~/.config/opencode/plugins`, on every OS; OpenCode loads every file
+there and reloads them, in running servers too, when one comes or goes, so
+no restart is needed and no setting of the user's, `opencode.json`, is
+touched). `stagent integrate --apply --remove opencode` deletes the file.
+OpenCode 1 plugins have another form; OpenCode 1 is not integrated. The
+plugin reads OpenCode's event stream (it hooks into none of OpenCode's
+hooks, which OpenCode waits on) and runs `stagent hook opencode <event>`
+for each event below, one after the other in the order of the events, never
+waited on by OpenCode, with Claude Code's payload (`hook_event_name`,
+`session_id`, `cwd`, …) plus `exec_path`, the OpenCode binary:
+
+| OpenCode event | hook |
+|---|---|
+| `session.created` (a session's first prompt) | `SessionStart` |
+| `session.execution.started` | `UserPromptSubmit` (`prompt`: the text of the user message `session.inbox.enqueued` queued) |
+| `permission.asked` | `PermissionRequest` (`tool_name`, `tool_input`: the tool call it asks about, else `{action, resources}`); returns at once, registers the approval |
+| `permission.replied` | `PermissionReplied` (`reply`: `once`, `always`, `reject`): closes the session's approvals, wherever the menu was answered; the session works on (a rejection ends the turn with the `StopCancelled` that follows) |
+| `form.created` of the question tool (`metadata.kind` `question`) | `PreToolUse` of `tool_name` `question`, its fields as `questions` (`question`, `header`, `multiSelect`, `options[].label`) |
+| that form's `form.replied` (or any other end) | `PostToolUse` of `question` |
+| `session.execution.succeeded` / `failed` | `Stop` (`last_assistant_message`: the last `session.text.ended`) |
+| `session.execution.interrupted` (a permission turned down, on the PC or here, or the turn stopped) | `StopCancelled`, as Grok Build's: idle, the approvals closed, no `turn_complete` |
+| `location.shutdown` (the server stops) | `SessionEnd` |
+
+OpenCode runs plugins in its server. The terminal UI started with
+`--standalone` runs its own (`opencode serve --stdio`) as its child, with
+its environment; the plugin stays silent in a server of any other kind
+(the background service, `serve --service`, and `opencode serve`, which
+serve several terminals with the environment of whoever started them).
+`opencode run` runs a server of the same kind: the hook reads how OpenCode
+was started from the server's parent, and drops every event of a run that
+is not the terminal UI by the shell wrapper's rule; outside a stagent
+session `parent_tty` and `parent_batch` are the terminal UI's. The hook adds
+the session's `transcript_path`: stagent's record of the session,
+`<root>/<session id>.jsonl`, where root is `.ssh-term/agent/state/opencode`
+in stagent's home (`$STAGENT_HOME`, else the user's). OpenCode keeps its
+sessions in a database; the plugin also runs the pseudo-event
+`Transcript` (`stagent hook opencode Transcript`, never sent to the
+daemon) when a step of the conversation was written (`session.step.ended`
+/ `failed`, `session.renamed`, the start and end of a turn), at most one
+waiting per session. It runs `opencode session export --standalone <id>`
+(the payload's `exec_path` when that is an OpenCode binary; a server of its
+own, so the background service is never started) and appends to the record
+what it lacks: a session record `{"type":"session","id","title","directory",
+"created"}` first and again when the title or directory changes, then the
+export's messages as they are (`user`, `assistant`, `idle`, `synthetic`),
+by `id`, in order, up to the first reply not finished yet (an `assistant`
+without `time.completed`). Nothing written is rewritten, so the record is
+read like any transcript (`transcript.get`, `transcript.subscribe`,
+`conversations.list`): user texts, the assistant's texts (not its
+reasoning) and tool calls (`tool` rows named after the tool, summarized by
+`state.input`), its questions with their answers (`state.metadata.answers`;
+a question that failed closes unanswered), and the error that cut a reply
+short (`system`); session records, `idle` and `synthetic` messages are
+skipped. Beside the record, `<id>.proc` (`{"pid", "started"}`) names the
+terminal UI that last reported the session (`stagent follow`).
+
+Grok Build (since #1590) reads every `*.json` in its hooks directory
+(`$GROK_HOME/hooks`, default `~/.grok/hooks`) when it starts (or on
+`/hooks` → `r`): stagent writes `ssh-term-stagent.json` there, and
+`stagent integrate --apply --remove grok` deletes it; Grok Build's
+`config.toml` is not touched. The file has Claude Code's hooks form for
+`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse` (every tool),
+`PostToolUse` (`matcher` `ask_user_question`), `Notification`, `Stop` and
+`StopCancelled`, each one command hook `stagent hook grok <event>` with
+`timeout` 10 (seconds; Grok Build waits on its hooks one after another, 5 s
+by default, 600 s for `Stop` and `PostToolUse`). The command is bash's
+(`[ -x '<bin>' ] && '<bin>' hook grok <event> || true`); on Windows, where
+Grok Build runs a command under the shell it finds (pwsh, Windows
+PowerShell or Git Bash), it is the binary with `"args": ["hook", "grok",
+"<event>"]`, which runs with no shell. The payloads carry Claude Code's
+snake_case fields (`hook_event_name`, `session_id`, `transcript_path`,
+`cwd`, `prompt`, `notification_type`, `tool_name`, `tool_input`,
+`last_assistant_message`) beside Grok Build's camelCase ones and are read
+as they are; `transcript_path` is missing only from the `SessionStart` of a
+new session (its file is written with the first prompt). The hooks run as
+children of the grok process, which tells `parent_batch` (`grok -p` runs
+them too). Grok Build:
+
+| Grok Build hook | effect |
+|---|---|
+| `UserPromptSubmit` | working |
+| `PreToolUse` | the tool its permission is checked for next (Grok Build has no `PermissionRequest`); its `ask_user_question` a question |
+| `Notification` `permission_prompt` | approval (its menu is up; the hook returns at once), named by the `PreToolUse` before it |
+| `Stop` with `reason` `end_turn` | turn complete |
+| `Stop` with another `reason` (`shutdown`, sent with `SessionEnd` when it exits) | dropped by `stagent hook grok` |
+| `StopCancelled` (a menu turned down or dismissed, a turn interrupted) | idle, the approvals closed, no `turn_complete` |
+| `Notification` `idle_prompt` (60 s after a turn settled) / `elicitation_dialog` | waiting for input |
+| `SessionEnd` | ended |
+
+Grok Build also runs the hooks of Claude Code's settings
+(`~/.claude/settings.json`, `[compat.claude] hooks`, on by default), with
+`GROK_HOOK_EVENT` set: `stagent hook claude` drops a call with that
+variable, which Grok Build's own hooks report. With a hook set up Grok
+Build asks whether to trust a folder (outside `$HOME`) the first time a
+session starts there, and runs no hook until it is answered (`y` trusts it,
+`n` quits).
+
 ### Questions
 
 (since 0.20.0, #1548, #1549) A question tool is a tool through which an
 agent asks the user a choice question: claude's `AskUserQuestion`, Codex's
-`request_user_input`, omp's `ask`. A hook of any harness whose payload
+`request_user_input`, omp's `ask`, OpenCode's `question` (since #1589),
+Grok Build's `ask_user_question` (since #1590; the tool of the session's
+harness when two harnesses name theirs alike), Qwen Code's
+`ask_user_question` (since
+#1587; like claude's, it goes through Qwen Code's permission flow: its
+`PermissionRequest` comes when it shows, and the `permission_prompt`
+notification after it is about the question). A hook of any harness whose payload
 names one as `tool_name` is read the same way:
 
 | hook | effect |
@@ -4252,8 +4636,8 @@ question on one line (at most 200 bytes), followed by the number of
 questions when there are several (`notify.lang`: en `<q> (2 questions)`,
 ja `<q>（全 2 問）`, ko `<q> (질문 2개)`, zh `<q>（共 2 个问题）`). Outside a
 stagent session it is raised (in-app) once, by the hook that comes when
-the question shows: claude's `PermissionRequest`, Codex's and omp's
-`PreToolUse`.
+the question shows: claude's and Qwen Code's `PermissionRequest`, Codex's,
+omp's, OpenCode's and Grok Build's `PreToolUse`.
 
 claude's hooks register `PreToolUse` and `PostToolUse` with `matcher`
 `AskUserQuestion` (a group of their own), so no other tool runs them.
@@ -4315,7 +4699,7 @@ only):
 | `shell_wrapper` | `STAGENT_SHELL_WRAPPER` is set: the shell has the wrapper's rc block |
 | `entrypoint` | `CLAUDE_CODE_ENTRYPOINT` (Claude Code: `cli`, `sdk-cli`, `sdk-ts`, `claude-vscode`, …) |
 | `parent_tty` | the harness — the hook's nearest ancestor that is not a shell (the installed Codex command keeps `sh -c` in between) — reads a terminal: its stdin (`/proc/<pid>/fd/0`) on Linux, its controlling terminal (as `ps -o tty=`) on macOS; absent when unknown (Windows) |
-| `parent_batch` | the harness's command line asks for a non-interactive run by the shell wrapper's rule (`claude -p` / `--print`; `codex exec` / `e` as the first argument; `omp -p` / `--print` or `--mode` other than `text`; the same for pi, plus `--no-session` and its subcommands, whose command line is the payload's `argv`: its process title hides it; `copilot -p` / `--prompt` / `--prompt=…` / `--acp` or one of its subcommands) |
+| `parent_batch` | the harness's command line asks for a non-interactive run by the shell wrapper's rule (`claude -p` / `--print`; `codex exec` / `e` as the first argument; `omp -p` / `--print` or `--mode` other than `text`; the same for pi, plus `--no-session` and its subcommands, whose command line is the payload's `argv`: its process title hides it; `copilot -p` / `--prompt` / `--prompt=…` / `--acp` or one of its subcommands; `qwen` by the shell wrapper's rule, read from the arguments after node and its script; `opencode` by that rule from the command line of its server's parent, the terminal UI; `grok` by the shell wrapper's rule from its own command line) |
 | `ssh` | `SSH_CONNECTION` is set |
 | `terminal_ancestor` | (Windows; absent elsewhere or when unknown) a shell — `powershell`, `pwsh`, `cmd`, `bash` or `sh` — runs above the harness, the hook's nearest ancestor that is not one of them (Claude Code runs hooks through Git Bash) |
 | `originator`, `subagent` | (codex) `originator` and whether `source` is a `subagent` thread, from the `session_meta` line that starts the conversation's rollout file: the payload's `transcript_path`, else `$CODEX_HOME/sessions/*/*/*/rollout-*-<thread-id>.jsonl` for the notify program. Seen (Codex 0.160): `codex-tui` (the terminal UI), `codex_exec` (`codex exec`), `Codex Desktop` (the desktop app) |
@@ -4333,7 +4717,7 @@ only, and the watchers get `unwrapped.updated`:
 | codex `originator` `Codex Desktop` / `codex_vscode` | `ide` |
 | Claude Code `entrypoint` `sdk-*` | not recorded (non-interactive) |
 | Claude Code `entrypoint` other than `cli` | `ide` |
-| codex / omp / pi / copilot (and Claude Code without `entrypoint`) with `parent_tty` false or `parent_batch` | not recorded (non-interactive) |
+| codex / omp / pi / copilot / qwen / opencode / grok (and Claude Code without `entrypoint`) with `parent_tty` false or `parent_batch` | not recorded (non-interactive) |
 | otherwise, on Windows with `ssh` | `ssh` |
 | otherwise, `shell_wrapper` set | `bypassed` |
 | otherwise, on Windows with `terminal_ancestor` false | `no_terminal` |
@@ -4346,7 +4730,8 @@ judged like before.
 
 Every hook of a recorded conversation updates `last_activity_at` (watchers
 get it at most once a minute unless something else changed). The record
-goes away at the conversation's `SessionEnd` (Claude Code, Copilot CLI;
+goes away at the conversation's `SessionEnd` (Claude Code, Copilot CLI,
+Qwen Code, OpenCode, Grok Build — not when its terminal is closed;
 omp's and Pi's `session_shutdown`), 12 hours after its last hook (Codex
 sends no end), when
 a stagent session carries the conversation, and with the daemon; nothing is

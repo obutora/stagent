@@ -1,0 +1,31 @@
+|  ┌───────────────────────────────────────┐
+|  │ >_ Qwen Code (v0.27.4)                │
+|  │                                       │
+|  │ API Key | mock-model                  │
+|  │ /Volumes/.../verify/qwen/work/proj    │
+|  └───────────────────────────────────────┘
+|  Tips: You can resume a previous
+|  conversation by running qwen --continue
+|  or qwen --resume.
+|
+|─────────────────────────────────────────────
+|>   Type your message or @path/to/file
+|─────────────────────────────────────────────
+|  ➜ proj · mock-model
+|  ⏸ Ask permissions (shift + tab to cycle)
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=2,11 alt=true appCursor=false

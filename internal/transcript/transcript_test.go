@@ -117,6 +117,106 @@ var fixtureWant = map[string][]msg{
 		{"assistant", "", "Fixed: parseConfig now retries on EAGAIN, and the test passes."},
 		{"user", "", "Thanks! Commit it"},
 	},
+	// A real Qwen Code 0.27.4 conversation (a fake model; paths shortened),
+	// then lines written for the test: a prompt, an answer with a thought,
+	// a record of a type never seen, a line cut short and a last answer.
+	wire.HarnessQwen: {
+		{"user", "", "run it #approval"},
+		{"tool", "run_shell_command", "echo hello-from-mock > mock_shell.txt && cat mock_shell.txt"},
+		// tool results, telemetry and snapshots skipped
+		{"tool", "write_file", "/home/user/proj/mock_write.txt"}, // turned down: its result skipped too
+		{"user", "", "again #shell"},
+		{"tool", "run_shell_command", "echo hello-from-mock"},
+		{"assistant", "", "The command printed hello-from-mock."},
+		{"user", "", "take your time #slow"},
+		{"assistant", "", "Finished after a slow think."},
+		{"user", "", "ask me #ask"},
+		{"tool", "ask_user_question", "Which color do you prefer?"},
+		{"user", "", "Blue"},
+		{"assistant", "", "Thanks for answering."},
+		{"user", "", "slow again #slow"},
+		{"assistant", "", "Finished after a slow think."},
+		{"user", "", "steer message mid turn"}, // sent while it worked
+		{"tool", "run_shell_command", "echo hello-from-mock > mock_shell.txt && cat mock_shell.txt"},
+		{"user", "", "Explain the diff"},
+		{"assistant", "", "It adds one line."}, // the thought dropped
+		// the unknown record and the broken line skipped
+		{"assistant", "", "Anything else?"},
+	},
+	// stagent's record of a real OpenCode 2.3.0 session (`session export`
+	// against a fake model; paths shortened), then lines written for the
+	// test: a renaming, a prompt, an answer with its reasoning, a message
+	// of a type never seen, a line cut short and a last answer.
+	wire.HarnessOpenCode: {
+		{"user", "", "run it #approval"},
+		{"tool", "shell", "echo hello-from-mock > mock_shell.txt && cat mock_shell.txt"},
+		{"tool", "write", "mock_write.txt"},
+		{"assistant", "", "All done: ran the command and wrote mock_write.txt."},
+		// the end of the turn (idle) skipped
+		{"user", "", "again #shell"},
+		{"tool", "shell", "echo hello-from-mock"}, // turned down
+		{"system", "", "Step interrupted"},
+		{"user", "", "pick one #ask"},
+		{"tool", "question", "Which color do you prefer?"},
+		{"user", "", "Green"},
+		{"assistant", "", "Thanks for answering."},
+		{"user", "", "think hard #slow"},
+		{"system", "", "Step interrupted"},
+		// OpenCode's own note after its server restarted skipped
+		{"assistant", "", "Finished after a slow think."},
+		// the session record skipped
+		{"user", "", "Explain the diff"},
+		{"assistant", "", "It adds one line."}, // the reasoning dropped
+		// the unknown message and the broken line skipped
+		{"assistant", "", "Anything else?"},
+	},
+	// A real Grok Build 1.0.77 session (updates.jsonl against a fake model,
+	// one of its hook records kept; paths shortened), then lines written for
+	// the test: a prompt, the model's thinking and its answer, updates of
+	// kinds never seen, a line cut short and a last answer.
+	wire.HarnessGrok: {
+		{"user", "", "reply from phone #slow"},
+		{"assistant", "", "Finished after a slow think."},
+		// turn_completed and the hook records skipped
+		{"user", "", "run it #approval"},
+		{"tool", "run_terminal_command", "echo hello-from-mock > mock_shell.txt && cat mock_shell.txt"},
+		{"tool", "write", "/home/u/proj/mock_write.txt"},
+		{"assistant", "", "All done: ran the command and wrote mock_write.txt."},
+		{"user", "", "again #shell"},
+		{"tool", "run_terminal_command", "echo hello-from-mock"},
+		{"assistant", "", "The command printed hello-from-mock."},
+		{"user", "", "go #danger"},
+		{"tool", "run_terminal_command", "echo danger > mock_danger.txt"}, // turned down
+		{"user", "", "go #danger"},
+		{"tool", "run_terminal_command", "echo danger > mock_danger.txt"}, // turned down
+		{"user", "", "go #danger"},
+		{"tool", "run_terminal_command", "echo danger > mock_danger.txt"},
+		{"assistant", "", "Danger step done."},
+		{"user", "", "do #touch"},
+		{"tool", "run_terminal_command", "touch mock_touch.txt"},
+		{"assistant", "", "Touched."},
+		{"user", "", "do #rm1"},
+		{"tool", "run_terminal_command", "rm -f mock_touch.txt"},
+		{"assistant", "", "Removed mock_touch.txt."},
+		{"user", "", "do #rm2"},
+		{"tool", "run_terminal_command", "rm -f mock_danger.txt"},
+		{"assistant", "", "Removed mock_danger.txt."},
+		{"user", "", "do #rm3"},
+		{"tool", "run_terminal_command", "rm -f mock_shell.txt"}, // turned down
+		{"user", "", "pick #ask"},
+		{"tool", "ask_user_question", "Which color do you prefer?"},
+		{"user", "", "Green"},
+		{"assistant", "", "Thanks for answering."},
+		{"user", "", "do #rm4"},
+		{"tool", "run_terminal_command", "rm -f mock_write.txt"}, // dismissed (Ctrl-C)
+		{"user", "", "do #rm5"},
+		{"tool", "run_terminal_command", "rm -f mock_wr.txt"}, // resumed
+		{"assistant", "", "Removed mock_wr.txt."},
+		{"user", "", "Explain the diff"},
+		{"assistant", "", "It adds one line."}, // the thinking dropped
+		// the unknown updates and the broken line skipped
+		{"assistant", "", "Anything else?"},
+	},
 }
 
 func fixture(h string) string { return filepath.Join("testdata", h+".jsonl") }
@@ -287,12 +387,15 @@ func TestSummarize(t *testing.T) {
 // Conversation index
 
 type tree struct {
-	roots   Roots
-	claude  string // listed Claude transcript
-	codex   string
-	omp     string
-	pi      string
-	copilot string
+	roots    Roots
+	claude   string // listed Claude transcript
+	codex    string
+	omp      string
+	pi       string
+	copilot  string
+	qwen     string
+	opencode string
+	grok     string
 }
 
 func setupTree(t *testing.T) tree {
@@ -303,7 +406,10 @@ func setupTree(t *testing.T) tree {
 	ompRoot := filepath.Join(home, ".omp", "agent", "sessions")
 	piRoot := filepath.Join(home, ".pi", "agent", "sessions")
 	copilotRoot := filepath.Join(home, ".copilot", "session-state")
-	tr := tree{roots: Roots{wire.HarnessClaude: claudeRoot, wire.HarnessCodex: codexRoot, wire.HarnessOmp: ompRoot, wire.HarnessPi: piRoot, wire.HarnessCopilot: copilotRoot}}
+	qwenRoot := filepath.Join(home, ".qwen", "projects")
+	opencodeRoot := filepath.Join(home, ".ssh-term", "agent", "state", "opencode")
+	grokRoot := filepath.Join(home, ".grok", "sessions")
+	tr := tree{roots: Roots{wire.HarnessClaude: claudeRoot, wire.HarnessCodex: codexRoot, wire.HarnessOmp: ompRoot, wire.HarnessPi: piRoot, wire.HarnessCopilot: copilotRoot, wire.HarnessQwen: qwenRoot, wire.HarnessOpenCode: opencodeRoot, wire.HarnessGrok: grokRoot}}
 	copyFile := func(src, dst string, mtime time.Time) string {
 		b, err := os.ReadFile(src)
 		if err != nil {
@@ -339,6 +445,33 @@ func setupTree(t *testing.T) tree {
 	writeFile(t, filepath.Join(copilotDir, "workspace.yaml"), []byte(copilotWorkspaceYAML), base.Add(15*time.Minute))
 	// A session that never got a conversation: no events.jsonl.
 	writeFile(t, filepath.Join(copilotRoot, "0193f2c4-0000-7000-8000-000000000000", "workspace.yaml"), []byte("cwd: /p\n"), base.Add(8*time.Hour))
+
+	// Qwen Code's sidecars beside the conversation are not listed.
+	chats := filepath.Join(qwenRoot, "-home-user-proj", "chats")
+	tr.qwen = copyFile(fixture("qwen"), filepath.Join(chats, "a2730fef-0f6d-48da-9317-c9dc99d18525.jsonl"), base.Add(10*time.Minute))
+	writeFile(t, filepath.Join(chats, "a2730fef-0f6d-48da-9317-c9dc99d18525.title.json"), []byte(`{"version":1,"displayName":"run it #approval","source":"prompt","updatedAt":"2026-11-16T16:24:52.212Z"}`), base.Add(10*time.Minute))
+	writeFile(t, filepath.Join(chats, "a2730fef-0f6d-48da-9317-c9dc99d18525.runtime.json"), []byte(`{"schema_version":1,"pid":4911,"session_id":"a2730fef-0f6d-48da-9317-c9dc99d18525","work_dir":"/home/user/proj"}`), base.Add(9*time.Hour))
+	writeFile(t, filepath.Join(chats, "a2730fef-0f6d-48da-9317-c9dc99d18525.ledger.jsonl"), []byte(`{"sessionId":"ledger","cwd":"/p"}`+"\n"), base.Add(9*time.Hour))
+	writeFile(t, filepath.Join(qwenRoot, "-home-user-proj", "meta.json"), []byte(`{}`), base.Add(9*time.Hour))
+
+	// stagent's record of an OpenCode session; its process sidecar is no
+	// conversation.
+	tr.opencode = copyFile(fixture("opencode"), filepath.Join(opencodeRoot, "ses_e1ad4a0c9ffe59ybAJc2LhlyvP.jsonl"), base.Add(5*time.Minute))
+	writeFile(t, filepath.Join(opencodeRoot, "ses_e1ad4a0c9ffe59ybAJc2LhlyvP.proc"), []byte(`{"pid":4911,"started":1794846187000}`), base.Add(9*time.Hour))
+
+	// A Grok Build session under its percent-encoded cwd, titled by its
+	// summary.json; the other files of the session, the cwd's sidecars and
+	// the search index are no conversation. A session of a cwd too long to
+	// encode, with no summary yet, has its cwd in the group's .cwd file.
+	grokDir := filepath.Join(grokRoot, "%2Fhome%2Fuser%2Fproj", "01a1e529-d6eb-7ca1-a972-905c1d336da5")
+	tr.grok = copyFile(fixture("grok"), filepath.Join(grokDir, "updates.jsonl"), base.Add(4*time.Minute))
+	writeFile(t, filepath.Join(grokDir, "summary.json"), []byte(`{"info":{"id":"01a1e529-d6eb-7ca1-a972-905c1d336da5","cwd":"/home/user/proj"},"session_summary":"Mock summary","generated_title":"Mock title"}`), base.Add(4*time.Minute))
+	writeFile(t, filepath.Join(grokDir, "chat_history.jsonl"), []byte(`{"role":"user"}`+"\n"), base.Add(9*time.Hour))
+	writeFile(t, filepath.Join(grokRoot, "%2Fhome%2Fuser%2Fproj", "prompt_history.jsonl"), []byte(`{"prompt":"x"}`+"\n"), base.Add(9*time.Hour))
+	writeFile(t, filepath.Join(grokRoot, "session_search.sqlite"), []byte("SQLite format 3"), base.Add(9*time.Hour))
+	longDir := filepath.Join(grokRoot, "bbbb-42f84f551da93751", "01a1e600-0000-7000-8000-000000000000")
+	writeFile(t, filepath.Join(grokRoot, "bbbb-42f84f551da93751", ".cwd"), []byte("/home/user/"+strings.Repeat("b", 300)), base.Add(time.Minute))
+	writeFile(t, filepath.Join(longDir, "updates.jsonl"), []byte(`{"timestamp":1794846119,"method":"session/update","params":{"sessionId":"01a1e600-0000-7000-8000-000000000000","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"long one"}}}}`+"\n"), base.Add(time.Minute))
 	return tr
 }
 
@@ -390,6 +523,14 @@ func TestIndexListsInteractiveConversationsNewestFirst(t *testing.T) {
 		{"pi", "01a154bc-ede2-7449-9df3-bd69c074f6dc", "/home/user/proj", "parseConfig retries", tr.pi}, // the last session_info
 		// workspace.yaml's name; the session without events.jsonl is not listed.
 		{"copilot", "0193f2c4-5e1a-7c3b-9d2e-4f6a8b0c1d2e", "/home/user/proj", "Fix parseConfig: retries", tr.copilot},
+		// The title sidecar's name; the sidecars are not listed.
+		{"qwen", "a2730fef-0f6d-48da-9317-c9dc99d18525", "/home/user/proj", "run it #approval", tr.qwen},
+		// The last session record's title (OpenCode's title, renamed).
+		{"opencode", "ses_e1ad4a0c9ffe59ybAJc2LhlyvP", "/home/user/proj", "Explain the diff", tr.opencode},
+		// summary.json's generated title; nothing else of the session.
+		{"grok", "01a1e529-d6eb-7ca1-a972-905c1d336da5", "/home/user/proj", "Mock title", tr.grok},
+		// No summary yet: the first prompt, the cwd of the group's .cwd.
+		{"grok", "01a1e600-0000-7000-8000-000000000000", "/home/user/" + strings.Repeat("b", 300), "long one", filepath.Join(tr.roots[wire.HarnessGrok], "bbbb-42f84f551da93751", "01a1e600-0000-7000-8000-000000000000", "updates.jsonl")},
 	}
 	if !reflect.DeepEqual(gotC, want) {
 		t.Fatalf("List:\n got %v\nwant %v", gotC, want)
@@ -453,6 +594,9 @@ func TestIndexFind(t *testing.T) {
 		{"omp", "01a0ea6c-aa65-7290-9f3f-6beb480ab112", tr.omp},
 		{"pi", "01a154bc-ede2-7449-9df3-bd69c074f6dc", tr.pi},
 		{"copilot", "0193f2c4-5e1a-7c3b-9d2e-4f6a8b0c1d2e", tr.copilot},
+		{"qwen", "a2730fef-0f6d-48da-9317-c9dc99d18525", tr.qwen},
+		{"opencode", "ses_e1ad4a0c9ffe59ybAJc2LhlyvP", tr.opencode},
+		{"grok", "01a1e529-d6eb-7ca1-a972-905c1d336da5", tr.grok},
 	} {
 		if p, ok := x.Find(c.harness, c.id); !ok || p != c.want {
 			t.Errorf("Find(%s, %s) = %q %v, want %q", c.harness, c.id, p, ok, c.want)
@@ -474,6 +618,9 @@ func TestHarnessOfConfinesPaths(t *testing.T) {
 		{tr.omp, "omp", true},
 		{tr.pi, "pi", true},
 		{tr.copilot, "copilot", true},
+		{tr.qwen, "qwen", true},
+		{tr.opencode, "opencode", true},
+		{tr.grok, "grok", true},
 		{filepath.Join(tr.roots[wire.HarnessCopilot], "..", "settings.json"), "", false},
 		{filepath.Join(tr.roots[wire.HarnessClaude], "..", "settings.json"), "", false},
 		{filepath.Join(tr.roots[wire.HarnessClaude], "..", "..", "x.jsonl"), "", false},

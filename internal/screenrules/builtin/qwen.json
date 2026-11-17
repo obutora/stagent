@@ -1,0 +1,13 @@
+{
+  "menu": {
+    "cursor": "›",
+    "dialog_edge": "shallow_indent",
+    "ends": {
+      "last_label": "\\(\\pL+\\)$",
+      "below": "^[\\x{2800}-\\x{28FF}](?:\\s|$)",
+      "rows": 4,
+      "scroll_bar": "█",
+      "permission": true
+    }
+  }
+}

@@ -1,0 +1,31 @@
+|
+|  /V/S/o/n/s/v/grok/work          120 / 128K │ [Dashboard]
+|
+|
+|     ❯ pick #ask                                 1:27 AM
+|
+|
+|     ◆ Ask Which color do you prefer?
+|
+|     Thanks for answering.                       1:27 AM
+|
+|     Worked for 1.1s
+|
+|
+|
+|
+|
+|
+|
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|
+|  ╭──────────────────────────────────────────── Stashed ─╮
+|  │ ❯                                                    │
+|  ╰──────────────────────────── Mock (chat_completions) ─╯
+|
+|  Shift+Tab:mode  │  Ctrl+x:shortcuts
+|
+cursor=6,25 alt=true appCursor=false

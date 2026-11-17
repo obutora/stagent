@@ -14,6 +14,7 @@ import (
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/logind"
 	"github.com/obutora/stagent/internal/notify"
+	"github.com/obutora/stagent/internal/screenrules"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -54,11 +55,20 @@ type DoctorReport struct {
 	// Notify comes from the daemon's last failures file, so it is there
 	// whether or not the daemon runs.
 	Notify wire.NotifyStatus `json:"notify"`
+	// ScreenRules are the overrides of the screen rules on this host.
+	ScreenRules ScreenRulesReport `json:"screen_rules"`
 	// Unwrapped: agents started without a stagent session that the
 	// running daemon saw (empty when it does not run).
 	Unwrapped []wire.UnwrappedLaunch `json:"unwrapped"`
 	Orphans   []Finding              `json:"orphans"`
 	Problems  []string               `json:"problems"`
+}
+
+// ScreenRulesReport lists the override files of the screen rules
+// (screenrules) in Dir; one that is not used adds a problem.
+type ScreenRulesReport struct {
+	Dir   string                 `json:"dir"`
+	Files []wire.ScreenRulesFile `json:"files"`
 }
 
 type DaemonReport struct {
@@ -366,6 +376,14 @@ func (e *env) doctor() *DoctorReport {
 			line += "; the destination was disabled on the service side; set a new URL from the app"
 		}
 		r.Problems = append(r.Problems, line)
+	}
+
+	rules := screenrules.Load(e.l.ScreenRules)
+	r.ScreenRules = ScreenRulesReport{Dir: e.l.ScreenRules, Files: rules.FileReport()}
+	for _, f := range r.ScreenRules.Files {
+		if !f.Used {
+			r.Problems = append(r.Problems, "screen rules: "+f.Path+" is not used, the built-in rules apply: "+f.Error)
+		}
 	}
 
 	for _, a := range e.inventory(false) {

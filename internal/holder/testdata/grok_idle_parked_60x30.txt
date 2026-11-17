@@ -1,0 +1,31 @@
+|
+|  /p/t/grokz/work                 120 / 128K │ [Dashboard]
+| ┌                                                        ┐
+| │                                                        │
+| │   ❯ go #danger                                9:43 AM  │
+| │                                                        │
+| └                                                        ┘
+|     ◆ Ran echo hello-from-mock > mock_shell.txt && cat…
+|
+|     Turn cancelled by user in 0.4s.                       █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|
+|  ╭──────────────────────────────────────────────────────╮
+|  │ ❯ Build anything                                     │
+|  ╰──────────────────────────── Mock (chat_completions) ─╯
+|
+|  Ctrl+e:collapse thinking  │  Space:prompt
+|
+cursor=60,22 alt=true appCursor=false

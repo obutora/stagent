@@ -1,0 +1,31 @@
+|
+|  /V/S/o/n/s/v/grok/work         1.3K / 128K │ [Dashboard]
+|
+|
+|     ❯ reply from phone #slow                    1:21 AM
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|    ⠼ Waiting for response…             4.0s ⇣1.34k [stop]
+|
+|  ╭──────────────────────────────────────────────────────╮
+|  │ ❯ draft one line from the PC                         │
+|  │   second line                                        │
+|  │   third line                                         │
+|  ╰──────────────────────────── Mock (chat_completions) ─╯
+|
+|  Enter:queue  │  Opt+Enter:newline  │  Shift+Tab:mode
+|
+cursor=16,25 alt=true appCursor=false

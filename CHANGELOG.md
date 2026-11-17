@@ -3,6 +3,138 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.22.0
+
+### Added
+
+- Screen rules (#1584): how the holder tells each coding agent's menus
+  and question UIs apart — its cursor, the patterns of its key hints,
+  headers and titles, how many rows to look at, which way of finding a
+  dialog's edge applies — is now data, built in as
+  `internal/screenrules/builtin/<name>.json` (one file per harness and
+  `common.json`). A host overrides them with files of the same name in
+  `~/.ssh-term/agent/screen-rules/`, laid over the built-in ones member
+  by member; holders read them when they start. So when Claude Code or
+  Codex changes its screen, a host can follow it before a stagent release
+  does. A file that cannot be used keeps the built-in rules and is listed
+  by `stagent doctor` (`screen_rules`, a `problems` line). There is no
+  remote update of the rules.
+- `stagent explain (--session ID | --file SCREEN) [--harness H] [--json]`
+  shows which rule matched a live session's screen (local IPC
+  `session.explain`, read with the rules its holder started with) or a
+  screen saved as text — menu, permission menu, question UI — the lines
+  it matched, and whether the rule is built in or an override
+  (PROTOCOL.md "Screen rules").
+- Qwen Code (`qwen`) is a supported harness (#1587). `stagent integrate
+  --harness qwen` installs an extension of stagent's,
+  `~/.qwen/extensions/stagent/qwen-extension.json` (`$QWEN_HOME`
+  honoured), whose hooks run `stagent hook qwen <event>`; Qwen Code's own
+  settings are not edited, and `--remove qwen` deletes the extension.
+  `doctor` reports Qwen Code (and notes `disableAllHooks`).
+- Qwen Code's sessions change state from its hooks: working, approval
+  (its `PermissionRequest` returns at once, as Qwen Code shows its menu
+  only after it), its `ask_user_question` as a question, turn complete. The
+  `idle_prompt` notification Qwen Code sends with every reply of its model
+  counts only when no other hook comes close to it, i.e. after a menu was
+  turned down on the PC.
+- The holder reads Qwen Code's permission menu, which has no key hint and
+  translated labels, so an approval closes when the menu leaves the screen
+  and a chat message never lands on it. Its screen rules are
+  `screenrules/builtin/qwen.json`: a menu told by its own end
+  (`menu.ends`: the last option marked with its key in parentheses, then
+  nothing but its spinner) and the dialog edge `shallow_indent`.
+- The transcript readers, `stagent follow`, the conversation list and the
+  usage count read Qwen Code's conversations
+  (`~/.qwen/projects/<project>/chats/<id>.jsonl`, `$QWEN_RUNTIME_DIR` /
+  `$QWEN_HOME` honoured; the sidecars beside them skipped; titled by its
+  title sidecar), and `stopped.resume` continues them with `qwen --resume
+  <id>`.
+- The shell wrappers wrap `qwen` and leave its non-interactive runs alone:
+  `-p`, `--acp`, `-o`, its subcommands, and a positional prompt (one-shot in
+  Qwen Code) unless `-i` / `--prompt-interactive` is given.
+- OpenCode V2 (`opencode`, 2.x) is a supported harness (#1589). `stagent
+  integrate --harness opencode` installs a plugin of stagent's,
+  `~/.config/opencode/plugins/ssh-term-stagent.js` (`$OPENCODE_CONFIG_DIR`
+  and `$XDG_CONFIG_HOME` honoured), which OpenCode loads without a
+  restart; `opencode.json` is not edited, and `--remove opencode` deletes
+  the plugin. `doctor` reports OpenCode. OpenCode 1 is not integrated.
+- OpenCode's sessions change state from its plugin's events: working,
+  approval (the hook returns at once; OpenCode's `permission.replied`
+  closes the approval however the menu was answered, the PC's answer
+  included, as the new hook event `PermissionReplied`), its `question` tool
+  as a question, turn complete. A turn cut short (a permission turned
+  down, on the PC too, or the turn stopped) ends with the hook event
+  `StopCancelled`, as Grok Build's: idle, no turn-complete notification. A
+  session started in a stagent session or by the shell wrapper gets
+  `--standalone` (OpenCode 2 or later), so its plugin runs in a server of
+  its own with the session's environment instead of the shared background
+  service; `opencode run` and OpenCode's other commands report nothing.
+- The holder reads OpenCode's permission menu (one row of options without
+  numbers or cursor) and its question, so a chat message never lands on
+  them. A harness whose menus have no cursor of its own no longer reads
+  another harness's numbered menus. Its screen rules are
+  `screenrules/builtin/opencode.json`: the new member `dialogs`, dialogs
+  right of a bar read the way their `kind` names (`choice_row`,
+  `numbered_rows`), each with its rows and key hint.
+- OpenCode keeps its sessions in a database: stagent keeps a record of each
+  session the plugin reports
+  (`~/.ssh-term/agent/state/opencode/<session id>.jsonl`), appended from
+  `opencode session export --standalone <id>` as the conversation goes,
+  which the transcript readers, `stagent follow`, the conversation list and
+  the usage count read; `stopped.resume` continues a session with
+  `opencode --standalone --session <id>`.
+- The shell wrappers wrap `opencode` and leave its commands alone (`run`,
+  `serve`, `session`, `mini`, …, `--help`, `--version`).
+- Grok Build (xAI's `grok`) is a supported harness (#1590). `stagent
+  integrate --harness grok` writes a hooks file of stagent's,
+  `~/.grok/hooks/ssh-term-stagent.json` (`$GROK_HOME` honoured), whose
+  hooks run `stagent hook grok <event>` (on Windows the binary with its
+  arguments, no shell); Grok Build's `config.toml` is not edited, and
+  `--remove grok` deletes the file. `doctor` reports Grok Build; a new note
+  `grok_restart` (it reads hooks when it starts).
+- Grok Build's sessions change state from its hooks: working, approval
+  (its `permission_prompt` notification, named by the `PreToolUse` before
+  it: Grok Build has no `PermissionRequest`), its `ask_user_question` as a
+  question, turn complete (`Stop` with `reason` `end_turn`; the `Stop` it
+  sends when it exits is dropped). A turn cut short by turning a menu down
+  ends with the new hook event `StopCancelled`: idle, its approvals closed,
+  no turn-complete notification. `stagent hook claude` drops the calls Grok
+  Build makes from Claude Code's settings (`GROK_HOOK_EVENT` set), which
+  reported Grok Build's sessions as claude's.
+- The holder reads Grok Build's permission menu (numbered rows with a
+  radio mark right of a bar, the highlight moved to the kind of row
+  answered last), so an approval closes when the menu leaves the screen,
+  wherever it was answered; its question card and its folder trust prompt
+  are menus too, so a chat message never lands on them. Its screen rules
+  are `screenrules/builtin/grok.json` (`dialogs` of the kinds `radio_rows`
+  and `titled_rows`).
+- The transcript readers, `stagent follow`, the conversation list and the
+  usage count (per turn) read Grok Build's sessions
+  (`~/.grok/sessions/<cwd>/<id>/updates.jsonl`, `$GROK_HOME` honoured;
+  titled by its `summary.json`), and `stopped.resume` continues them with
+  `grok --resume <id>`.
+- The shell wrappers wrap `grok` and leave its non-interactive runs alone
+  (`-p`, `--single`, `--prompt-file`, `--prompt-json`, its commands but
+  `dashboard`).
+- A question tool two harnesses name alike (`ask_user_question` of Qwen
+  Code and Grok Build) is taken as the session's harness's.
+
+### Fixed
+
+- Windows: no console window flashes on screen while the daemon runs.
+  The daemon and detached holders were started without a console
+  (DETACHED_PROCESS), so every console program they ran — the periodic
+  `omp` usage reads, `git`, `gh`, `codex --version` — got a console window
+  of its own that opened and closed. They now start with a console that
+  has no window (CREATE_NO_WINDOW), which those programs share.
+- Reopening a session no longer makes it look busy or drops what its hook
+  said. Opening a session from the app resizes it, and a full-screen
+  agent repaints for the new size; that output read as work, so the
+  session went `working` (`state_source` `activity`) for `idle_after_ms`,
+  and a hook-derived state (`waiting_input` — the agent asked the user —
+  or `idle`) was dropped for good. Output within 1.5 s of a resize no
+  longer counts as work; a notification in it still does.
+
 ## 0.21.1
 
 ### Fixed

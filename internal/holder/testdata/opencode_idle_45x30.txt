@@ -1,0 +1,31 @@
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|                                    ▄
+|   █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+|   █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+|   ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+|
+|
+|  ┃
+|  ┃  Ask anything… "Fix a TODO in the cod
+|  ┃
+|  ┃  Build · Mock Model Mock
+|  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+|  /…/wo…  shift+tab agents  ctrl+p commands
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=5,17 alt=true appCursor=false

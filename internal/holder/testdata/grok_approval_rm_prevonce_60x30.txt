@@ -1,0 +1,31 @@
+|
+|  /V/S/o/n/s/v/grok/work          120 / 128K │ [Dashboard]
+|
+|
+|     ❯ do #rm3                                   1:25 AM
+|
+|
+|     ◆ Running a command for the mock scenario
+|
+|
+|
+|
+|                                                           █
+|
+|    ◆ Run a command for the mock sc…   1.7s ⇣120 [↓][stop]
+|
+|  ┃
+|  ┃  ›  Run a command for the mock scenario
+|  ┃  │ rm -f mock_shell.txt
+|  ┃  ← → narrow scope  ·  e edit pattern
+|  ┃
+|  ┃  1 (○) Yes, and don't ask again for anything (always
+|  ┃  2 (○) Always allow: rm -f mock_shell.txt
+|  ┃  3 (●) Yes, proceed
+|  ┃  4 (○) No, reject (type to add feedback)
+|  ┃  5 (○) Never allow: rm -f
+|  ┃
+|
+|  1/5:select  │  Tab:next option  │  ←/→:scope
+|
+cursor=42,14 alt=true appCursor=false

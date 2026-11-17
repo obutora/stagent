@@ -399,6 +399,31 @@ func TestDoctorReportsBlockedLocation(t *testing.T) {
 	}
 }
 
+// doctor lists the screen rules' override files; one that is not used (the
+// built-in rules apply) adds a problem naming the file and why.
+func TestDoctorReportsScreenRules(t *testing.T) {
+	te := newTestEnv(t, "linux")
+	if r := te.doctor(); r.ScreenRules.Dir != te.l.ScreenRules || len(r.ScreenRules.Files) != 0 {
+		t.Fatalf("screen_rules without overrides = %+v", r.ScreenRules)
+	}
+	good := filepath.Join(te.l.ScreenRules, "codex.json")
+	broken := filepath.Join(te.l.ScreenRules, "claude.json")
+	writeFile(t, good, `{"question": {"header": "^\\s+Frage \\d+/\\d+"}}`)
+	writeFile(t, broken, `{"menu": {"cursor": "❯", "permission_label": "("}}`)
+	r := te.doctor()
+	want := []wire.ScreenRulesFile{
+		{Path: broken, Name: "claude", Error: "menu.permission_label: error parsing regexp: missing closing ): `(`"},
+		{Path: good, Name: "codex", Used: true},
+	}
+	if !slices.Equal(r.ScreenRules.Files, want) {
+		t.Errorf("screen_rules.files = %+v, want %+v", r.ScreenRules.Files, want)
+	}
+	line := "screen rules: " + broken + " is not used, the built-in rules apply: menu.permission_label: error parsing regexp: missing closing ): `(`"
+	if !slices.Contains(r.Problems, line) || strings.Contains(strings.Join(r.Problems, "\n"), good) {
+		t.Errorf("problems = %q, want %q", r.Problems, line)
+	}
+}
+
 // doctor reads no login of the agents: with Claude's credentials and
 // Codex's auth.json in place (and the private API on), its report holds
 // neither token.

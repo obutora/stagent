@@ -1,0 +1,31 @@
+|  ┌──────────────────────────────────────────────────────┐
+|  │ >_ Qwen Code (v0.27.4)                               │
+|  │                                                      │
+|  │ API Key | mock-model (/model to change)              │
+|  │ /Volumes/.../verify/qwen/work/untrusted              │
+|  └──────────────────────────────────────────────────────┘
+|  Tips: Type / to open the command popup; Tab
+|  autocompletes slash commands and saved prompts.
+|  ●︎ Read context files: ~/.qwen/output-language.md
+|
+|  > run it #approval
+|  ✓ Shell echo hello-from-mock > mock_shell.txt && cat
+|    mock_shell.txt (Run a command for the mock scenario)
+|    hello-from-mock
+|  ? WriteFile Writing to mock_write.txt ←
+|
+|   1 written by the mock model
+|
+|   Apply this change?
+|
+|   › 1. Yes, allow once
+|     2. No, suggest changes (esc)
+|
+|
+|  ⠏ Waiting for user confirmation...
+|
+|
+|
+|
+|
+cursor=0,25 alt=true appCursor=false

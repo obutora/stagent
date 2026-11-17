@@ -1,6 +1,7 @@
 package install
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,11 +29,14 @@ type harnessIntegration interface {
 // integrations holds the integration of every harness of the registry, by
 // harness id.
 var integrations = map[string]harnessIntegration{
-	wire.HarnessClaude:  claudeIntegration{},
-	wire.HarnessCodex:   codexIntegration{},
-	wire.HarnessOmp:     ompIntegration{},
-	wire.HarnessPi:      piIntegration{},
-	wire.HarnessCopilot: copilotIntegration{},
+	wire.HarnessClaude:   claudeIntegration{},
+	wire.HarnessCodex:    codexIntegration{},
+	wire.HarnessOmp:      ompIntegration{},
+	wire.HarnessPi:       piIntegration{},
+	wire.HarnessCopilot:  copilotIntegration{},
+	wire.HarnessQwen:     qwenIntegration{},
+	wire.HarnessOpenCode: openCodeIntegration{},
+	wire.HarnessGrok:     grokIntegration{},
 }
 
 // hookFile is how a harness reads our hooks from its JSON hooks file.
@@ -95,8 +99,53 @@ func (e *env) hookCommand(f hookFile) string {
 		}
 		return bin + " hook " + id
 	}
+	return e.guardedHookCommand(id, "")
+}
+
+// guardedHookCommand is the POSIX shell command of a hook that runs
+// `stagent hook <id> [<event>]`: it skips a missing binary and always
+// succeeds, so a removed stagent never fails the harness's hook. An empty
+// event is left out (harnesses whose payload names the event).
+func (e *env) guardedHookCommand(id, event string) string {
 	q := shellQuote(e.l.Bin)
-	return "[ -x " + q + " ] && " + q + " hook " + id + " || true"
+	args := " hook " + id
+	if event != "" {
+		args += " " + event
+	}
+	return "[ -x " + q + " ] && " + q + args + " || true"
+}
+
+// psHookCommand is the PowerShell counterpart of guardedHookCommand, for
+// harnesses that run a hook's command in powershell on Windows.
+func (e *env) psHookCommand(id, event string) string {
+	q := psQuote(e.l.Bin)
+	return "if (Test-Path -LiteralPath " + q + ") { & " + q + " hook " + id + " " + event + " }"
+}
+
+// isOurNestedHooks reports whether b is a hooks file of stagent's in Claude
+// Code's nested form ({"hooks": {"<Event>": [{"hooks": [{"command": …}]}]}}):
+// valid JSON with hooks, whose hook commands all run stagent's binary.
+func isOurNestedHooks(b []byte) bool {
+	var f struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(b, &f) != nil || len(f.Hooks) == 0 {
+		return false
+	}
+	for _, groups := range f.Hooks {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				if !isOurCommand(h.Command) {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 // shellQuote single-quotes s for POSIX shells.

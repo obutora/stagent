@@ -30,6 +30,20 @@ func TestOf(t *testing.T) {
 		{"node", []string{"node", "/usr/lib/node_modules/@github/copilot/npm-loader.js", "--resume=0193"}, "copilot"},
 		{"node.exe", []string{`C:\Program Files\nodejs\node.exe`, `C:\Users\u\AppData\Roaming\npm\node_modules\@github\copilot\npm-loader.js`}, "copilot"},
 		{"copilot.exe", nil, "copilot"},
+		// OpenCode V2's npm package links its native binary opencode.exe
+		// (Bun-compiled) as bin/opencode; its private server is the same
+		// binary.
+		{"opencode.exe", []string{"/u/lib/node_modules/.bin/opencode", "--standalone"}, "opencode"},
+		{"opencode.exe", []string{"/u/lib/node_modules/@opencode/cli/bin/opencode.exe", "serve", "--stdio", "--port", "0"}, "opencode"},
+		{"opencode", []string{"/home/u/.opencode/bin/opencode"}, "opencode"},
+		// Grok Build's process is named after the binary its link points
+		// to on macOS (cut to 15 characters), after the link on Linux; its
+		// argv[0] is the link either way.
+		{"grok-macos-aarc", []string{"/Users/u/.grok/bin/grok", "-r", "01a1e529"}, "grok"},
+		{"grok", []string{"/home/u/.grok/bin/grok"}, "grok"},
+		{"grok-linux-x86_", nil, "grok"},
+		{"grok.exe", []string{`C:\Users\u\.grok\bin\grok.exe`}, "grok"},
+		{"agent", []string{"/home/u/.grok/bin/agent"}, ""},
 		{"node", []string{"node", "server.js"}, ""},
 		{"vim", []string{"vim", "claude"}, ""},
 		{"bash", []string{"bash", "/usr/local/bin/claude"}, ""},

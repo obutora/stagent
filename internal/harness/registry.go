@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/obutora/stagent/internal/ptable"
 	"github.com/obutora/stagent/internal/wire"
 )
 
@@ -25,10 +26,12 @@ type Harness struct {
 	// what doctor looks for, and the process name the agent runs as.
 	Command string
 	// NativePrefixes are process names of native binaries the npm package
-	// runs under another name (codex-<target triple>).
+	// runs under another name (codex-<target triple>), or the program is
+	// a link to (grok-<os>-<arch>).
 	NativePrefixes []string
 	// Packages are the npm packages (current name first), for launchers
-	// that run its script by path (Claude Code's cli.js).
+	// that run its script by path (Claude Code's cli.js); none for a
+	// harness that ships a native binary only.
 	Packages []string
 	// Batch is how a command line asks for a non-interactive run.
 	Batch Batch
@@ -64,6 +67,16 @@ type Batch struct {
 	// non-interactive run, given as `Mode value` or `Mode=value` (omp
 	// --mode json).
 	Mode, ModeInteractive string
+	// Prompt: a positional argument — neither an option nor the value of
+	// one of Values or Interactive — is a prompt the harness runs once
+	// without its terminal UI (qwen "fix it"), unless one of Interactive
+	// is given too. After `--` every argument is positional.
+	Prompt bool
+	// Values are the options that take the next argument as their value.
+	Values []string
+	// Interactive are the options that take a prompt (the next argument,
+	// or after `=`) and run it in the terminal UI (qwen -i "fix it").
+	Interactive []string
 }
 
 // All is the registry.
@@ -150,6 +163,109 @@ var All = []Harness{
 		},
 		Resume: func(id string) []string { return []string{"--resume=" + id} },
 	},
+	{
+		ID:      wire.HarnessQwen,
+		Command: "qwen",
+		// node runs the package's cli-entry.js by the path it was invoked
+		// as (the bin link called qwen), in one process.
+		Packages: []string{"@qwen-code/qwen-code"},
+		// A positional prompt runs once and exits (-p is its deprecated
+		// form); -i runs it in the terminal UI. --acp, the output formats
+		// and the commands run no conversation in the terminal UI
+		// (--input-format stream-json reads a stdin that is no terminal,
+		// which the wrapper leaves alone anyway).
+		Batch: Batch{
+			Subcommands: []string{"agents", "attach", "autofix-pr", "auth", "batch", "board", "channel", "extensions", "hooks", "mcp", "memory", "review", "sandbox", "serve", "daemon", "sessions", "update"},
+			Flags:       []string{"-p", "--prompt", "--acp", "-o", "--output-format"},
+			Prefixes:    []string{"--prompt=", "--output-format="},
+			Prompt:      true,
+			// Its options that take a value (qwen --help, 0.27.4).
+			Values: []string{
+				"-m", "--model", "--advisor", "--workflow-mode", "--fallback-model",
+				"--system-prompt", "--append-system-prompt", "--output-style",
+				"-s", "--sandbox", "--sandbox-image", "--approval-mode", "--channel",
+				"--allowed-mcp-server-names", "--disable-mcp-server", "--mcp-config",
+				"--allowed-tools", "-e", "--extensions", "--include-directories", "--add-dir",
+				"--openai-logging-dir", "--openai-api-key", "--openai-base-url", "--input-format",
+				"--json-fd", "--json-file", "--json-schema", "--input-file",
+				"-r", "--resume", "--session-id", "--worktree",
+				"--max-session-turns", "--max-wall-time", "--max-tool-calls", "--max-subagent-depth",
+				"--core-tools", "--exclude-tools", "--disabled-slash-commands", "--auth-type",
+				"--proxy", "--telemetry-target", "--telemetry-otlp-endpoint",
+				"--telemetry-otlp-protocol", "--telemetry-outfile",
+			},
+			Interactive: []string{"-i", "--prompt-interactive"},
+		},
+		TranscriptRoot: func(home string, getenv func(string) string) string {
+			return filepath.Join(QwenRuntimeDir(home, getenv), "projects")
+		},
+		QuestionTool: "ask_user_question",
+		Resume:       func(id string) []string { return []string{"--resume", id} },
+	},
+	{
+		ID:      wire.HarnessOpenCode,
+		Command: "opencode",
+		// OpenCode V2's npm package links its native (Bun-compiled) binary,
+		// opencode.exe, as opencode; its terminal UI runs its private server
+		// (--standalone, which stagent adds: holder/opencode.go) as a child
+		// process of the same binary, `serve --stdio`, where plugins run.
+		Packages: []string{"@opencode/cli"},
+		// Its commands run no conversation in the terminal UI (`mini` runs
+		// one in an interface of its own, which the app does not read); a
+		// positional argument is the directory to start in. --completions
+		// prints a script.
+		Batch: Batch{
+			Subcommands: []string{"run", "serve", "service", "session", "api", "debug", "auth", "mcp", "plugin", "models", "stats", "upgrade", "update", "uninstall", "acp", "reload", "pair", "mini"},
+			Flags:       []string{"-h", "--help", "-v", "--version", "--completions"},
+			Prefixes:    []string{"--completions="},
+		},
+		// OpenCode keeps its conversations in a database (no file to
+		// read): stagent records each conversation its plugin reports, read
+		// with `opencode session export`, in a file of its own under its
+		// state directory (paths.Layout.StateDir, in $STAGENT_HOME when that
+		// is set): transcript/opencode.go.
+		TranscriptRoot: func(home string, getenv func(string) string) string {
+			if dir := getenv("STAGENT_HOME"); dir != "" {
+				home = dir
+			}
+			return filepath.Join(home, ".ssh-term", "agent", "state", "opencode")
+		},
+		QuestionTool: "question",
+		// --session also creates a session of that id; --standalone keeps
+		// the conversation in a server of its own, whose plugin events are
+		// that terminal's.
+		Resume: func(id string) []string { return []string{"--standalone", "--session", id} },
+	},
+	{
+		ID:      wire.HarnessGrok,
+		Command: "grok",
+		// Grok Build is one native binary, installed as
+		// ~/.grok/downloads/grok-<os>-<arch> and linked as ~/.grok/bin/grok
+		// (also as agent, Cursor CLI's name, which is not taken for it):
+		// macOS names the process after the link's target, Linux after the
+		// link; Windows copies it as grok.exe.
+		NativePrefixes: []string{"grok-macos-", "grok-linux-", "grok-windows-"},
+		// -p and the prompt options run one turn and print it; the commands
+		// run no conversation in the terminal UI (`agent` runs one without
+		// it), but `dashboard`, a view of the terminal UI. A positional
+		// argument is the first prompt of the terminal UI.
+		Batch: Batch{
+			Subcommands: []string{
+				"agent", "clone", "completions", "doctor", "du", "disk-usage", "export", "help",
+				"inspect", "leader", "login", "logout", "mcp", "memory", "models", "plugin",
+				"sessions", "setup", "trace", "update", "usage", "version", "v", "worker",
+				"worktree", "wrap",
+			},
+			Flags:    []string{"-p", "--single", "--prompt-file", "--prompt-json", "-h", "--help", "-v", "--version"},
+			Prefixes: []string{"--single=", "--prompt-file=", "--prompt-json="},
+		},
+		// sessions/<cwd, percent-encoded>/<session id>/updates.jsonl.
+		TranscriptRoot: func(home string, getenv func(string) string) string {
+			return filepath.Join(GrokHome(home, getenv), "sessions")
+		},
+		QuestionTool: "ask_user_question",
+		Resume:       func(id string) []string { return []string{"--resume", id} },
+	},
 }
 
 // CopilotHome is Copilot CLI's configuration directory (hooks, sessions):
@@ -165,10 +281,44 @@ func CopilotHome(home string, getenv func(string) string) string {
 // $PI_CODING_AGENT_DIR, with a leading ~ expanded as Pi does, else
 // ~/.pi/agent.
 func PiAgentDir(home string, getenv func(string) string) string {
-	dir := getenv("PI_CODING_AGENT_DIR")
+	if dir := getenv("PI_CODING_AGENT_DIR"); dir != "" {
+		return expandHome(home, dir)
+	}
+	return filepath.Join(home, ".pi", "agent")
+}
+
+// QwenHome is Qwen Code's directory (settings, extensions): $QWEN_HOME,
+// with a leading ~ expanded as Qwen Code does, else ~/.qwen.
+func QwenHome(home string, getenv func(string) string) string {
+	if dir := getenv("QWEN_HOME"); dir != "" {
+		return expandHome(home, dir)
+	}
+	return filepath.Join(home, ".qwen")
+}
+
+// QwenRuntimeDir is where Qwen Code records its conversations
+// (projects/<cwd>/chats/<session id>.jsonl): $QWEN_RUNTIME_DIR, with ~
+// expanded, else QwenHome. Its setting advanced.runtimeOutputDir moves it
+// too; that is not read here (the hooks name the conversation's file).
+func QwenRuntimeDir(home string, getenv func(string) string) string {
+	if dir := getenv("QWEN_RUNTIME_DIR"); dir != "" {
+		return expandHome(home, dir)
+	}
+	return QwenHome(home, getenv)
+}
+
+// GrokHome is Grok Build's directory (hooks, sessions): $GROK_HOME, else
+// ~/.grok.
+func GrokHome(home string, getenv func(string) string) string {
+	if dir := getenv("GROK_HOME"); dir != "" {
+		return dir
+	}
+	return filepath.Join(home, ".grok")
+}
+
+// expandHome expands a leading ~ of dir as Pi and Qwen Code do.
+func expandHome(home, dir string) string {
 	switch {
-	case dir == "":
-		return filepath.Join(home, ".pi", "agent")
 	case dir == "~":
 		return home
 	case strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `~\`):
@@ -201,8 +351,13 @@ func QuestionToolOf(id string) string {
 	return h.QuestionTool
 }
 
-// QuestionToolHarness returns the harness whose question tool is tool.
-func QuestionToolHarness(tool string) (Harness, bool) {
+// QuestionToolHarness returns the harness whose question tool is tool:
+// harness id when tool is its question tool (Qwen Code and Grok Build both
+// call theirs ask_user_question), else the first of All whose it is.
+func QuestionToolHarness(tool, id string) (Harness, bool) {
+	if h, ok := Lookup(id); ok && h.QuestionTool != "" && h.QuestionTool == tool {
+		return h, true
+	}
 	i := slices.IndexFunc(All, func(h Harness) bool { return h.QuestionTool != "" && h.QuestionTool == tool })
 	if i < 0 {
 		return Harness{}, false
@@ -283,21 +438,51 @@ func Command(argv []string) string {
 
 // BatchArgs reports whether a command line of harness id (argv[0] first)
 // asks for a non-interactive run, by the rule the shell wrapper applies.
-// Every argument is looked at for flags and the mode: omp runs under its
-// JavaScript runtime, its script first.
+// A harness run by its JavaScript runtime (claude or qwen under node, omp
+// under bun) is judged by the arguments after its script — the first
+// argument that is not an option, as Of finds it: the runtime's own
+// options before it are not the harness's.
 func BatchArgs(id string, argv []string) bool {
 	h, ok := Lookup(id)
 	if !ok || len(argv) < 2 {
 		return false
 	}
-	return h.Batch.args(argv[1:])
+	args := argv[1:]
+	if Interpreter(ptable.Argv0(argv)) {
+		script := slices.IndexFunc(args, func(a string) bool { return !strings.HasPrefix(a, "-") })
+		if script < 0 {
+			return false
+		}
+		args = args[script+1:]
+	}
+	return h.Batch.args(args)
 }
 
 func (b Batch) args(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
 	if len(b.Subcommands) > 0 && slices.Contains(b.Subcommands, args[0]) {
 		return true
 	}
+	var value, ended, interactive, prompt bool
 	for i, a := range args {
+		if b.Prompt {
+			switch {
+			case value:
+				value = false
+			case ended || a == "-" || !strings.HasPrefix(a, "-"):
+				prompt = true
+			case a == "--":
+				ended = true
+			case slices.Contains(b.Interactive, a):
+				interactive, value = true, true
+			case slices.ContainsFunc(b.Interactive, func(o string) bool { return strings.HasPrefix(a, o+"=") }):
+				interactive = true
+			case slices.Contains(b.Values, a):
+				value = true
+			}
+		}
 		switch {
 		case slices.Contains(b.Flags, a):
 			return true
@@ -310,5 +495,5 @@ func (b Batch) args(args []string) bool {
 			return true
 		}
 	}
-	return false
+	return prompt && !interactive
 }

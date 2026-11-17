@@ -1,0 +1,31 @@
+| ! Mock title                    +
+|
+|  ┃
+|  ┃  run it #approval
+|  ┃
+|
+|     + 1 command
+|     ← Write mock_write.txt
+|
+|
+|
+|
+|
+|
+|  ┃
+|  ┃  △ Permission required
+|  ┃    → Edit mock_write.txt
+|  ┃
+|  ┃  1 + written by the mock model
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃
+|  ┃   Allow once   Always allow   Reject
+|  ┃
+|  ┃  ctrl+f fullscreen  ⇆ select  enter confirm
+|  ┃
+|
+cursor=2,0 alt=true appCursor=false

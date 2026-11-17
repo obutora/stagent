@@ -53,6 +53,26 @@ func TestBatchArgs(t *testing.T) {
 		{"omp", []string{"bun", "/home/u/.bun/bin/omp", "--mode", "text"}, false},
 		{"omp", []string{"bun", "/home/u/.bun/bin/omp", "--mode=text", "--model", "x"}, false},
 		{"omp", []string{"bun", "/home/u/.bun/bin/omp", "--mode"}, false},
+		// Claude Code and omp run directly or as their runtime's script
+		// (the process the hook reads): only the arguments after the
+		// script are the harness's, so a runtime flag before it that
+		// reads like a batch flag is not one.
+		{"claude", []string{"/usr/local/bin/claude", "--print", "hi"}, true},
+		{"claude", []string{"node", "/u/lib/node_modules/@anthropic-ai/claude-code/cli.js", "-p", "hi"}, true},
+		{"claude", []string{"node", "--max-old-space-size=4096", "/u/lib/node_modules/@anthropic-ai/claude-code/cli.js", "--print", "hi"}, true},
+		{"claude", []string{"node", "/u/lib/node_modules/@anthropic-ai/claude-code/cli.js"}, false},
+		{"claude", []string{"node", "/u/lib/node_modules/@anthropic-ai/claude-code/cli.js", "--resume", "0193"}, false},
+		{"claude", []string{"node", "--print", "/u/lib/node_modules/@anthropic-ai/claude-code/cli.js"}, false},
+		{"claude", []string{"node", "-p"}, false}, // no script: nothing is the harness's
+		{"omp", []string{"/home/u/.bun/bin/omp", "-p", "hi"}, true},
+		{"omp", []string{"/home/u/.bun/bin/omp", "--mode", "json"}, true},
+		{"omp", []string{"/home/u/.bun/bin/omp"}, false},
+		{"omp", []string{"/home/u/.bun/bin/omp", "--mode", "text"}, false},
+		{"omp", []string{"bun", "/home/u/.bun/bin/omp"}, false},
+		{"omp", []string{"bun", "--smol", "/home/u/.bun/bin/omp", "--print", "hi"}, true},
+		{"omp", []string{"bun", "-p", "/home/u/.bun/bin/omp"}, false},
+		{"omp", []string{"bun", "--mode=json", "/home/u/.bun/bin/omp", "--model", "x"}, false},
+		{"omp", []string{"bun", "--print"}, false},
 		{"pi", []string{"pi", "-p", "hi"}, true},
 		{"pi", []string{"pi", "--print", "hi"}, true},
 		{"pi", []string{"pi", "--mode", "json", "hi"}, true},
@@ -73,7 +93,64 @@ func TestBatchArgs(t *testing.T) {
 		{"copilot", []string{"copilot", "--resume=0193"}, false},
 		{"copilot", []string{"copilot", "-i", "fix the -p flag"}, false},
 		{"copilot", []string{"copilot", "--mode", "autopilot"}, false}, // its --mode is the agent's, still interactive
-		{"claude", []string{"claude", "--mode", "json"}, false},        // --mode is omp's and pi's
+		// A positional prompt runs qwen one-shot unless -i asks for the
+		// interactive UI; option values are not prompts.
+		{"qwen", []string{"qwen", "-p", "hi"}, true},
+		{"qwen", []string{"qwen", "--prompt", "hi"}, true},
+		{"qwen", []string{"qwen", "fix it"}, true},
+		{"qwen", []string{"qwen", "--approval-mode", "default", "fix it"}, true},
+		{"qwen", []string{"qwen", "--acp"}, true},
+		{"qwen", []string{"qwen", "-o", "json"}, true},
+		{"qwen", []string{"qwen", "--output-format=json"}, true},
+		{"qwen", []string{"qwen", "mcp", "list"}, true},
+		{"qwen", []string{"qwen", "serve"}, true},
+		{"qwen", []string{"qwen", "--", "-x"}, true},
+		{"qwen", []string{"qwen"}, false},
+		{"qwen", []string{"qwen", "-i", "fix it"}, false},
+		{"qwen", []string{"qwen", "--prompt-interactive=fix it"}, false},
+		{"qwen", []string{"qwen", "fix it", "-i", "more"}, false},
+		{"qwen", []string{"qwen", "--approval-mode", "default", "--resume", "a2730fef"}, false},
+		{"qwen", []string{"qwen", "-r", "a2730fef", "-m", "qwen3", "-c"}, false},
+		{"qwen", []string{"qwen", "--resume=a2730fef", "--yolo"}, false},
+		{"qwen", []string{"qwen", "--input-format", "text"}, false},
+		// The hook reads the harness's own process: node, its script, the
+		// arguments.
+		{"qwen", []string{"node", "/u/.npm/bin/qwen", "--approval-mode", "default", "--resume", "a2730fef"}, false},
+		{"qwen", []string{"node", "/u/.npm/bin/qwen", "hi"}, true},
+		{"qwen", []string{"node", "--expose-gc", "/u/lib/node_modules/@qwen-code/qwen-code/cli.js", "-i", "hi"}, false},
+		// OpenCode's commands but `mini` run no conversation in its
+		// terminal UI; a positional argument is the directory to start in.
+		{"opencode", []string{"opencode", "run", "fix it"}, true},
+		{"opencode", []string{"opencode", "session", "export", "ses_1"}, true},
+		{"opencode", []string{"opencode", "serve", "--stdio", "--port", "0"}, true},
+		{"opencode", []string{"opencode", "service", "stop"}, true},
+		{"opencode", []string{"opencode", "mini"}, true},
+		{"opencode", []string{"opencode", "--version"}, true},
+		{"opencode", []string{"opencode", "--completions=zsh"}, true},
+		{"opencode", []string{"opencode"}, false},
+		{"opencode", []string{"opencode", "--standalone", "--session", "ses_1"}, false},
+		{"opencode", []string{"opencode", "/home/u/proj", "--prompt", "fix it"}, false},
+		{"opencode", []string{"/u/node_modules/.bin/opencode", "-c"}, false},
+		// Grok Build: -p and the prompt options run one turn; its commands
+		// but dashboard run no conversation in the terminal UI; a
+		// positional argument is the terminal UI's first prompt.
+		{"grok", []string{"grok", "-p", "hi"}, true},
+		{"grok", []string{"grok", "--single", "hi"}, true},
+		{"grok", []string{"grok", "--single=hi"}, true},
+		{"grok", []string{"grok", "-m", "grok-4", "--prompt-file", "p.txt"}, true},
+		{"grok", []string{"grok", "--prompt-json={}"}, true},
+		{"grok", []string{"grok", "agent", "stdio"}, true},
+		{"grok", []string{"grok", "sessions", "list"}, true},
+		{"grok", []string{"grok", "doctor"}, true},
+		{"grok", []string{"grok", "update"}, true},
+		{"grok", []string{"grok", "--version"}, true},
+		{"grok", []string{"grok"}, false},
+		{"grok", []string{"grok", "dashboard"}, false},
+		{"grok", []string{"grok", "fix the update script"}, false},
+		{"grok", []string{"/home/u/.grok/bin/grok", "--resume", "01a1e529"}, false},
+		{"grok", []string{"grok", "-c"}, false},
+		{"claude", []string{"claude", "fix it"}, false},         // a positional prompt is interactive in the others
+		{"claude", []string{"claude", "--mode", "json"}, false}, // --mode is omp's and pi's
 		{"other", []string{"vim", "-p"}, false},
 	} {
 		if got := BatchArgs(c.harness, c.argv); got != c.want {
@@ -91,8 +168,8 @@ func TestRegistryEntriesComplete(t *testing.T) {
 			t.Errorf("entry %+v: id empty, other or duplicated", h)
 		}
 		seen[h.ID] = true
-		if h.Command == "" || len(h.Packages) == 0 || h.TranscriptRoot == nil || h.Resume == nil {
-			t.Errorf("%s: command, package, transcript root and resume are required", h.ID)
+		if h.Command == "" || len(h.Packages) == 0 && len(h.NativePrefixes) == 0 || h.TranscriptRoot == nil || h.Resume == nil {
+			t.Errorf("%s: command, package or native binary, transcript root and resume are required", h.ID)
 		}
 		if Name(h.Command) != h.ID {
 			t.Errorf("%s: its command %q is judged %q", h.ID, h.Command, Name(h.Command))
@@ -104,11 +181,14 @@ func TestRegistryEntriesComplete(t *testing.T) {
 // does; an unknown harness has none.
 func TestResumeArgv(t *testing.T) {
 	want := map[string][]string{
-		wire.HarnessClaude:  {"claude", "--resume", "c1"},
-		wire.HarnessCodex:   {"codex", "resume", "c1"},
-		wire.HarnessCopilot: {"copilot", "--resume=c1"},
-		wire.HarnessOmp:     {"omp", "--resume", "c1"},
-		wire.HarnessPi:      {"pi", "--session", "c1"},
+		wire.HarnessClaude:   {"claude", "--resume", "c1"},
+		wire.HarnessCodex:    {"codex", "resume", "c1"},
+		wire.HarnessCopilot:  {"copilot", "--resume=c1"},
+		wire.HarnessOmp:      {"omp", "--resume", "c1"},
+		wire.HarnessPi:       {"pi", "--session", "c1"},
+		wire.HarnessQwen:     {"qwen", "--resume", "c1"},
+		wire.HarnessOpenCode: {"opencode", "--standalone", "--session", "c1"},
+		wire.HarnessGrok:     {"grok", "--resume", "c1"},
 	}
 	if m := Missing(want); len(m) > 0 {
 		t.Fatalf("no expected resume command for %v", m)
@@ -184,6 +264,75 @@ func TestCopilotTranscriptRoot(t *testing.T) {
 		})
 		if got != c.want {
 			t.Errorf("COPILOT_HOME=%q: root %q, want %q", c.dir, got, c.want)
+		}
+	}
+}
+
+// Qwen Code keeps its conversations under its runtime directory:
+// $QWEN_RUNTIME_DIR, else $QWEN_HOME (both with ~ expanded, as Qwen Code
+// does), else ~/.qwen, in projects/.
+func TestQwenTranscriptRoot(t *testing.T) {
+	h, _ := Lookup(wire.HarnessQwen)
+	for _, c := range []struct {
+		runtime, home, want string
+	}{
+		{"", "", filepath.Join("/home/u", ".qwen", "projects")},
+		{"", "/srv/qwen", filepath.Join("/srv/qwen", "projects")},
+		{"/run/qwen", "/srv/qwen", filepath.Join("/run/qwen", "projects")},
+		{"", "~/q", filepath.Join("/home/u", "q", "projects")},
+	} {
+		got := h.TranscriptRoot("/home/u", func(k string) string {
+			switch k {
+			case "QWEN_RUNTIME_DIR":
+				return c.runtime
+			case "QWEN_HOME":
+				return c.home
+			}
+			return ""
+		})
+		if got != c.want {
+			t.Errorf("QWEN_RUNTIME_DIR=%q QWEN_HOME=%q: root %q, want %q", c.runtime, c.home, got, c.want)
+		}
+	}
+}
+
+// OpenCode keeps its conversations in a database; stagent records each one
+// it sees in a file of its own, under its state directory (in
+// $STAGENT_HOME when that isolates the installation).
+func TestOpenCodeTranscriptRoot(t *testing.T) {
+	h, _ := Lookup(wire.HarnessOpenCode)
+	for stagentHome, want := range map[string]string{
+		"":           filepath.Join("/home/u", ".ssh-term", "agent", "state", "opencode"),
+		"/srv/agent": filepath.Join("/srv/agent", ".ssh-term", "agent", "state", "opencode"),
+	} {
+		got := h.TranscriptRoot("/home/u", func(k string) string {
+			if k == "STAGENT_HOME" {
+				return stagentHome
+			}
+			return ""
+		})
+		if got != want {
+			t.Errorf("STAGENT_HOME=%q: root %q, want %q", stagentHome, got, want)
+		}
+	}
+}
+
+// Grok Build keeps its conversations under $GROK_HOME/sessions, ~/.grok
+// by default.
+func TestGrokTranscriptRoot(t *testing.T) {
+	h, _ := Lookup(wire.HarnessGrok)
+	for env, want := range map[string]string{
+		"":          filepath.Join("/home/u", ".grok", "sessions"),
+		"/srv/grok": filepath.Join("/srv/grok", "sessions"),
+	} {
+		got := h.TranscriptRoot("/home/u", func(k string) string {
+			if k == "GROK_HOME" {
+				return env
+			}
+			return ""
+		})
+		if got != want {
+			t.Errorf("GROK_HOME=%q: root %q, want %q", env, got, want)
 		}
 	}
 }

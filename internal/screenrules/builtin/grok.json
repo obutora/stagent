@@ -1,0 +1,24 @@
+{
+  "dialogs": {
+    "bar": "┃",
+    "scroll_bar": "█",
+    "dialog_edge": "outside_bar",
+    "permission": {
+      "kind": "radio_rows",
+      "hint": "^(?:\\d/\\d:select|Tab/Space:permission)\\b",
+      "hint_rows": 1,
+      "hint_place": "outside_bar"
+    },
+    "question": {
+      "kind": "radio_rows",
+      "hint": "↑/↓ navigate\\b.*\\bEnter:\\w+$",
+      "hint_rows": 1,
+      "hint_place": "bar"
+    },
+    "trust": {
+      "kind": "titled_rows",
+      "title": "Do you trust the contents of this directory?",
+      "rows": ["^Yes, proceed {2,}y$", "^No, quit {2,}n$"]
+    }
+  }
+}

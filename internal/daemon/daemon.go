@@ -77,11 +77,14 @@ type Options struct {
 	// Guard refuses some methods to coding agents' process trees (ADR
 	// 0004; default: harness.NewGuard(Layout)).
 	Guard *harness.Guard
-	// Now is the wall clock schedules run by (default time.Now), and
-	// ScheduleTick how often it is compared with their times (default
-	// 30 s). RunStartGrace: how long a run's holder has to register
-	// (default 30 s; see schedules.go).
+	// Now is the wall clock schedules run by and hooks are timed by
+	// (default time.Now), and ScheduleTick how often it is compared with
+	// the schedules' times (default 30 s). RunStartGrace: how long a run's
+	// holder has to register (default 30 s; see schedules.go). AfterFunc
+	// starts the timers that go with the hooks' times (default
+	// time.AfterFunc; replyIdleLocked): tests run them on a fake Now.
 	Now           func() time.Time
+	AfterFunc     func(d time.Duration, f func()) Timer
 	ScheduleTick  time.Duration
 	RunStartGrace time.Duration
 	// LoginEnv takes the login shell's environment before each schedule
@@ -116,6 +119,12 @@ type Options struct {
 	// default bootid.Get): agents.json recorded in another boot means the
 	// host restarted (stopped.go).
 	BootID func() string
+}
+
+// Timer is a timer started by Options.AfterFunc; *time.Timer is one.
+type Timer interface {
+	// Stop keeps the timer from running, reporting whether it did.
+	Stop() bool
 }
 
 const (
@@ -268,6 +277,9 @@ func New(opts Options) (*Daemon, error) {
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.AfterFunc == nil {
+		opts.AfterFunc = func(d time.Duration, f func()) Timer { return time.AfterFunc(d, f) }
 	}
 	if opts.ScheduleTick <= 0 {
 		opts.ScheduleTick = defaultScheduleTick

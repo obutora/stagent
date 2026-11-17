@@ -1,0 +1,31 @@
+|
+|  /V/S/o/n/s/v/grok/work          120 / 128K │ [Dashboard]
+|
+|
+|     ❯ reply from phone #slow                    1:21 AM
+|
+|
+|     Finished after a slow think.                1:22 AM
+|
+|     Worked for 21s
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  ╭──────────────────────────────────────────── Stashed ─╮
+|  │ ❯                                                    │
+|  ╰──────────────────────────── Mock (chat_completions) ─╯
+|
+|  Shift+Tab:mode  │  Ctrl+x:shortcuts
+|
+cursor=6,25 alt=true appCursor=false

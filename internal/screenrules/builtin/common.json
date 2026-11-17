@@ -1,0 +1,7 @@
+{
+  "menu": {
+    "hint": "(?i)\\besc\\b|\\benter\\b|↑/↓|ctrl\\+g",
+    "hint_rows": 4,
+    "transcript_mark": "^(?:[●•◦⏺⎿✻✢✳✶✽✔✗■]|[›❯]\\s)"
+  }
+}

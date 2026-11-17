@@ -51,6 +51,10 @@ type procIO struct {
 	// launch tells how the agent was started, for a hook outside any
 	// stagent session (see wire.HookEventParams), given the payload.
 	launch func(harness string, payload []byte) launchInfo
+	// ranBy is the harness that runs the hook when it runs other
+	// harnesses' hooks too (hookRunner): a hook of another harness is
+	// not its own and is dropped.
+	ranBy string
 }
 
 // launchInfo is what a hook outside a stagent session tells the daemon
@@ -67,7 +71,8 @@ type launchInfo struct {
 }
 
 // hookHarness is what the hook command does its own way for one harness
-// (claude.go, codex.go, omp.go, pi.go, copilot.go).
+// (claude.go, codex.go, omp.go, pi.go, copilot.go, qwen.go, opencode.go,
+// grok.go).
 type hookHarness struct {
 	// argv reads the event and payload of a harness that passes them as
 	// arguments in a form of its own; ok is false for the usual form.
@@ -77,15 +82,22 @@ type hookHarness struct {
 	// payload rewrites the harness's payload into the form the daemon
 	// reads; nil when it already is.
 	payload func(payload []byte) []byte
+	// local handles an event in the hook process: true when nothing is to
+	// reach the daemon (an event of the harness's own, one of a run that
+	// is not the user's session).
+	local func(event string, payload []byte) bool
 }
 
 // hookHarnesses has an entry for every harness of the registry.
 var hookHarnesses = map[string]hookHarness{
-	wire.HarnessClaude:  claudeHook,
-	wire.HarnessCodex:   codexHook,
-	wire.HarnessOmp:     ompHook,
-	wire.HarnessPi:      piHook,
-	wire.HarnessCopilot: copilotHook,
+	wire.HarnessClaude:   claudeHook,
+	wire.HarnessCodex:    codexHook,
+	wire.HarnessOmp:      ompHook,
+	wire.HarnessPi:       piHook,
+	wire.HarnessCopilot:  copilotHook,
+	wire.HarnessQwen:     qwenHook,
+	wire.HarnessOpenCode: openCodeHook,
+	wire.HarnessGrok:     grokHook,
 }
 
 // Main runs the hook command. It always returns 0.
@@ -96,6 +108,7 @@ func Main(args []string) int {
 		sessionID:     os.Getenv(wire.EnvSessionID),
 		remoteControl: os.Getenv(wire.EnvClaudeBridgeSessionID) != "",
 		launch:        osLaunch,
+		ranBy:         hookRunner(os.Getenv),
 	})
 }
 
@@ -160,6 +173,9 @@ func run(args []string, pio procIO) (code int) {
 		return 0
 	}
 	harnessID, rest := args[0], args[1:]
+	if pio.ranBy != "" && pio.ranBy != harnessID {
+		return 0
+	}
 	var (
 		event   string
 		payload []byte
@@ -184,6 +200,9 @@ func run(args []string, pio procIO) (code int) {
 	}
 	if event == "" {
 		event = eventName(payload)
+	}
+	if h := hookHarnesses[harnessID]; h.local != nil && h.local(event, payload) {
+		return 0
 	}
 
 	l, err := paths.Resolve()

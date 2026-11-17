@@ -49,6 +49,10 @@ const usage = `usage: stagent <command> [args]
                       keeping WSL running (.wslconfig, WSL)
   uninstall           stop / unhook / purge
   doctor              report installation state as JSON
+  explain (--session ID | --file SCREEN) [--harness H] [--json]
+                      show which screen rule (built-in or an override in
+                      ~/.ssh-term/agent/screen-rules) matched a session's
+                      screen or a saved one: menu, permission, question
   wsl-shutdown        restart WSL: run wsl.exe --shutdown (stops every distribution)
   task run [--switch-branch] [--setup] <id> -- <cmd> [args...]
                       internal (task.create): prepare task <id> in its first
@@ -78,6 +82,8 @@ func dispatch(args []string) int {
 	switch cmd {
 	case "run":
 		return holder.Main(rest)
+	case "explain":
+		return holder.Explain(rest)
 	case "ls":
 		return attachcli.Ls(rest)
 	case "attach":

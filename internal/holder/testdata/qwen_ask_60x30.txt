@@ -1,0 +1,31 @@
+|  ✓ Shell echo hello-from-mock (Run a command for the mock │
+|     scenario)                                             │
+|    hello-from-mock                                        │
+|                                                           │
+|  ◆︎ The command printed hello-from-mock.                   │
+|                                                           │
+|  > take your time #slow                                   │
+|                                                           │
+|  ◆︎ Finished after a slow think.                           │
+|                                                           │
+|  > ask me #ask                                            │
+|  ? AskUserQuestion Ask user 1 question ←                  │
+|                                                           █
+|   Color                                                   █
+|                                                           █
+|   Which color do you prefer?                              █
+|                                                           █
+|   ❯ 1. Red                                                █
+|        A warm color                                       █
+|     2. Green                                              █
+|        The color of leaves                                █
+|     3. Blue                                               █
+|        The color of the sky                               █
+|     4. Type something...                                  █
+|                                                           █
+|                                                           █
+|   ↑/↓: Navigate | Enter: Select | Esc: Cancel             █
+|                                                           █
+|
+|  ⠏ Waiting for user confirmation...
+cursor=36,29 alt=true appCursor=false

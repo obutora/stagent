@@ -1,0 +1,31 @@
+|
+|  /V/S/o/n/s/v/grok/work
+|
+|                       ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄
+|                       ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀
+|                       ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀
+|                       ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀
+|                       ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀
+|                       ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀
+|                       ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+|
+|
+|        Do you trust the contents of this directory?
+|/Volumes/SPStreamS05/orca/notes/ssh-term-harness-more/verify
+|
+|  Grok Build may run or modify contents in this directory,
+|                   posing security risks.
+|
+|               Yes, proceed                 y
+|               No, quit                     n
+|
+|
+|
+|
+|
+|
+|
+|
+|                                        Grok Build  1.0.77
+|
+cursor=60,29 alt=true appCursor=false

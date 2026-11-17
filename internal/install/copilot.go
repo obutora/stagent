@@ -94,8 +94,8 @@ func (e *env) copilotHooksSource() string {
 	var b strings.Builder
 	b.WriteString("{\n  \"version\": 1,\n  \"hooks\": {\n")
 	for i, ev := range copilotEvents {
-		bash, _ := json.Marshal(e.copilotBash(ev))
-		ps, _ := json.Marshal(e.copilotPowerShell(ev))
+		bash, _ := json.Marshal(e.guardedHookCommand(wire.HarnessCopilot, ev))
+		ps, _ := json.Marshal(e.psHookCommand(wire.HarnessCopilot, ev))
 		b.WriteString("    \"" + ev + "\": [\n      {\n")
 		b.WriteString("        \"type\": \"command\",\n")
 		b.WriteString("        \"bash\": " + string(bash) + ",\n")
@@ -109,19 +109,6 @@ func (e *env) copilotHooksSource() string {
 	}
 	b.WriteString("  }\n}\n")
 	return b.String()
-}
-
-// copilotBash is the bash command of event's hook: the guarded command of
-// the other harnesses, given the event.
-func (e *env) copilotBash(event string) string {
-	q := shellQuote(e.l.Bin)
-	return "[ -x " + q + " ] && " + q + " hook " + wire.HarnessCopilot + " " + event + " || true"
-}
-
-// copilotPowerShell is the powershell command of event's hook.
-func (e *env) copilotPowerShell(event string) string {
-	q := psQuote(e.l.Bin)
-	return "if (Test-Path -LiteralPath " + q + ") { & " + q + " hook " + wire.HarnessCopilot + " " + event + " }"
 }
 
 // isOurCopilotHooks reports whether b is a hooks file of stagent's: valid

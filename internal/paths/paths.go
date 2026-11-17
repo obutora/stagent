@@ -29,10 +29,13 @@ type Layout struct {
 	Bin      string // <BinDir>/stagent[.exe]
 	Manifest string // <Root>/manifest.json
 	Config   string // <Root>/config.json
-	HostID   string // <Root>/host-id — the host's random id (hostid)
-	StateDir string // <Root>/state
-	EventLog string // <StateDir>/events.log (segments get a numeric suffix)
-	Index    string // <StateDir>/index.json — conversation list cache
+	// ScreenRules holds the host's overrides of the rules the holder reads
+	// agents' screens with (screenrules): <Root>/screen-rules/<name>.json
+	ScreenRules string
+	HostID      string // <Root>/host-id — the host's random id (hostid)
+	StateDir    string // <Root>/state
+	EventLog    string // <StateDir>/events.log (segments get a numeric suffix)
+	Index       string // <StateDir>/index.json — conversation list cache
 	// WrapperRun records the last start of `stagent run --handoff=auto`,
 	// which only the shell wrappers pass (WrapperRunRecord):
 	// <StateDir>/wrapper-run
@@ -110,17 +113,18 @@ func resolve(home string, isolated bool) (*Layout, error) {
 		exe = "stagent.exe"
 	}
 	l := &Layout{
-		Home:       home,
-		Root:       root,
-		BinDir:     filepath.Join(root, "bin"),
-		Bin:        filepath.Join(root, "bin", exe),
-		Manifest:   filepath.Join(root, "manifest.json"),
-		Config:     filepath.Join(root, "config.json"),
-		HostID:     filepath.Join(root, "host-id"),
-		StateDir:   filepath.Join(root, "state"),
-		LogDir:     filepath.Join(root, "log"),
-		UploadsDir: filepath.Join(home, ".ssh-term", "uploads"),
-		Isolated:   isolated,
+		Home:        home,
+		Root:        root,
+		BinDir:      filepath.Join(root, "bin"),
+		Bin:         filepath.Join(root, "bin", exe),
+		Manifest:    filepath.Join(root, "manifest.json"),
+		Config:      filepath.Join(root, "config.json"),
+		ScreenRules: filepath.Join(root, "screen-rules"),
+		HostID:      filepath.Join(root, "host-id"),
+		StateDir:    filepath.Join(root, "state"),
+		LogDir:      filepath.Join(root, "log"),
+		UploadsDir:  filepath.Join(home, ".ssh-term", "uploads"),
+		Isolated:    isolated,
 	}
 	l.EventLog = filepath.Join(l.StateDir, "events.log")
 	l.Index = filepath.Join(l.StateDir, "index.json")

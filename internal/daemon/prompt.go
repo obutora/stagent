@@ -9,14 +9,16 @@ import "github.com/obutora/stagent/internal/wire"
 // Codex's hook returns before its prompt shows, and nothing tells when the
 // prompt is answered: an Esc ends the turn without Stop, and Codex blinks
 // its terminal title while the prompt is up, so the output never goes quiet
-// before the answer either. Copilot CLI's hook returns before its menu
-// shows too. The session's holder keeps the screen: while a claude, Codex or
-// Copilot CLI approval of the session is pending the daemon asks it to
+// before the answer either. Copilot CLI's and Qwen Code's hooks return
+// before their menus show too. The session's holder keeps the screen: while
+// a claude, Codex, Copilot CLI or Qwen Code approval of the session is
+// pending the daemon asks it to
 // watch for the permission menu of that harness (holder.prompt_watch), and
 // the holder reports when the menu it saw left the screen
 // (holder.prompt_gone). Holders that cannot watch (before 0.4.0, which
 // ignore the notification; 0.5.0 and earlier know only claude's menu;
-// 0.15.0 and earlier know no Copilot CLI menu) or never saw the menu send
+// 0.15.0 and earlier know no Copilot CLI menu, 0.21.1 and earlier no Qwen
+// Code menu) or never saw the menu send
 // nothing; Stop remains the fallback for those.
 
 // startPromptWatchLocked starts a new watch for ap, a pending approval of

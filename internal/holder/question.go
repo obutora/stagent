@@ -11,17 +11,18 @@ package holder
 
 // questionMenu reports whether lines show a question UI of harnessID, as
 // promptWatch's menu: its signature is the same for every question screen.
-func questionMenu(lines []string, harnessID string) (sig string, ok bool) {
-	return "", questionShown(lines, harnessID)
+func (r *screenRules) questionMenu(lines []string, harnessID string) (sig string, ok bool) {
+	return "", r.questionShown(lines, harnessID)
 }
 
 // questionShown reports whether lines (a screen, top to bottom) show the
 // UI of a question harnessID asked: its menuStyle's question, or else any
 // menu as it draws its menus (claude's and Codex's numbered options).
-func questionShown(lines []string, harnessID string) bool {
-	if shown := menuStyles[harnessID].question; shown != nil {
-		return shown(lines)
+func (r *screenRules) questionShown(lines []string, harnessID string) bool {
+	if shown := r.styles[harnessID].question; shown != nil {
+		_, ok := shown(lines)
+		return ok
 	}
-	_, ok := findMenu(lines, harnessID)
+	_, ok := r.findMenu(lines, harnessID)
 	return ok
 }

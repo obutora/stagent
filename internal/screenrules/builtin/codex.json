@@ -1,0 +1,13 @@
+{
+  "menu": {
+    "cursor": "›",
+    "dialog_edge": "first_column",
+    "permission_label": "^Yes"
+  },
+  "question": {
+    "kind": "hint_and_header",
+    "header": "^\\s+Question \\d+/\\d+(?:\\s|$)",
+    "hint": "\\benter to submit (?:answer|all)\\b",
+    "hint_rows": 3
+  }
+}

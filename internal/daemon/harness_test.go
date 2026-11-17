@@ -13,3 +13,18 @@ func TestEveryHarnessHasDaemonHandling(t *testing.T) {
 		t.Errorf("harness %s has no entry in daemonHarnesses (internal/daemon/%s.go)", id, id)
 	}
 }
+
+// A harness that checks a tool's permission before its menu names the
+// tool in its checkHook, which the daemon then takes as that check (not
+// as an approval).
+func TestCheckHookIsAPermissionCheck(t *testing.T) {
+	for id, dh := range daemonHarnesses {
+		if dh.checkHook == "" {
+			continue
+		}
+		eff := classifyHook(id, dh.checkHook, hookPayload{ToolName: "run_terminal_command"})
+		if !eff.permissionCheck || eff.approval {
+			t.Errorf("%s: its checkHook %s gives %+v", id, dh.checkHook, eff)
+		}
+	}
+}

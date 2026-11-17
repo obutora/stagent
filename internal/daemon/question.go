@@ -17,10 +17,11 @@ import (
 
 // questionShownHook is the hook that comes when the question of tool
 // shows, which tells it in-app outside a stagent session: that of the
-// harness whose question tool it is (daemonHarness.questionShown, its
-// PreToolUse by default). "" when tool is no question tool.
-func questionShownHook(tool string) string {
-	h, ok := harness.QuestionToolHarness(tool)
+// harness whose question tool it is, harnessID's if it is (QuestionToolHarness;
+// daemonHarness.questionShown, its PreToolUse by default). "" when tool is
+// no question tool.
+func questionShownHook(harnessID, tool string) string {
+	h, ok := harness.QuestionToolHarness(tool, harnessID)
 	if !ok {
 		return ""
 	}
@@ -30,7 +31,9 @@ func questionShownHook(tool string) string {
 	return hookPreToolUse
 }
 
-func isQuestionTool(tool string) bool { return questionShownHook(tool) != "" }
+// isQuestionTool tells whether tool, named in a hook of harness harnessID,
+// is a question tool (questionShownHook).
+func isQuestionTool(harnessID, tool string) bool { return questionShownHook(harnessID, tool) != "" }
 
 // Question watch. Output while a question is up is the user moving through
 // its UI (the highlight, claude's tabs, a multi-select's checks), so it
@@ -71,7 +74,7 @@ func (d *Daemon) sendQuestionWatchLocked(s *session, on bool) {
 	if on {
 		p.Harness = s.s.Harness
 		if q := s.track.Question; q != nil {
-			if h, ok := harness.QuestionToolHarness(q.Tool); ok {
+			if h, ok := harness.QuestionToolHarness(q.Tool, s.s.Harness); ok {
 				p.Harness = h.ID
 			}
 		}

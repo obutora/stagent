@@ -1,0 +1,31 @@
+|  │ API Key | mock-model (/model to change)              │
+|  │ /Volumes/.../verify/qwen/work/untrusted              │
+|  └──────────────────────────────────────────────────────┘
+|  Tips: You can run any shell commands from Qwen Code
+|  using ! (e.g. !ls).
+|   ╭──────────────────────────────────────────────────────
+|   │
+|   │ Do you trust this folder?
+|   │ Trusting a folder allows Qwen Code to execute
+|   │ commands it suggests. This is a security feature to
+|   │ prevent accidental execution in untrusted
+|   │ directories.
+|   │
+|   │ › 1. Trust folder (untrusted)
+|   │   2. Trust parent folder (work)
+|   │   3. Don't trust (esc)
+|   │
+|   ╰──────────────────────────────────────────────────────
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=0,29 alt=true appCursor=false

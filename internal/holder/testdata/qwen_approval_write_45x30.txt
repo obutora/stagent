@@ -1,0 +1,31 @@
+|  ┌───────────────────────────────────────┐
+|  │ >_ Qwen Code (v0.27.4)                │
+|  │                                       │
+|  │ API Key | mock-model                  │
+|  │ /Volumes/.../verify/qwen/work/proj    │
+|  └───────────────────────────────────────┘
+|  Tips: You can resume a previous
+|  conversation by running qwen --continue
+|  or qwen --resume.
+|  ●︎ Read context files:
+|    ~/.qwen/output-language.md
+|
+|  > run it #approval
+|  ✓ Shell echo hello-from-mock >
+|    mock_shell.txt && cat mock_shell.txt
+|    (Run a command for the mock scenario)
+|    hello-from-mock
+|  ? WriteFile Writing to mock_write.txt ←
+|
+|   1 written by the mock model
+|
+|   Apply this change?
+|
+|   › 1. Yes, allow once
+|     2. Yes, allow always
+|     3. No, suggest changes (esc)
+|
+|
+|  ⠏ Waiting for user confirmation...
+|
+cursor=0,29 alt=true appCursor=false

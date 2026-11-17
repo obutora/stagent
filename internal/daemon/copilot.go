@@ -7,4 +7,4 @@ package daemon
 // sends with the menu registers the approval, and the holder watches the
 // screen for the menu, as for Codex: an answer on the PC or from SSH Term
 // (the option's key typed into the screen) closes it.
-var copilotDaemon = daemonHarness{watchPrompt: true, checksFirst: true}
+var copilotDaemon = daemonHarness{watchPrompt: true, checkHook: hookPermissionRequest}

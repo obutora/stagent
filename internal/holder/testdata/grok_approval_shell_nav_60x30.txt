@@ -1,0 +1,31 @@
+|
+|  /V/S/o/n/s/v/grok/work          120 / 128K │ [Dashboard]
+|
+|
+|     ❯ run it #approval                          1:22 AM
+|
+|
+|     ◆ Running a command for the mock scenario             █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|                                                           █
+|
+|    ◆ Run a command for the mock sce…   12s ⇣120 [↓][stop]
+|
+|  ┃
+|  ┃  ›  Run a command for the mock scenario
+|  ┃  │ echo hello-from-mock > mock_shell.txt &&·
+|  ┃  ┆ cat mock_shell.txt
+|  ┃  ← → narrow scope
+|  ┃
+|  ┃  1 (○) Yes, and don't ask again for anything (always
+|  ┃  2 (○) Yes, proceed
+|  ┃  3 (●) No, reject (type to add feedback)
+|  ┃  4 (○) Never allow: echo
+|  ┃
+|
+|  1/4:select  │  Tab:next option  │  ←/→:scope
+|
+cursor=42,14 alt=true appCursor=false

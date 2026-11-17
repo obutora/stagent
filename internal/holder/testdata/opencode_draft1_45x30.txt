@@ -1,0 +1,31 @@
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|                                    ▄
+|   █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+|   █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+|   ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+|
+|
+|  ┃
+|  ┃  fix the failing test in parser_test.
+|  ┃  go please
+|  ┃
+|  ┃  Build · Mock Model Mock
+|  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+|  /…/wo…  shift+tab agents  ctrl+p commands
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=14,17 alt=true appCursor=false

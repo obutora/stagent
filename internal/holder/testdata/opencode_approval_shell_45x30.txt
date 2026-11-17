@@ -1,0 +1,31 @@
+| ! Mock title                    +
+|
+|  ┃
+|  ┃  narrow #shell
+|  ┃
+|
+|  ┃
+|  ┃  ⠙ echo hello-from-mock
+|  ┃
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  ┃
+|  ┃  △ Permission required
+|  ┃
+|  ┃  $ echo hello-from-mock
+|  ┃
+|  ┃
+|  ┃   Allow once   Always allow   Reject
+|  ┃
+|  ┃  ctrl+f fullscreen  ⇆ select  enter confi
+|  ┃
+|
+cursor=6,7 alt=true appCursor=false

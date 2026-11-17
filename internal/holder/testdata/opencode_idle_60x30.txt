@@ -1,0 +1,31 @@
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|                                            ▄
+|           █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+|           █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+|           ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+|
+|
+|  ┃
+|  ┃  Ask anything… "Fix broken tests"
+|  ┃
+|  ┃  Build · Mock Model Mock
+|  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+|  /…/ver…/opencode/work  shift+tab agents  ctrl+p commands
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=5,17 alt=true appCursor=false

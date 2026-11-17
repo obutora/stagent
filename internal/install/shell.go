@@ -51,8 +51,11 @@ var wrappedCommands = func() []string {
 // The batch functions of the scripts tell whether the arguments of a
 // wrapped command ask for a non-interactive run, by its harness.Batch:
 // the first argument is one of Subcommands, any argument is one of Flags
-// or starts with one of Prefixes, or Mode is given (`Mode value` or
-// `Mode=value`) with a value other than ModeInteractive. A harness with no
+// or starts with one of Prefixes, Mode is given (`Mode value` or
+// `Mode=value`) with a value other than ModeInteractive, or (Prompt) a
+// positional argument is given — one that is no option (`-` alone is
+// none) nor the value of one of Values or Interactive, or any after `--` —
+// and none of Interactive (also as `Interactive=value`). A harness with no
 // Batch has no branch.
 
 func hasBatch(b harness.Batch) bool {
@@ -61,7 +64,7 @@ func hasBatch(b harness.Batch) bool {
 
 // hasArgBatch: some argument anywhere on the line can ask for a batch run.
 func hasArgBatch(b harness.Batch) bool {
-	return len(b.Flags) > 0 || len(b.Prefixes) > 0 || b.Mode != ""
+	return len(b.Flags) > 0 || len(b.Prefixes) > 0 || b.Mode != "" || b.Prompt
 }
 
 // quoteAll quotes each of ss with quote and joins them with sep.
@@ -77,7 +80,7 @@ func quoteAll(ss []string, quote func(string) string, sep string) string {
 func posixBatch() string {
 	var sb strings.Builder
 	sb.WriteString(`__stagent_batch() {
-  local __stagent_c="$1" __stagent_a __stagent_mode=
+  local __stagent_c="$1" __stagent_a __stagent_mode= __stagent_v= __stagent_e= __stagent_i= __stagent_p=
   shift
   case $__stagent_c in
 `)
@@ -111,7 +114,34 @@ func posixBatch() string {
 				sb.WriteString("          " + shellQuote(b.Mode) + ") __stagent_mode=1 ;;\n")
 				sb.WriteString("          " + shellQuote(b.Mode+"=") + `*) [ "$__stagent_a" != ` + shellQuote(b.Mode+"="+b.ModeInteractive) + " ] && return 0 ;;\n")
 			}
-			sb.WriteString("        esac\n      done\n")
+			sb.WriteString("        esac\n")
+			if b.Prompt {
+				sb.WriteString(`        if [ -n "$__stagent_v" ]; then
+          __stagent_v=
+        elif [ -n "$__stagent_e" ]; then
+          __stagent_p=1
+        else
+          case $__stagent_a in
+            --) __stagent_e=1 ;;
+`)
+				if len(b.Interactive) > 0 {
+					sb.WriteString("            " + quoteAll(b.Interactive, shellQuote, "|") + ") __stagent_i=1 __stagent_v=1 ;;\n")
+					sb.WriteString("            " + quoteAll(b.Interactive, func(o string) string { return shellQuote(o+"=") + "*" }, "|") + ") __stagent_i=1 ;;\n")
+				}
+				if len(b.Values) > 0 {
+					sb.WriteString("            " + quoteAll(b.Values, shellQuote, "|") + ") __stagent_v=1 ;;\n")
+				}
+				sb.WriteString(`            -) __stagent_p=1 ;;
+            -*) ;;
+            *) __stagent_p=1 ;;
+          esac
+        fi
+`)
+			}
+			sb.WriteString("      done\n")
+			if b.Prompt {
+				sb.WriteString(`      [ -n "$__stagent_p" ] && [ -z "$__stagent_i" ] && return 0` + "\n")
+			}
 		}
 		sb.WriteString("      ;;\n")
 	}
@@ -143,6 +173,9 @@ func fishBatch() string {
 			if b.Mode != "" {
 				sb.WriteString("            set -l mode 0\n")
 			}
+			if b.Prompt {
+				sb.WriteString("            set -l v 0\n            set -l e 0\n            set -l i 0\n            set -l p 0\n")
+			}
 			sb.WriteString("            for a in $argv\n")
 			if b.Mode != "" {
 				sb.WriteString("                if test $mode = 1\n" +
@@ -166,8 +199,39 @@ func fishBatch() string {
 					"                    case " + fishQuote(b.Mode+"=*") + "\n" +
 					"                        test \"$a\" != " + fishQuote(b.Mode+"="+b.ModeInteractive) + "; and return 0\n")
 			}
-			sb.WriteString("                end\n" +
-				"            end\n")
+			sb.WriteString("                end\n")
+			if b.Prompt {
+				sb.WriteString("                if test $v = 1\n" +
+					"                    set v 0\n" +
+					"                else if test $e = 1\n" +
+					"                    set p 1\n" +
+					"                else\n" +
+					"                    switch \"$a\"\n" +
+					"                        case '--'\n" +
+					"                            set e 1\n")
+				if len(b.Interactive) > 0 {
+					sb.WriteString("                        case " + quoteAll(b.Interactive, fishQuote, " ") + "\n" +
+						"                            set i 1\n" +
+						"                            set v 1\n" +
+						"                        case " + quoteAll(b.Interactive, func(o string) string { return fishQuote(o + "=*") }, " ") + "\n" +
+						"                            set i 1\n")
+				}
+				if len(b.Values) > 0 {
+					sb.WriteString("                        case " + quoteAll(b.Values, fishQuote, " ") + "\n" +
+						"                            set v 1\n")
+				}
+				sb.WriteString("                        case '-'\n" +
+					"                            set p 1\n" +
+					"                        case '-*'\n" +
+					"                        case '*'\n" +
+					"                            set p 1\n" +
+					"                    end\n" +
+					"                end\n")
+			}
+			sb.WriteString("            end\n")
+			if b.Prompt {
+				sb.WriteString("            test $p = 1; and test $i = 0; and return 0\n")
+			}
 		}
 	}
 	sb.WriteString("    end\n    return 1\nend\n")
@@ -195,6 +259,9 @@ func powershellBatch() string {
 			sb.WriteString("    if ($a.Count -gt 0 -and (" + quoteAll(b.Subcommands, is("$a[0]"), " -or ") + ")) { return $true }\n")
 		}
 		if hasArgBatch(b) {
+			if b.Prompt {
+				sb.WriteString("    $v = $false; $e = $false; $ia = $false; $p = $false\n")
+			}
 			sb.WriteString("    for ($i = 0; $i -lt $a.Count; $i++) {\n")
 			if len(b.Flags) > 0 {
 				sb.WriteString("      if (" + quoteAll(b.Flags, is("$a[$i]"), " -or ") + ") { return $true }\n")
@@ -208,7 +275,25 @@ func powershellBatch() string {
 				sb.WriteString("      if (($a[$i] -ceq " + psQuote(b.Mode) + " -and $i + 1 -lt $a.Count -and $a[$i + 1] -cne " + psQuote(b.ModeInteractive) + ") -or " +
 					"($a[$i].StartsWith(" + psQuote(b.Mode+"=") + ", [StringComparison]::Ordinal) -and $a[$i] -cne " + psQuote(b.Mode+"="+b.ModeInteractive) + ")) { return $true }\n")
 			}
+			if b.Prompt {
+				sb.WriteString("      if ($v) { $v = $false }\n" +
+					"      elseif ($e) { $p = $true }\n" +
+					"      elseif ($a[$i] -ceq '--') { $e = $true }\n")
+				if len(b.Interactive) > 0 {
+					sb.WriteString("      elseif (" + quoteAll(b.Interactive, is("$a[$i]"), " -or ") + ") { $ia = $true; $v = $true }\n" +
+						"      elseif (" + quoteAll(b.Interactive, func(o string) string {
+						return "$a[$i].StartsWith(" + psQuote(o+"=") + ", [StringComparison]::Ordinal)"
+					}, " -or ") + ") { $ia = $true }\n")
+				}
+				if len(b.Values) > 0 {
+					sb.WriteString("      elseif (" + quoteAll(b.Values, is("$a[$i]"), " -or ") + ") { $v = $true }\n")
+				}
+				sb.WriteString("      elseif (-not ($a[$i].Length -gt 1 -and $a[$i].StartsWith('-', [StringComparison]::Ordinal))) { $p = $true }\n")
+			}
 			sb.WriteString("    }\n")
+			if b.Prompt {
+				sb.WriteString("    if ($p -and -not $ia) { return $true }\n")
+			}
 		}
 		sb.WriteString("  }\n")
 	}

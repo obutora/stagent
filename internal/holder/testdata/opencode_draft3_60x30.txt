@@ -1,0 +1,31 @@
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|                                            ▄
+|           █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+|           █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+|           ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+|
+|
+|  ┃
+|  ┃  fix the failing test in parser_test.go
+|  ┃  and keep the old behaviour
+|  ┃  third line
+|  ┃
+|  ┃  Build · Mock Model Mock
+|  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+|  /…/ver…/opencode/work  shift+tab agents  ctrl+p commands
+|
+|
+|
+|
+|
+|
+|
+cursor=15,18 alt=true appCursor=false

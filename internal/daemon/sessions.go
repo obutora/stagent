@@ -40,6 +40,12 @@ type session struct {
 	// hookGen counts the hooks applied to the session; a probe result
 	// taken before a newer hook is stale.
 	hookGen int
+	// hookAt is when the last hook of the session came (unix ms, by
+	// Options.Now), but for idle_prompt notifications of a harness that
+	// sends one with every reply; replyIdle is the timer of the latest of
+	// those that may count, stopped by the next hook (replyIdleLocked).
+	hookAt    int64
+	replyIdle Timer
 	// agentSeen: a probe found the promoted agent running; missed counts
 	// the probes that did not since the promotion.
 	agentSeen bool
@@ -55,8 +61,8 @@ type session struct {
 	questionGen int64
 
 	// checkTool and checkInput are the tool the latest permission check
-	// of a harness that asks before its menu (daemonHarness.checksFirst:
-	// Copilot CLI) named, for the approval its menu brings.
+	// of a harness that asks before its menu (daemonHarness.checkHook:
+	// Copilot CLI, Grok Build) named, for the approval its menu brings.
 	checkTool  string
 	checkInput json.RawMessage
 
@@ -90,6 +96,16 @@ func (s *session) stopTimers() {
 		}
 	}
 	s.gone, s.remove, s.debounce, s.graceTimers = nil, nil, nil, nil
+	s.stopReplyIdle()
+}
+
+// stopReplyIdle stops the timer of the session's idle_prompt, if any
+// (replyIdleLocked).
+func (s *session) stopReplyIdle() {
+	if s.replyIdle != nil {
+		s.replyIdle.Stop()
+		s.replyIdle = nil
+	}
 }
 
 func nowMs() int64 { return time.Now().UnixMilli() }

@@ -110,13 +110,13 @@ func total(r wire.UsageGetResult) wire.UsageTokens {
 }
 
 // Every harness of the registry has an entry in the readers table. Claude,
-// codex, omp and pi are counted; Copilot CLI writes no input tokens per
-// request, so it stays "not counted".
+// codex, omp, pi, Qwen Code, OpenCode and Grok Build are counted; Copilot CLI writes no input
+// tokens per request, so it stays "not counted".
 func TestReadersCoverRegistry(t *testing.T) {
 	for _, id := range harness.Missing(readers) {
 		t.Errorf("harness %q has no entry in readers", id)
 	}
-	want := []string{wire.HarnessClaude, wire.HarnessCodex, wire.HarnessOmp, wire.HarnessPi}
+	want := []string{wire.HarnessClaude, wire.HarnessCodex, wire.HarnessOmp, wire.HarnessPi, wire.HarnessQwen, wire.HarnessOpenCode, wire.HarnessGrok}
 	if got := Counted(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Counted() = %v, want %v", got, want)
 	}

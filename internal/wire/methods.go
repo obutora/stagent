@@ -405,11 +405,11 @@ const (
 	// auto-starting the daemon, so `uninstall --level stop` sticks.
 	MethodDaemonStopping = "daemon.stopping"
 	// daemon → holder notification, HolderPromptWatchParams: watch the
-	// screen for the permission menu while a claude, Codex or Copilot CLI
-	// approval of the session is pending (on), or stop (off). Holders
-	// before 0.4.0 ignore it, like any notification they do not know;
-	// 0.5.0 and earlier know only claude's menu, 0.15.0 and earlier no
-	// Copilot CLI menu.
+	// screen for the permission menu while a claude, Codex, Copilot CLI or
+	// Qwen Code approval of the session is pending (on), or stop (off).
+	// Holders before 0.4.0 ignore it, like any notification they do not
+	// know; 0.5.0 and earlier know only claude's menu, 0.15.0 and earlier
+	// no Copilot CLI menu, 0.21.1 and earlier no Qwen Code menu.
 	MethodHolderPromptWatch = "holder.prompt_watch"
 	// daemon → holder notification, HolderPromptWatchParams (since
 	// 0.20.0): watch the screen for the question UI of the harness while a
@@ -417,7 +417,81 @@ const (
 	// the watch (one per question in force). Holders before 0.20.0 ignore
 	// it: their sessions' questions go with the next hook only.
 	MethodHolderQuestionWatch = "holder.question_watch"
+
+	// `stagent explain --session` → holder, ScreenExplainParams →
+	// ScreenExplain: the holder reads its screen with the screen rules it
+	// started with and says which of them matched. Holders that predate it
+	// answer unknown_method.
+	MethodSessionExplain = "session.explain"
 )
+
+// ScreenExplainParams asks a holder to explain its screen, read as
+// Harness ("": as the harness the session runs).
+type ScreenExplainParams struct {
+	ID      string `json:"id"`
+	Harness string `json:"harness,omitempty"`
+}
+
+// ScreenExplain is what `stagent explain` reports: the checks the holder
+// makes on a screen, read as Harness ("" for no harness in particular),
+// with the rules that matched, and the override files of RulesDir.
+type ScreenExplain struct {
+	Harness  string            `json:"harness"`
+	RulesDir string            `json:"rules_dir"`
+	Files    []ScreenRulesFile `json:"files"`
+	Checks   []ScreenCheck     `json:"checks"`
+}
+
+// ScreenRulesFile is an override file of the screen rules (`stagent
+// explain`, `stagent doctor`): Name is the rules it overrides (common or a
+// harness id); a file that is not Used keeps the built-in rules, Error
+// says why.
+type ScreenRulesFile struct {
+	Path  string `json:"path"`
+	Name  string `json:"name"`
+	Used  bool   `json:"used"`
+	Error string `json:"error,omitempty"`
+}
+
+// Checks of ScreenCheck.
+const (
+	// CheckMenu: a menu of any harness, on which a chat message is
+	// refused (menu_open).
+	CheckMenu = "menu"
+	// CheckPermission: the permission menu a prompt watch looks for.
+	CheckPermission = "permission"
+	// CheckQuestion: the question UI a question watch looks for.
+	CheckQuestion = "question"
+)
+
+// ScreenCheck is one check of a screen as Harness draws it ("" any
+// harness). Rules are the rules that matched, or for no match the rules of
+// Harness that were tried; Lines the lines that matched (the options of a
+// menu, a question UI's header and hint or its box's edges). Signature is
+// a permission menu's (holder.prompt_watch).
+type ScreenCheck struct {
+	Check     string          `json:"check"`
+	Harness   string          `json:"harness"`
+	Matched   bool            `json:"matched"`
+	Rules     []ScreenRuleUse `json:"rules"`
+	Lines     []ScreenLine    `json:"lines"`
+	Signature string          `json:"signature,omitempty"`
+}
+
+// ScreenRuleUse is one rule, "<name>.<rule>" (codex.question,
+// common.menu), as Rule has it: built-in, or from the override File.
+type ScreenRuleUse struct {
+	ID     string          `json:"id"`
+	Origin string          `json:"origin"` // "builtin" or "override"
+	File   string          `json:"file,omitempty"`
+	Rule   json.RawMessage `json:"rule"`
+}
+
+// ScreenLine is a line of the screen; Line 1 is the top row.
+type ScreenLine struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
 
 type HolderRegisterResult struct {
 	IdleAfterMs int `json:"idle_after_ms"`
@@ -431,8 +505,8 @@ type SessionEndParams struct {
 }
 
 // HolderPromptWatchParams starts (on) or ends a prompt watch. Gen names
-// the watch; a new one starts with every claude, Codex or Copilot CLI
-// approval registered. Harness (since 0.16.0, with on) is the harness
+// the watch; a new one starts with every claude, Codex, Copilot CLI or Qwen
+// Code approval registered. Harness (since 0.16.0, with on) is the harness
 // whose menu the approval brings: Copilot CLI's menu has claude's cursor
 // (❯), so the holder reads the screen as that harness draws it. Empty from
 // older daemons: every harness's menus are looked for.

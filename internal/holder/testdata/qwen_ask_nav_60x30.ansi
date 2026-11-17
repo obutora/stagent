@@ -1,0 +1,30 @@
+  [38;5;151m✓[39m [1mShell[0m [38;5;103mecho hello-from-mock (Run a command for the mock[39m
+    [38;5;103m scenario)[39m
+    hello-from-mock
+
+  [38;5;183m◆︎[39m The command printed hello-from-mock.
+
+  [38;5;183m>[39m [38;5;183mtake your time #slow[39m
+
+  [38;5;183m◆︎[39m Finished after a slow think.
+
+  [38;5;183m>[39m [38;5;183mask me #ask
+[39m  [38;5;223m?[39m [1mAskUserQuestion[0m [38;5;103mAsk user 1 question[39m ←
+
+   [1m[38;5;183mColor[0m
+
+   Which color do you prefer?
+
+     1. Red
+        [2mA warm color[0m
+   [1m[38;5;183m❯ 2. Green[0m
+        [2mThe color of leaves[0m
+     3. Blue
+        [2mThe color of the sky[0m
+   [2m  4. Type something...[0m
+
+
+   [2m↑/↓: Navigate | Enter: Select | Esc: Cancel[0m
+
+
+  ⠏ [38;5;183mWaiting for user confirmation...[39m

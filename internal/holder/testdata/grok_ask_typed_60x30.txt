@@ -1,0 +1,31 @@
+|
+|  /p/t/grokz/work                 120 / 128K │ [Dashboard]
+|
+|
+|     ❯ pick #ask                                 9:42 AM
+|
+|
+|     ◆ Ask Which color do you prefer?
+|
+|
+|
+|
+|
+|
+|    ◆ Waiting on answers for Which col…   0.4s ⇣120 [stop]
+|
+|  ┃
+|  ┃  Which color do you prefer?
+|  ┃
+|  ┃
+|  ┃  1 (○) Red    A warm color                           █
+|  ┃  2 (○) Green  The color of leaves                    █
+|  ┃  3 (○) Blue   The color of the sky                   █
+|  ┃  z (●) ❯ Purple
+|  ┃
+|  ┃  ↑/↓ navigate · y copy                  Enter:edit
+|  ┃
+|
+|  Enter:submit  │  Esc:back
+|
+cursor=19,23 alt=true appCursor=false

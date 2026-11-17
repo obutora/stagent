@@ -1,0 +1,17 @@
+{
+  "dialogs": {
+    "bar": "┃",
+    "dialog_edge": "title_mark",
+    "title_mark": "△",
+    "permission": {
+      "kind": "choice_row",
+      "row": "^Allow once {2,}(?:Always allow {2,})?Reject$",
+      "hint": "⇆ select",
+      "hint_rows": 3
+    },
+    "question": {
+      "kind": "numbered_rows",
+      "hint": "^(?:↑↓ select {2})?enter submit {2}esc (?:dismiss|close)"
+    }
+  }
+}
