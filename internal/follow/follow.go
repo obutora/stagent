@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
@@ -131,6 +132,7 @@ func Main(args []string) int {
 		return 1
 	}
 	loc := newLocator(execMux{}, owner)
+	var record *daemonRecord
 	if session != "" {
 		layout, err := paths.Resolve()
 		if err != nil {
@@ -141,8 +143,12 @@ func Main(args []string) int {
 			return ipc.Dial(layout.HolderAddr(session), holderTimeout)
 		}}
 		loc.session = h.root
+		record = &daemonRecord{id: session, dial: func() (net.Conn, error) {
+			return daemonclient.Dial(layout, holderTimeout)
+		}}
 	}
 	f := newFollower(os.Stdout, home, ptable.Take, loc, os.Getenv)
+	f.record = record
 	if err := f.run(os.Stdin); err != nil {
 		fmt.Fprintln(os.Stderr, "stagent follow:", err)
 		return 1
@@ -208,6 +214,14 @@ type follower struct {
 	loc    *locator
 	getenv func(string) string // stagent's own environment
 	tr     *transcripts
+	// record, set by `follow --session`, reads the daemon's record of the
+	// session: its ConversationID and TranscriptPath name the conversation
+	// the session's hooks reported (Pi's extension does), which the cwd
+	// fallback cannot tell apart from another agent's in the same
+	// directory.
+	record *daemonRecord
+	rec    wire.Session
+	recOK  bool
 
 	last   location // of the last scan
 	agents []agent
@@ -287,12 +301,30 @@ func (f *follower) scan() error {
 	if err != nil {
 		return f.report([]string{"process table: " + err.Error()})
 	}
+	f.readRecord()
 	f.last = f.loc.locate(s)
 	f.agents = f.describe(s)
 	if err := f.report(f.last.errs); err != nil {
 		return err
 	}
 	return f.publish()
+}
+
+// readRecord reads the daemon's record of the followed session. The scan
+// waits for the daemon's answer, bounded by holderTimeout as the holder's
+// is. A daemon that does not answer leaves the record of the last scan in
+// place, so a restarting daemon does not hand the agent the cwd
+// fallback's conversation for a scan; one that answers without the
+// session (ended, or unknown to it) drops the record.
+func (f *follower) readRecord() {
+	if f.record == nil {
+		return
+	}
+	rec, found, err := f.record.read()
+	if err != nil {
+		return
+	}
+	f.rec, f.recOK = rec, found
 }
 
 // report writes the problems that were not already reported by the
@@ -375,6 +407,22 @@ func (f *follower) agent(s *ptable.Snapshot, c candidate, cwds map[instance]stri
 		openFiles: s.OpenFiles,
 		claimed:   cl.claimedBy(c.pids),
 	})
+	// A stagent session's hooks may name the conversation the agent in it
+	// writes (Pi's extension reports it), while the cwd fallback picks the
+	// directory's newest conversation — another agent's when two share
+	// the directory. The record, when its file exists, wins — for the
+	// agent of the record's harness only: a kept shell may run agents of
+	// other harnesses too, and the record names none of their
+	// conversations.
+	if f.recOK && f.rec.Harness == c.harness {
+		if rp := f.rec.TranscriptPath; rp != "" && isFile(rp) {
+			path = rp
+		} else if f.rec.ConversationID != "" && finders[c.harness].matcher != nil {
+			if rp := fromSessionID(f.tr, c.harness, roots, f.rec.ConversationID); rp != "" {
+				path = rp
+			}
+		}
+	}
 	cl.assign(path)
 	if cwd == "" {
 		cwd = sessionCwd
@@ -405,6 +453,22 @@ func find(agents []agent, key string) *agent {
 		}
 	}
 	return nil
+}
+
+// fromSessionID finds a conversation of harness h by its id (Pi's
+// conversation ids are the session ids its extension reports) among the
+// harness's newest conversations. "" when it is not (yet) written.
+func fromSessionID(t *transcripts, h string, roots transcript.Roots, id string) string {
+	list, err := t.index(roots).List([]string{h}, newestLimit)
+	if err != nil {
+		return ""
+	}
+	for _, c := range list {
+		if c.ID == id {
+			return c.Path
+		}
+	}
+	return ""
 }
 
 // choose returns the agent to follow: the app's pick while its process

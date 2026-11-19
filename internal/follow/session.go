@@ -10,8 +10,9 @@ import (
 	"github.com/obutora/stagent/internal/wire"
 )
 
-// holderTimeout bounds dialing a holder and its session.info answer: a scan
-// waits for it, and a holder answers at once unless it is stuck.
+// holderTimeout bounds dialing a holder and its session.info answer, and
+// the daemon and its sessions.list answer for the session's record: a scan
+// waits for them, and both answer at once unless they are stuck.
 const holderTimeout = time.Second
 
 // holderSession is the process root of `stagent follow --session`: the
@@ -70,6 +71,60 @@ func (h *holderSession) drop() {
 	if h.c != nil {
 		h.c.Close()
 		h.c = nil
+	}
+}
+
+// daemonRecord reads the daemon's record of the session `follow --session`
+// follows: the ConversationID and TranscriptPath its hooks reported. The
+// holder does not know them. Like holderSession, the connection is kept
+// across scans and dialed again once when an earlier scan's one fails.
+type daemonRecord struct {
+	id   string
+	dial func() (net.Conn, error)
+	c    *rpc.Client
+}
+
+// read returns the daemon's record of the session; found is false when
+// the daemon answers without it. err is set when the daemon does not
+// answer (not running, restarting, stuck).
+func (d *daemonRecord) read() (s wire.Session, found bool, err error) {
+	reused := d.c != nil
+	list, err := d.list()
+	if err != nil && reused {
+		d.drop()
+		list, err = d.list()
+	}
+	if err != nil {
+		d.drop()
+		return wire.Session{}, false, err
+	}
+	for _, s := range list.Sessions {
+		if s.ID == d.id {
+			return s, true, nil
+		}
+	}
+	return wire.Session{}, false, nil
+}
+
+func (d *daemonRecord) list() (wire.SessionsListResult, error) {
+	var res wire.SessionsListResult
+	if d.c == nil {
+		conn, err := d.dial()
+		if err != nil {
+			return res, err
+		}
+		d.c = rpc.NewClient(conn, nil)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), holderTimeout)
+	defer cancel()
+	err := d.c.Call(ctx, wire.MethodSessionsList, struct{}{}, &res)
+	return res, err
+}
+
+func (d *daemonRecord) drop() {
+	if d.c != nil {
+		d.c.Close()
+		d.c = nil
 	}
 }
 
