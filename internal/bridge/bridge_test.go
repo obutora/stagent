@@ -12,6 +12,7 @@ import (
 
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/stubcmd"
 	"github.com/obutora/stagent/internal/version"
@@ -47,11 +48,7 @@ type pipeRW struct {
 // daemon is dialed without auto-start so fake daemons can come and go.
 func startBridge(t *testing.T, opts ...func(*Bridge)) (*paths.Layout, *app) {
 	t.Helper()
-	t.Setenv(paths.EnvHome, t.TempDir())
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
+	l := pathstest.SetHome(t, t.TempDir())
 	if err := l.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}

@@ -169,10 +169,16 @@ func (l *daemonLink) session(conn net.Conn) (registered bool, err error) {
 	l.mu.Lock()
 	l.goneGen, l.questionGoneGen = 0, 0
 	l.mu.Unlock()
+	// stopping: daemon.stopping came on this connection (guarded by l.mu,
+	// together with setting l.stopped).
+	var stopping bool
 	c := rpc.NewClient(conn, func(m *wire.Msg) {
 		switch m.Method {
 		case wire.MethodDaemonStopping:
+			l.mu.Lock()
+			stopping = true
 			l.stopped.Store(true)
+			l.mu.Unlock()
 		case wire.MethodHolderPromptWatch:
 			var p wire.HolderPromptWatchParams
 			if rpc.Decode(m, &p) == nil && p.ID == l.h.id {
@@ -203,8 +209,14 @@ func (l *daemonLink) session(conn net.Conn) (registered bool, err error) {
 		l.h.logf("stagent run: registered with the daemon")
 	}
 	// A daemon that accepted us is running again: a later crash should be
-	// recovered by auto-starting as usual.
-	l.stopped.Store(false)
+	// recovered by auto-starting as usual. Not when it is stopping already:
+	// a stop right after it took us sends daemon.stopping behind the reply,
+	// which the read goroutine may handle before this one gets here.
+	l.mu.Lock()
+	if !stopping {
+		l.stopped.Store(false)
+	}
+	l.mu.Unlock()
 	sent := cur
 	for {
 		if err := l.flush(c, &sent); err != nil {
@@ -281,6 +293,10 @@ func sessionPatch(old, cur *wire.Session) (wire.SessionPatch, bool) {
 	}
 	if old.LastLocalInputAt != cur.LastLocalInputAt {
 		p.LastLocalInputAt = &cur.LastLocalInputAt
+		changed = true
+	}
+	if old.LastInputAt != cur.LastInputAt {
+		p.LastInputAt = &cur.LastInputAt
 		changed = true
 	}
 	if old.Cols != cur.Cols || old.Rows != cur.Rows {

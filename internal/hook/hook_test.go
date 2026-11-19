@@ -15,7 +15,7 @@ import (
 
 	"github.com/obutora/stagent/internal/harness"
 	"github.com/obutora/stagent/internal/ipc"
-	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -23,11 +23,7 @@ import (
 // fakeDaemon answers hook.event after hold and records what it got.
 func fakeDaemon(t *testing.T, hold time.Duration) <-chan wire.HookEventParams {
 	t.Helper()
-	t.Setenv(paths.EnvHome, t.TempDir())
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
+	l := pathstest.SetHome(t, t.TempDir())
 	if err := l.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +158,7 @@ func TestHarnessPIDSkipsTheHookShell(t *testing.T) {
 }
 
 func TestDaemonDownExitsQuietlyAndFast(t *testing.T) {
-	t.Setenv(paths.EnvHome, t.TempDir())
+	pathstest.SetHome(t, t.TempDir())
 	start := time.Now()
 	if code := runHook([]string{"claude"}, `{"hook_event_name":"PermissionRequest","tool_name":"Bash"}`, ""); code != 0 {
 		t.Fatalf("exit %d", code)

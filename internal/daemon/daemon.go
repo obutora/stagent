@@ -87,6 +87,10 @@ type Options struct {
 	AfterFunc     func(d time.Duration, f func()) Timer
 	ScheduleTick  time.Duration
 	RunStartGrace time.Duration
+	// HostLocation is the host's own clock, which schedule entries name
+	// where it differs from their zone (default time.Local). Tests set a
+	// zone here: assigning time.Local races with every timer that fires.
+	HostLocation *time.Location
 	// LoginEnv takes the login shell's environment before each schedule
 	// run (default: loginenv.Capture of this stagent, runLoginEnvWithin at
 	// most), and SpawnHolder starts the run's holder and tells whether it
@@ -278,6 +282,9 @@ func New(opts Options) (*Daemon, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.HostLocation == nil {
+		opts.HostLocation = time.Local
+	}
 	if opts.AfterFunc == nil {
 		opts.AfterFunc = func(d time.Duration, f func()) Timer { return time.AfterFunc(d, f) }
 	}
@@ -455,28 +462,12 @@ func (d *Daemon) restoreChat() {
 
 // Serve accepts connections on ln until Shutdown. It closes ln.
 func (d *Daemon) Serve(ln net.Listener) error {
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.runSweep()
-	}()
+	d.goTracked(d.runSweep)
 	if schedulesServed {
-		d.wg.Add(1)
-		go func() {
-			defer d.wg.Done()
-			d.runSchedules()
-		}()
+		d.goTracked(d.runSchedules)
 	}
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.runUsage()
-	}()
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.runPrivateAPI()
-	}()
+	d.goTracked(d.runUsage)
+	d.goTracked(d.runPrivateAPI)
 	go func() {
 		<-d.shutdown
 		ln.Close()
@@ -495,12 +486,28 @@ func (d *Daemon) Serve(ln net.Listener) error {
 			}
 			return err
 		}
-		d.wg.Add(1)
-		go func() {
-			defer d.wg.Done()
-			d.serveConn(c)
-		}()
+		if !d.goTracked(func() { d.serveConn(c) }) {
+			c.Close()
+		}
 	}
+}
+
+// goTracked runs f in a goroutine Shutdown waits for, or reports false once
+// Shutdown has started. wg.Add happens under d.mu with d.closed unset, so it
+// never races the wg.Wait in Shutdown (Serve may start after Shutdown, or
+// accept a connection while it runs).
+func (d *Daemon) goTracked(f func()) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return false
+	}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		f()
+	}()
+	return true
 }
 
 // Shutdown stops accepting, closes every connection and releases resources.

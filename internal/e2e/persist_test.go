@@ -23,6 +23,7 @@ import (
 
 	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/screen"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
@@ -37,12 +38,8 @@ func startPersistBridge(t *testing.T) (a *app, l *paths.Layout, bin, home string
 		t.Skip("bash not installed")
 	}
 	home = t.TempDir()
-	t.Setenv(paths.EnvHome, home)
+	l = pathstest.SetHome(t, home)
 	t.Setenv(daemonclient.EnvExe, bin)
-	var err error
-	if l, err = paths.Resolve(); err != nil {
-		t.Fatal(err)
-	}
 	// Only a login shell reads ~/.bash_profile.
 	profile := "echo LOGIN-PROFILE-RAN\nPS1='$ '\n"
 	if err := os.WriteFile(filepath.Join(home, ".bash_profile"), []byte(profile), 0o644); err != nil {

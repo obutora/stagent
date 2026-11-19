@@ -56,6 +56,7 @@ func (d *Daemon) resolveTranscript(sessionID, harnessID, conversationID, path st
 		if s == nil {
 			return "", "", wire.Errorf(wire.ErrNotFound, "session %s", sessionID)
 		}
+		p, h = d.sessionTranscript(h, p)
 		if p == "" && conv != "" && harness.Known(h) {
 			p, _ = d.index.Find(h, conv)
 		}
@@ -63,11 +64,7 @@ func (d *Daemon) resolveTranscript(sessionID, harnessID, conversationID, path st
 			return "", "", wire.Errorf(wire.ErrNotFound, "session %s has no transcript yet", sessionID)
 		}
 		if !harness.Known(h) {
-			if rh, ok := d.roots.HarnessOf(p); ok {
-				h = rh
-			} else {
-				return "", "", wire.Errorf(wire.ErrUnsupported, "no transcript format for harness %q", h)
-			}
+			return "", "", wire.Errorf(wire.ErrUnsupported, "no transcript format for harness %q", h)
 		}
 		return p, h, nil
 	case harnessID != "" && conversationID != "":
@@ -87,6 +84,23 @@ func (d *Daemon) resolveTranscript(sessionID, harnessID, conversationID, path st
 		return filepath.Clean(path), h, nil
 	}
 	return "", "", wire.Errorf(wire.ErrBadRequest, "session_id, harness+conversation_id or path required")
+}
+
+// sessionTranscript is the transcript file a session's record names (p, as
+// its hooks reported it) and its harness, or "" when p is not a transcript
+// of the session's harness h under the transcript roots. Any process of the
+// user can report a hook, so a reported ~/.ssh key or any other file outside
+// them is never read for a session. An unknown h takes the harness whose
+// directory holds p.
+func (d *Daemon) sessionTranscript(h, p string) (string, string) {
+	if p == "" {
+		return "", h
+	}
+	rh, ok := d.roots.HarnessOf(p)
+	if !ok || (harness.Known(h) && rh != h) {
+		return "", h
+	}
+	return filepath.Clean(p), rh
 }
 
 func (d *Daemon) transcriptGet(p wire.TranscriptGetParams) (wire.TranscriptGetResult, error) {
@@ -114,6 +128,7 @@ func (d *Daemon) transcriptGet(p wire.TranscriptGetParams) (wire.TranscriptGetRe
 type tailSub struct {
 	cs        *connState
 	sessionID string
+	recorded  string // session subscriptions: the record's path last seen, as reported
 	path      string
 	harness   string
 	offset    int64
@@ -125,7 +140,8 @@ func (d *Daemon) transcriptSubscribe(cs *connState, p wire.TranscriptSubscribePa
 		d.mu.Lock()
 		s := d.sessions[p.SessionID]
 		if s != nil {
-			sub.path, sub.harness = s.s.TranscriptPath, s.s.Harness
+			sub.recorded = s.s.TranscriptPath
+			sub.path, sub.harness = d.sessionTranscript(s.s.Harness, s.s.TranscriptPath)
 		}
 		d.mu.Unlock()
 		if s == nil {
@@ -214,12 +230,11 @@ func (d *Daemon) tailLoop() {
 		jobs := make([]job, 0, len(d.tails))
 		for sub := range d.tails {
 			if sub.sessionID != "" {
-				if s := d.sessions[sub.sessionID]; s != nil && s.s.TranscriptPath != sub.path {
+				if s := d.sessions[sub.sessionID]; s != nil && s.s.TranscriptPath != sub.recorded {
 					// A new conversation file in the session: read it whole.
-					sub.path, sub.harness, sub.offset = s.s.TranscriptPath, s.s.Harness, 0
-					if !harness.Known(sub.harness) {
-						sub.harness, _ = d.roots.HarnessOf(sub.path)
-					}
+					sub.recorded = s.s.TranscriptPath
+					sub.path, sub.harness = d.sessionTranscript(s.s.Harness, s.s.TranscriptPath)
+					sub.offset = 0
 				}
 			}
 			if sub.path != "" && harness.Known(sub.harness) {

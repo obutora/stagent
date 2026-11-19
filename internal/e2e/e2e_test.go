@@ -25,6 +25,7 @@ import (
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
@@ -177,12 +178,8 @@ func eventOf(m *wire.Msg, kind, sessionID string) (wire.Event, bool) {
 func TestBridgeEndToEnd(t *testing.T) {
 	bin := buildStagent(t)
 	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
+	l := pathstest.SetHome(t, home)
 	t.Setenv(daemonclient.EnvExe, bin)
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	cmd := exec.Command(bin, "bridge")
 	stdin, err := cmd.StdinPipe()
@@ -394,12 +391,8 @@ func TestBridgeEndToEnd(t *testing.T) {
 // re-register once something else does.
 func TestDeliberateStopIsNotUndoneByHolders(t *testing.T) {
 	bin := buildStagent(t)
-	t.Setenv(paths.EnvHome, t.TempDir())
+	l := pathstest.SetHome(t, t.TempDir())
 	t.Setenv(daemonclient.EnvExe, bin)
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
 	holder := exec.Command(bin, "run", "--detached", "--id", "00000000000000d1", "--", "sleep", "60")
 	if err := holder.Start(); err != nil {
 		t.Fatal(err)
@@ -456,12 +449,8 @@ func TestDeliberateStopIsNotUndoneByHolders(t *testing.T) {
 // session must survive it and register with the new daemon (#250).
 func TestHolderOutlivesItsStderrReader(t *testing.T) {
 	bin := buildStagent(t)
-	t.Setenv(paths.EnvHome, t.TempDir())
+	l := pathstest.SetHome(t, t.TempDir())
 	t.Setenv(daemonclient.EnvExe, bin)
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -542,11 +531,7 @@ func TestSpawnFindsAgentsOutsideTheExecPath(t *testing.T) {
 		t.Skip("bash not installed")
 	}
 	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
+	l := pathstest.SetHome(t, home)
 	script := func(path, body string) {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

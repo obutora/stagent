@@ -3,7 +3,6 @@
 package holder
 
 import (
-	"context"
 	"net"
 	"os"
 	"sync/atomic"
@@ -36,14 +35,10 @@ func TestAgentRefusedOnEveryMethod(t *testing.T) {
 		},
 	}
 	id := wire.NewSessionID()
-	done := make(chan runResult, 1)
-	go func() {
-		code, err := Run(context.Background(), Options{
-			Command: []string{"sh", "-c", "read x"}, Detached: true, ID: id, Cols: 80, Rows: 24,
-			Dir: t.TempDir(), Layout: l, Logf: func(string, ...any) {}, Guard: guard,
-		})
-		done <- runResult{code, err}
-	}()
+	done := runDetached(t, Options{
+		Command: []string{"sh", "-c", "read x"}, Detached: true, ID: id, Cols: 80, Rows: 24,
+		Dir: t.TempDir(), Layout: l, Logf: func(string, ...any) {}, Guard: guard,
+	})
 
 	ref := wire.SessionRef{ID: id}
 	for _, c := range []struct {

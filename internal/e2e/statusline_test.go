@@ -18,6 +18,7 @@ import (
 	"github.com/obutora/stagent/internal/daemonclient"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -31,12 +32,8 @@ func statusLineHost(t *testing.T, settings string) *paths.Layout {
 	}
 	bin := compileStagent(t)
 	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
+	l := pathstest.SetHome(t, home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv(daemonclient.EnvExe, l.Bin)
 	if err := os.MkdirAll(filepath.Dir(l.Bin), 0o700); err != nil {
 		t.Fatal(err)

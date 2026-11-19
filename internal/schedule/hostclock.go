@@ -14,21 +14,21 @@ func OffsetAt(loc *time.Location, at time.Time) int {
 	return offset
 }
 
-// HostClockAt is the host's own clock (time.Local) at at when it is not
-// loc's (their UTC offsets then differ); nil when it is.
-func HostClockAt(loc *time.Location, at time.Time) *wire.HostClock {
+// HostClockAt is the host's own clock, host (time.Local), at at when it is
+// not loc's (their UTC offsets then differ); nil when it is.
+func HostClockAt(loc, host *time.Location, at time.Time) *wire.HostClock {
 	tzOffset := OffsetAt(loc, at)
-	abbr, offset := at.In(time.Local).Zone()
+	abbr, offset := at.In(host).Zone()
 	if offset == tzOffset {
 		return nil
 	}
-	return &wire.HostClock{TZ: hostZone(abbr), At: at.UnixMilli(), Offset: offset, TZOffset: tzOffset}
+	return &wire.HostClock{TZ: hostZone(host, abbr), At: at.UnixMilli(), Offset: offset, TZOffset: tzOffset}
 }
 
-// hostZone names time.Local: its IANA name ($TZ, else what /etc/localtime
-// links to), else abbr (its abbreviation then).
-func hostZone(abbr string) string {
-	if name := time.Local.String(); name != "Local" {
+// hostZone names host: its IANA name (for time.Local, $TZ, else what
+// /etc/localtime links to), else abbr (its abbreviation then).
+func hostZone(host *time.Location, abbr string) string {
+	if name := host.String(); name != "Local" {
 		return name
 	}
 	if tz := strings.TrimPrefix(os.Getenv("TZ"), ":"); ianaName(tz) {

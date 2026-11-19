@@ -170,6 +170,8 @@ func TestPassthroughMirrorsAndFollowsLocalTerminal(t *testing.T) {
 // terminal sends on its own (CPR, focus reports) do not, but focus reports
 // set focused. `stagent attach` input (local) counts the same way, its
 // focus lasting as long as its connection; the app's input does not.
+// last_input_at counts the keystrokes of either and the app's input, but
+// no report.
 func TestPassthroughRecordsLocalTyping(t *testing.T) {
 	l := isolate(t)
 	id := wire.NewSessionID()
@@ -191,8 +193,8 @@ func TestPassthroughRecordsLocalTyping(t *testing.T) {
 	lt.waitFor(t, "[5;10R")
 	lt.ptmx.Write([]byte("\x1b[I"))
 	lt.waitFor(t, "[I")
-	if s := info(); s.LastLocalInputAt != 0 || !s.Focused {
-		t.Fatalf("after replies and focus in: last_local_input_at %d, focused %v", s.LastLocalInputAt, s.Focused)
+	if s := info(); s.LastLocalInputAt != 0 || s.LastInputAt != 0 || !s.Focused {
+		t.Fatalf("after replies and focus in: last_local_input_at %d, last_input_at %d, focused %v", s.LastLocalInputAt, s.LastInputAt, s.Focused)
 	}
 	lt.ptmx.Write([]byte("\x1b[O"))
 	lt.waitFor(t, "[O")
@@ -204,28 +206,36 @@ func TestPassthroughRecordsLocalTyping(t *testing.T) {
 	lt.ptmx.Write([]byte("hi\r"))
 	lt.waitFor(t, "got")
 	s := info()
-	if s.LastLocalInputAt < before || s.LastLocalInputAt > time.Now().UnixMilli() {
-		t.Fatalf("last_local_input_at = %d after typing at %d", s.LastLocalInputAt, before)
+	if s.LastLocalInputAt < before || s.LastLocalInputAt > time.Now().UnixMilli() || s.LastInputAt != s.LastLocalInputAt {
+		t.Fatalf("last_local_input_at = %d, last_input_at = %d after typing at %d", s.LastLocalInputAt, s.LastInputAt, before)
 	}
 
-	// Client input is not the local terminal's.
+	// Client input is not the local terminal's, but it is input; a mouse
+	// report from the app is not.
 	time.Sleep(5 * time.Millisecond)
 	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "qz"}, nil)
 	lt.waitFor(t, "qz")
-	if got := info().LastLocalInputAt; got != s.LastLocalInputAt {
-		t.Fatalf("session.input moved last_local_input_at %d -> %d", s.LastLocalInputAt, got)
+	s2 := info()
+	if s2.LastLocalInputAt != s.LastLocalInputAt || s2.LastInputAt <= s.LastInputAt {
+		t.Fatalf("session.input: last_local_input_at %d -> %d, last_input_at %d -> %d", s.LastLocalInputAt, s2.LastLocalInputAt, s.LastInputAt, s2.LastInputAt)
+	}
+	time.Sleep(5 * time.Millisecond)
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "\x1b[<0;5;5M"}, nil)
+	lt.waitFor(t, "[<0;5;5M")
+	if got := info().LastInputAt; got != s2.LastInputAt {
+		t.Fatalf("a mouse report moved last_input_at %d -> %d", s2.LastInputAt, got)
 	}
 
 	typed := s.LastLocalInputAt
 	a := dialHolder(t, l, id)
 	a.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "\x1b[I", Local: true}, nil)
-	if s := info(); !s.Focused || s.LastLocalInputAt != typed {
+	if s := info(); !s.Focused || s.LastLocalInputAt != typed || s.LastInputAt != s2.LastInputAt {
 		t.Fatalf("attach focus in: %+v", s)
 	}
 	time.Sleep(5 * time.Millisecond)
 	a.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Text: "w", Local: true}, nil)
-	if s := info(); s.LastLocalInputAt <= typed {
-		t.Fatalf("attach typing left last_local_input_at at %d", s.LastLocalInputAt)
+	if s := info(); s.LastLocalInputAt <= typed || s.LastInputAt != s.LastLocalInputAt {
+		t.Fatalf("attach typing left last_local_input_at at %d, last_input_at at %d", s.LastLocalInputAt, s.LastInputAt)
 	}
 	a.Close()
 	deadline := time.Now().Add(testTimeout)

@@ -533,12 +533,16 @@ type SessionPatch struct {
 	LastActivityAt *int64  `json:"last_activity_at,omitempty"`
 	// LastLocalInputAt is pushed to watchers at once (the holder sends it at
 	// most once per second), unlike last_activity_at.
-	LastLocalInputAt *int64  `json:"last_local_input_at,omitempty"`
-	Cols             *int    `json:"cols,omitempty"`
-	Rows             *int    `json:"rows,omitempty"`
-	Mode             *string `json:"mode,omitempty"` // passthrough → detached on handoff
-	Attached         *bool   `json:"attached,omitempty"`
-	Focused          *bool   `json:"focused,omitempty"`
+	LastLocalInputAt *int64 `json:"last_local_input_at,omitempty"`
+	// LastInputAt rides along with the next update; the holder sets it
+	// before the input reaches the program, so it never comes after the
+	// state that input's output brings.
+	LastInputAt *int64  `json:"last_input_at,omitempty"`
+	Cols        *int    `json:"cols,omitempty"`
+	Rows        *int    `json:"rows,omitempty"`
+	Mode        *string `json:"mode,omitempty"` // passthrough → detached on handoff
+	Attached    *bool   `json:"attached,omitempty"`
+	Focused     *bool   `json:"focused,omitempty"`
 }
 
 // HolderNotifyParams is a notification the program itself emitted (OSC 9 /

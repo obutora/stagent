@@ -1673,8 +1673,8 @@ max 1 MiB.
 | `watch` | `{since}` | `{sessions[], approvals[], unwrapped[], tasks[], stopped[], seq, missed[], truncated}` then `event` / `session.updated` / `session.removed` / `unwrapped.updated` / `task.updated` / `task.removed` / `stopped.updated` notifications |
 | `sessions.list` | – | `{sessions[]}` |
 | `conversations.list` | `{harness?[], limit?}` | `{conversations[]}` |
-| `transcript.get` | `{session_id? \| harness+conversation_id? \| path?, limit?, before?}` | `{path, harness, messages[], cursor}` |
-| `transcript.subscribe` | `{session_id? \| path?}` | `{}` then `transcript` notifications |
+| `transcript.get` | `{session_id? \| harness+conversation_id? \| path?, limit?, before?}` | `{path, harness, messages[], cursor}`; a `path`, and the `transcript_path` a session's hooks reported, are read only in a harness's transcript directory (a session's: its harness's). A `path` elsewhere: `bad_request`; a session's elsewhere: its conversation id is looked up instead, else `not_found` |
+| `transcript.subscribe` | `{session_id? \| path?}` | `{}` then `transcript` notifications; the same paths as `transcript.get` |
 | `transcript.unsubscribe` | same | `{}` |
 | `approvals.list` | – | `{approvals[]}` |
 | `config.get` | – | `{config, notify: {last_error}}` |
@@ -3020,7 +3020,8 @@ holder_pid, mode (passthrough|detached), attached, state (working|idle|
 waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
 process), title?, conversation_id?, transcript_path?, last_message?,
 question?, cols, rows, started_at, last_activity_at, last_local_input_at?,
-focused?, presence_file?, exit_code?, task_id?, schedule_id?, run_id?`.
+last_input_at?, focused?, presence_file?, exit_code?, task_id?, schedule_id?,
+run_id?`.
 
 `question` (since 0.20.0, #1548, #1549) is the choice question the agent
 waits on: `{tool, questions: [QuestionItem]}` — `tool` the harness's
@@ -3076,6 +3077,27 @@ agent meanwhile; presence (see "Push notifications") uses the same value.
 out since; a `stagent attach` that goes away and a local terminal that
 hangs up lose it. `presence_file` is the holder's
 `$CLAUDE_CLIENT_PRESENCE_FILE`, when set.
+
+`last_input_at` (unix ms, since 0.22.1) is when input was last written to
+the program: any client's `session.input` (the app's too) or what a
+terminal on the host typed, counted as for `last_local_input_at`; the
+reports a terminal sends on its own (query replies, focus and mouse
+reports, in the app's `session.input` too) do not count. It is omitted
+until any input was. It is not pushed on its own: it rides along with the
+session's next change, as `last_activity_at` does.
+
+A hook-derived state (`state_source` `hook`) outranks the terminal/activity
+state until another hook replaces it, or until the program's output says
+the agent moved on without one: output activity (the holder's `working`)
+1 s or more after the hook ends it. A state that waits for the user —
+`needs_approval`, and `waiting_input` without a `question` (see
+"Questions" for the one with it) — ends that way only when input reached
+the program after its hook (`last_input_at`), as when the user answers in
+the terminal: output without input is the agent redrawing, e.g. after the
+resize an app makes when it opens the session again, and the session goes
+on waiting. Output within 1.5 s of a resize does not count as activity
+at all. A holder before 0.22.1 reports no input: such a state of its
+session ends with a hook, the prompt watch (see `Approval`) or `Stop`.
 
 `task_id` is the task the session belongs to, decided by the daemon (see
 "Tasks"); omitted when none.
@@ -3193,7 +3215,8 @@ of 0.5.0 or earlier (it knows only claude's menu) report nothing, and a
 watch that saw no menu when the next one started is left to the next one's
 report: the approval then closes with a later watch's report, when claude
 stops the hook (the tool finished, or claude was interrupted), for Codex on
-the next output activity (1 s after the hook or later), or at Stop. Two
+the next output activity after input (1 s after the hook or later; see
+`Session`), or at Stop. Two
 prompts in a row for the very same command or file text look alike: the
 first closes when the second is answered, the second when claude stops its
 hook or at Stop. Any approval also closes at Stop, UserPromptSubmit and
@@ -4603,7 +4626,8 @@ state does: another state from a hook (`UserPromptSubmit`, `Stop`),
 `SessionEnd`, the process exiting — and when its UI leaves the screen.
 
 Output activity does not end a question (it ends other hook-derived states
-1 s or more after their hook): while the question is up, output is the
+1 s or more after their hook, those waiting for the user once input came;
+see `Session`): while the question is up, output is the
 user moving through it — the highlight, claude's tabs and review page, a
 multi-select's checks, omp's note box — in the terminal or by keys from
 the app. The session's holder watches the screen instead (local IPC only,

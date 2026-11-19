@@ -89,6 +89,7 @@ const (
 	daemonDialWait = 5 * time.Second
 	attachDrain    = 2 * time.Second // wait for attached clients to get `closed`
 	linkDrain      = 3 * time.Second // wait for holder.ended to reach the daemon
+	replyDrain     = time.Second     // wait for chat messages' session.input replies
 )
 
 // Holder is one running session.
@@ -107,6 +108,11 @@ type Holder struct {
 	in    *inputQueue
 	link  *daemonLink
 	local *localTerm // nil when detached
+	// inputReplies are the chat messages (session.input) whose reply is
+	// still to be written: added to under mu while the session has not
+	// ended (addInputReply), waited for before the connections close, so a
+	// message that made the program exit is answered, not cut off.
+	inputReplies sync.WaitGroup
 	// stopLocalSize ends following the local terminal's size (handoff).
 	stopLocalSize context.CancelFunc
 	// prompt watches the screen for claude's or Codex's permission menu
@@ -390,6 +396,17 @@ wait:
 	}
 
 	h.finish(code)
+	// The input queue still runs: the chat messages it took before the exit
+	// (the last one may have ended the program) are answered first.
+	replied := make(chan struct{})
+	go func() {
+		h.inputReplies.Wait()
+		close(replied)
+	}()
+	select {
+	case <-replied:
+	case <-time.After(replyDrain):
+	}
 	stopServer()
 	if ln != nil {
 		ln.Close()
@@ -513,9 +530,9 @@ func (h *Holder) resyncLocal() {
 
 // localInput records a read b from a terminal on the host (src: the local
 // terminal or a `stagent attach` connection): a keystroke sets
-// last_local_input_at, a focus report the terminal's focus. The time
-// reaches the daemon at most once per second; the first keystroke after a
-// quiet second and every change of focus go out at once.
+// last_local_input_at and last_input_at, a focus report the terminal's
+// focus. The time reaches the daemon at most once per second; the first
+// keystroke after a quiet second and every change of focus go out at once.
 func (h *Holder) localInput(src any, b []byte) {
 	typing := isTyping(b)
 	focused, reported := focusReport(b)
@@ -526,7 +543,7 @@ func (h *Holder) localInput(src any, b []byte) {
 	wake := false
 	h.mu.Lock()
 	if typing {
-		h.sess.LastLocalInputAt = now
+		h.sess.LastLocalInputAt, h.sess.LastInputAt = now, now
 		if now-h.lastLocalTypeWake >= 1000 {
 			h.lastLocalTypeWake = now
 			wake = true
@@ -538,6 +555,22 @@ func (h *Holder) localInput(src any, b []byte) {
 	h.mu.Unlock()
 	if wake {
 		h.link.wake()
+	}
+}
+
+// clientInput records the session.input of a client that is not a terminal
+// on the host (the app): anything but the reports a terminal sends on its
+// own sets last_input_at. It rides along with the next update: the state
+// the program's answer brings wakes the link.
+func (h *Holder) clientInput(req []inputChunk) {
+	for _, c := range req {
+		if isTyping(c.data) {
+			now := time.Now().UnixMilli()
+			h.mu.Lock()
+			h.sess.LastInputAt = now
+			h.mu.Unlock()
+			return
+		}
 	}
 }
 
@@ -593,6 +626,18 @@ func (h *Holder) isEnded() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.ended
+}
+
+// addInputReply counts a chat message's reply still to be written; false:
+// the session ended, and Run may already be waiting for the others.
+func (h *Holder) addInputReply() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.ended {
+		return false
+	}
+	h.inputReplies.Add(1)
+	return true
 }
 
 // applySize resizes the PTY and screen and tells attached clients.

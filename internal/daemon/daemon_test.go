@@ -23,6 +23,7 @@ import (
 	"github.com/obutora/stagent/internal/hostid"
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/transcript"
 	"github.com/obutora/stagent/internal/wire"
@@ -67,8 +68,7 @@ func fastConfig() wire.Config {
 // STAGENT_HOME.
 func startDaemon(t *testing.T, cfg wire.Config, opts Options) *testEnv {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
+	pathstest.SetHome(t, t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	return startDaemonAt(t, cfg, opts)
@@ -398,7 +398,9 @@ func TestApprovalOutsideSessionsIsNotTracked(t *testing.T) {
 }
 
 // Codex shows its prompt only after the hook returned, so the hook returns
-// at once; the approval closes when output resumes after the grace.
+// at once; the approval closes when output resumes after input, past the
+// grace. A redraw without input (the session opened again: resized) closes
+// nothing.
 func TestCodexApprovalReturnsAtOnceAndClosesOnActivity(t *testing.T) {
 	e := startDaemon(t, fastConfig(), Options{})
 	watcher, events := e.client()
@@ -414,14 +416,70 @@ func TestCodexApprovalReturnsAtOnceAndClosesOnActivity(t *testing.T) {
 		t.Fatalf("approval %+v", ap)
 	}
 	await(t, events, "needs_approval", sessionState(wire.StateNeedsApproval))
-	// The user answered in the terminal: output resumes after the grace.
 	time.Sleep(overrideGraceMs*time.Millisecond + 50*time.Millisecond)
-	holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, State: ptr(wire.StateWorking), StateSource: ptr(wire.SourceActivity)})
+	redrawKeepsHookState(t, holderConn, events, wire.StateNeedsApproval)
+	var list wire.ApprovalsListResult
+	call(t, watcher, wire.MethodApprovalsList, nil, &list)
+	if len(list.Approvals) != 1 {
+		t.Fatalf("approvals after the redraw %+v", list)
+	}
+	// The user answered in the terminal: input, then output.
+	holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, LastInputAt: ptr(time.Now().UnixMilli()),
+		State: ptr(wire.StateWorking), StateSource: ptr(wire.SourceActivity)})
 	m = await(t, events, "approval_resolved", event(wire.EventApprovalResolved, nil))
 	if _, rd := decodeEvent[wire.ApprovalResolvedData](t, m); rd.By != "cancelled" {
 		t.Fatalf("resolved %+v", rd)
 	}
 	await(t, events, "working", sessionState(wire.StateWorking))
+}
+
+// A session waiting for the user's answer keeps the hook's state through a
+// redraw: the app resizes a session it opens again, and the harness
+// repaints. Neither the redraw (working from output activity) nor the
+// quiet after it (idle) is an answer (#1648).
+func TestRedrawKeepsHookStateWaitingForUser(t *testing.T) {
+	e := startDaemon(t, fastConfig(), Options{})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	holderConn, _ := e.client()
+	call(t, holderConn, wire.MethodHolderRegister, testSession(sid), nil)
+	// Input before the hook (the prompt the agent works on) does not count.
+	holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, LastInputAt: ptr(time.Now().UnixMilli()),
+		State: ptr(wire.StateWorking), StateSource: ptr(wire.SourceActivity)})
+	await(t, events, "working", sessionState(wire.StateWorking))
+	time.Sleep(5 * time.Millisecond)
+
+	e.hook(wire.HookEventParams{Harness: wire.HarnessClaude, Event: "Notification", SessionID: sid,
+		Payload: json.RawMessage(`{"notification_type":"idle_prompt","message":"Claude is waiting for your input"}`)})
+	await(t, events, "waiting_input", sessionState(wire.StateWaitingInput))
+	time.Sleep(overrideGraceMs*time.Millisecond + 50*time.Millisecond)
+	redrawKeepsHookState(t, holderConn, events, wire.StateWaitingInput)
+
+	// The user typed an answer at the terminal: its output ends the wait.
+	holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, LastInputAt: ptr(time.Now().UnixMilli()),
+		State: ptr(wire.StateWorking), StateSource: ptr(wire.SourceActivity)})
+	m := await(t, events, "working after the answer", sessionState(wire.StateWorking))
+	var s wire.Session
+	json.Unmarshal(m.Params, &s)
+	if s.StateSource != wire.SourceActivity {
+		t.Fatalf("session after the answer %+v", s)
+	}
+}
+
+// redrawKeepsHookState reports a redraw of sid's harness — output activity
+// (working), then quiet (idle), no input — and checks that the session is
+// still in the hook's state after each.
+func redrawKeepsHookState(t *testing.T, holderConn *rpc.Client, events chan *wire.Msg, state string) {
+	t.Helper()
+	for _, st := range []string{wire.StateWorking, wire.StateIdle} {
+		holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, State: ptr(st), StateSource: ptr(wire.SourceActivity)})
+		title := "after " + state + " then " + st
+		holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, Title: ptr(title)})
+		s := sessionUpdate(t, events, title, sid, func(s wire.Session) bool { return s.Title == title })
+		if s.State != state || s.StateSource != wire.SourceHook {
+			t.Fatalf("%s: session %s/%s, want %s/hook", title, s.State, s.StateSource, state)
+		}
+	}
 }
 
 // Codex blinks its terminal title while its prompt is up, so no activity
@@ -541,7 +599,8 @@ func TestClaudeApprovalsCloseOneByOne(t *testing.T) {
 	}
 
 	time.Sleep(overrideGraceMs*time.Millisecond + 50*time.Millisecond)
-	holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, State: ptr(wire.StateWorking), StateSource: ptr(wire.SourceActivity)})
+	holderConn.Notify(wire.MethodHolderUpdate, wire.SessionPatch{ID: sid, LastInputAt: ptr(time.Now().UnixMilli()),
+		State: ptr(wire.StateWorking), StateSource: ptr(wire.SourceActivity)})
 	await(t, events, "second resolved", event(wire.EventApprovalResolved, nil))
 	answered(t, second, "second hook released")
 }
@@ -797,7 +856,7 @@ func TestRestartKeepsSeqAndRecognizesReregistration(t *testing.T) {
 
 func TestTranscriptGetSubscribeAndConversations(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
+	pathstest.SetHome(t, home)
 	roots := transcript.Roots{wire.HarnessClaude: filepath.Join(home, "claude", "projects"), wire.HarnessCodex: filepath.Join(home, "codex"), wire.HarnessOmp: filepath.Join(home, "omp")}
 	conv := "2a425a50-3f53-4e94-8acb-f2d54d242f33"
 	tpath := filepath.Join(roots[wire.HarnessClaude], "-home-u-proj", conv+".jsonl")

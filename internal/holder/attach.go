@@ -118,6 +118,8 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 		h.det.Input()
 		if p.Local {
 			h.localInput(cs, []byte(p.Text))
+		} else {
+			h.clientInput(req)
 		}
 		if !message {
 			if err := h.in.push(ctx, req); err != nil {
@@ -125,14 +127,19 @@ func (cs *connState) handle(ctx context.Context, c *rpc.Conn, m *wire.Msg) (any,
 			}
 			return struct{}{}, nil
 		}
+		if !h.addInputReply() {
+			return nil, wire.Errorf(wire.ErrSessionEnded, "session %s has ended", h.id)
+		}
 		sent, err := h.in.pushMessage(ctx, req)
 		if err != nil {
+			h.inputReplies.Done()
 			return nil, wire.Errorf(wire.ErrSessionEnded, "%v", err)
 		}
 		// Answered once the text is written, or with menu_open once a menu
 		// that came up meanwhile dropped it: the caller sends it again
 		// after the menu, and a written one must not be sent twice.
 		go func() {
+			defer h.inputReplies.Done()
 			select {
 			case ok := <-sent:
 				if ok {

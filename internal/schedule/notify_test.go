@@ -7,7 +7,7 @@ import (
 )
 
 func TestValidateNotifyAndNormalizeDropsProblemSent(t *testing.T) {
-	s := wire.Schedule{Name: "n", Kind: wire.ScheduleKindCommand, Command: "true", Cwd: "/tmp",
+	s := wire.Schedule{Name: "n", Kind: wire.ScheduleKindCommand, Command: "true", Cwd: t.TempDir(),
 		When: wire.ScheduleWhen{Every: wire.EveryDaily, Time: "09:00"}, TZ: "Asia/Tokyo"}
 	for _, v := range []string{"", wire.ScheduleNotifyProblems, wire.ScheduleNotifyAlways, wire.ScheduleNotifyOff} {
 		s.Notify = v

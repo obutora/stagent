@@ -111,7 +111,7 @@ func TestUsageReportKeepsLimitWindows(t *testing.T) {
 	clk := &clock{t: time.Unix(1_763_000_000, 0)}
 	e := startDaemon(t, fastConfig(), Options{Now: clk.now})
 	c, _ := e.client()
-	const dir = "/home/u/.claude"
+	dir := abs("/home/u/.claude")
 	const r5, r7 = 1_763_010_000, 1_763_500_000
 
 	report(t, c, dir, `{"five_hour":{"used_percentage":42,"resets_at":1763010000},"seven_day":{"used_percentage":61.5,"resets_at":1763500000}}`)
@@ -122,7 +122,7 @@ func TestUsageReportKeepsLimitWindows(t *testing.T) {
 	if w := got[wire.UsageWindowSevenDay]; pct(w) != 61.5 || w.ResetsAt != r7*1000 {
 		t.Fatalf("seven_day = %+v", w)
 	}
-	if other := limitsOf(t, c, "/elsewhere"); len(other) != 0 {
+	if other := limitsOf(t, c, abs("/elsewhere")); len(other) != 0 {
 		t.Fatalf("another config dir got %+v", other)
 	}
 
@@ -167,15 +167,15 @@ func TestUsageReportRefusesWhatTheRelayCannotSend(t *testing.T) {
 	clk := &clock{t: time.Unix(1_763_000_000, 0)}
 	e := startDaemon(t, fastConfig(), Options{Now: clk.now})
 	c, _ := e.client()
-	const dir = "/home/u/.claude"
+	dir := abs("/home/u/.claude")
 	relayIn(t, dir)
 	good := `{"five_hour":{"used_percentage":42,"resets_at":1763010000}}`
 	long := strings.Repeat("x", 5000)
 	for _, p := range []wire.UsageReportParams{
-		{ConfigDir: "/home/u/.claude-other", RateLimits: json.RawMessage(good)}, // no relay there
+		{ConfigDir: abs("/home/u/.claude-other"), RateLimits: json.RawMessage(good)}, // no relay there
 		{ConfigDir: "home/u/.claude", RateLimits: json.RawMessage(good)},
-		{ConfigDir: "/home/u/.claude/", RateLimits: json.RawMessage(good)},
-		{ConfigDir: "/home/u/../u/.claude", RateLimits: json.RawMessage(good)},
+		{ConfigDir: abs("/home/u/.claude/"), RateLimits: json.RawMessage(good)},
+		{ConfigDir: abs("/home/u/../u/.claude"), RateLimits: json.RawMessage(good)},
 		{ConfigDir: "", RateLimits: json.RawMessage(good)},
 		{ConfigDir: dir, SessionID: long, RateLimits: json.RawMessage(good)},
 		{ConfigDir: dir, TranscriptPath: long, RateLimits: json.RawMessage(good)},
@@ -205,7 +205,7 @@ func TestUsageLimitsResetAndRestart(t *testing.T) {
 	clk := &clock{t: time.Unix(1_763_000_000, 0)}
 	e := startDaemon(t, fastConfig(), Options{Now: clk.now})
 	c, _ := e.client()
-	const dir = "/home/u/.claude"
+	dir := abs("/home/u/.claude")
 	report(t, c, dir, `{"five_hour":{"used_percentage":42,"resets_at":1763010000},"seven_day":{"used_percentage":61,"resets_at":1763500000}}`)
 	e.stop()
 
@@ -232,15 +232,16 @@ func TestUsageReportSendsUsageChanged(t *testing.T) {
 	for len(ch) > 0 {
 		<-ch
 	}
-	report(t, c, "/d", `null`)
-	report(t, c, "/d", `{"five_hour":"x"}`)
+	dir := abs("/d")
+	report(t, c, dir, `null`)
+	report(t, c, dir, `{"five_hour":"x"}`)
 	select {
 	case m := <-ch:
 		t.Fatalf("usage.changed without a change: %s", m.Method)
 	case <-time.After(50 * time.Millisecond):
 	}
 	resets := time.Now().Add(time.Hour).Unix()
-	report(t, c, "/d", `{"five_hour":{"used_percentage":10,"resets_at":`+itoa(int(resets))+`}}`)
+	report(t, c, dir, `{"five_hour":{"used_percentage":10,"resets_at":`+itoa(int(resets))+`}}`)
 	await(t, ch, "usage.changed", func(m *wire.Msg) bool { return m.Method == wire.NotifyUsageChanged })
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 )
 
 // listenTemp serves a socket in a fresh short directory (socket paths are
@@ -95,11 +96,7 @@ func TestListenOnServedAddressIsErrInUse(t *testing.T) {
 }
 
 func TestBlockedReportsForeignDaemonSocket(t *testing.T) {
-	t.Setenv(paths.EnvHome, t.TempDir())
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
+	l := pathstest.SetHome(t, t.TempDir())
 	if oe := Blocked(l); oe != nil {
 		t.Fatalf("Blocked before anything exists = %+v", oe)
 	}

@@ -80,7 +80,7 @@ func TestNextTimes(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	ok := wire.Schedule{Name: "n", Kind: wire.ScheduleKindCommand, Command: "date", Cwd: "/tmp", TZ: "Asia/Tokyo",
+	ok := wire.Schedule{Name: "n", Kind: wire.ScheduleKindCommand, Command: "date", Cwd: t.TempDir(), TZ: "Asia/Tokyo",
 		When: wire.ScheduleWhen{Every: wire.EveryDaily, Time: "09:00"}}
 	if err := Validate(ok); err != nil {
 		t.Fatalf("valid schedule: %v", err)

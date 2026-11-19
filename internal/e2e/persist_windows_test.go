@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
-	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/pty"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
@@ -24,12 +24,8 @@ import (
 func startWindowsBridge(t *testing.T, bin, shell string) *app {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
+	l := pathstest.SetHome(t, home)
 	t.Setenv(daemonclient.EnvExe, bin)
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
 	var env []string
 	for _, kv := range os.Environ() {
 		if k, _, _ := strings.Cut(kv, "="); !strings.EqualFold(k, "SHELL") {

@@ -85,6 +85,12 @@ type Session struct {
 	// has. Terminal replies, focus and mouse reports do not count, nor does
 	// the app's session.input.
 	LastLocalInputAt int64 `json:"last_local_input_at,omitempty"`
+	// LastInputAt is when input was last written to the program, unix ms:
+	// any client's session.input or a terminal on the host; 0 (omitted)
+	// until any was. Terminal replies, focus and mouse reports do not
+	// count. Output activity ends a hook-derived needs_approval or
+	// waiting_input only after it.
+	LastInputAt int64 `json:"last_input_at,omitempty"`
 	// Focused: one of those terminals last reported focus in (ESC [ I,
 	// sent once the program enabled focus reporting) and not focus out
 	// since. Terminals that report no focus leave it false.

@@ -163,7 +163,7 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 		s.s.State, s.s.StateSource = state, source
 		s.taskWant, s.cwd = ws.TaskID, cwd
 		s.s.TaskID = d.taskOfLocked(s)
-		s.track = s.track.holderReport(ws.State, ws.StateSource, now)
+		s.track = s.track.holderInput(ws.LastInputAt).holderReport(ws.State, ws.StateSource, now)
 		d.recomputeLocked(s, true)
 		d.sessionChangedLocked(s)
 		// A holder that reconnected while an approval was pending
@@ -187,7 +187,7 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 		delete(d.chatSent, ws.ID)
 		s.pushed = true
 	}
-	s.track = stateTrack{}.holderReport(ws.State, ws.StateSource, now)
+	s.track = stateTrack{}.holderInput(ws.LastInputAt).holderReport(ws.State, ws.StateSource, now)
 	s.s.State, s.s.StateSource = s.track.merged()
 	s.logged = s.s.State
 	d.sessions[ws.ID] = s
@@ -239,6 +239,12 @@ func (d *Daemon) holderUpdate(cs *connState, p wire.SessionPatch) {
 	// already sends them at most once per second.
 	if p.LastLocalInputAt != nil && *p.LastLocalInputAt != s.s.LastLocalInputAt {
 		s.s.LastLocalInputAt, changed = *p.LastLocalInputAt, true
+	}
+	// Input rides along with the next change, before the state its output
+	// brings: it lets that output end a hook state waiting for the user.
+	if p.LastInputAt != nil {
+		s.s.LastInputAt = *p.LastInputAt
+		s.track = s.track.holderInput(*p.LastInputAt)
 	}
 	if p.Cols != nil && *p.Cols != s.s.Cols {
 		s.s.Cols, changed = *p.Cols, true

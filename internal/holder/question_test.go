@@ -141,9 +141,9 @@ func TestQuestionWatchReportsQuestionGone(t *testing.T) {
 	from := 0
 	d.waitFor(t, &from, "holder.register", func(m *wire.Msg) bool { return m.Method == wire.MethodHolderRegister })
 	d.notifyHolders(t, wire.MethodHolderQuestionWatch, wire.HolderPromptWatchParams{ID: id, Gen: 7, On: true, Harness: wire.HarnessOmp})
-
-	time.Sleep(4 * promptEvalEvery) // the question is up
 	c := dialHolder(t, l, id)
+	waitScreenCheck(t, c, id, wire.HarnessOmp, wire.CheckQuestion)
+	time.Sleep(4 * promptEvalEvery)                                                 // the watch saw the question
 	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil) // Esc
 	m := d.waitFor(t, &from, "holder.question_gone", func(m *wire.Msg) bool {
 		return m.Method == wire.MethodHolderQuestionGone || m.Method == wire.MethodHolderPromptGone

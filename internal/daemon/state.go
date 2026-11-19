@@ -26,6 +26,9 @@ type stateTrack struct {
 	Holder       string // latest state reported by the holder
 	HolderSource string // terminal | activity | process
 	HolderAt     int64
+	// InputAt is when input was last written to the program (unix ms,
+	// Session.LastInputAt), as the holder reported it.
+	InputAt int64
 
 	Exited bool // the child process ended
 }
@@ -49,11 +52,28 @@ func (t stateTrack) holderReport(state, source string, at int64) stateTrack {
 	// question is in force: output then is the user moving through its
 	// UI (the highlight, the tabs, a multi-select's checks), and the
 	// question goes with a hook or when its UI leaves the screen
-	// (questionOffScreen).
-	if t.Hook != "" && t.Question == nil && state == wire.StateWorking && source == wire.SourceActivity && at >= t.HookAt+overrideGraceMs {
+	// (questionOffScreen). A session that waits for the user
+	// (needs_approval, waiting_input) keeps waiting until input reached
+	// the program after the hook: output without it is the harness
+	// redrawing (a resize when the session is opened again), not an answer.
+	if t.Hook != "" && t.Question == nil && state == wire.StateWorking && source == wire.SourceActivity && at >= t.HookAt+overrideGraceMs &&
+		(!waitsForUser(t.Hook) || t.InputAt > t.HookAt) {
 		t.Hook, t.HookAt = "", 0
 	}
 	return t
+}
+
+// holderInput applies the holder's report of when input was last written
+// to the program.
+func (t stateTrack) holderInput(at int64) stateTrack {
+	t.InputAt = max(t.InputAt, at)
+	return t
+}
+
+// waitsForUser reports whether a hook-derived state waits for the user's
+// answer.
+func waitsForUser(state string) bool {
+	return state == wire.StateNeedsApproval || state == wire.StateWaitingInput
 }
 
 // hookState applies a state derived from a harness hook. A question in

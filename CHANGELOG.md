@@ -3,6 +3,54 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.22.1
+
+### Fixed
+
+- A session waiting for the user — `needs_approval`, or `waiting_input`
+  from a hook — goes on waiting until the user answers (#1648). Output
+  activity 1 s or more after a hook ended its state, so a redraw the 1.5 s
+  after a resize did not cover (or any other output while nobody
+  answered) moved such a session to `working`, then `idle`: out of the
+  app's "needs you" list, its approvals closed. For these two states it
+  now counts only once input reached the program after the hook — any
+  client's `session.input` or a terminal on the host, as when the user
+  answers in the terminal. Holders report it as the new
+  `Session.last_input_at`; a session whose holder is older keeps such a
+  state until a hook, the prompt watch or Stop ends it.
+- Two stagent processes creating the host id at the same time no longer
+  end up with different ids (#1651). One of them could take the other's
+  new file for an invalid one and replace it, after the other had already
+  used its id.
+- A daemon stopped while it was still starting, or while it accepted a
+  connection, waits for everything it started before it finishes
+  stopping (#1651).
+- `stagent follow --session` streams the session's own conversation when
+  two Pi agents, one per session, share a working directory
+  (obutora/stagent#2, by @pcparts001). Both used to be followed as the
+  directory's newest conversation: Pi opens its file only to append and
+  its process title hides its arguments. follow now reads the daemon's
+  record of the session (`sessions.list`): the transcript path its hooks
+  reported, else its conversation id among the harness's newest, for the
+  agent of the record's harness. The path counts only as a transcript of
+  that harness under the agent's own roots (obutora/stagent#4), so a
+  reported file elsewhere is never streamed to the app.
+- `transcript.get` and `transcript.subscribe` by `session_id` read the
+  transcript path a session's hooks reported only when it lies in the
+  transcript directory of the session's harness, as a `path` request
+  already had to. Any process of the user can report a hook, so a
+  reported `~/.ssh` key or any other file was read and sent to the app
+  if it parsed as the harness's transcript. A path elsewhere now counts
+  as no transcript: the session's conversation id, when the daemon's
+  index has it, names the file instead.
+- A chat message (`session.input`) that ends the program is answered
+  before the holder closes its connections; it used to fail with the
+  connection closed although it was written.
+- `stagent uninstall --level stop` right after a session registered no
+  longer has that session's holder start the daemon again: the holder
+  could miss the daemon's notice that the stop was deliberate when it
+  came right behind the reply to its registration.
+
 ## 0.22.0
 
 ### Added

@@ -21,7 +21,7 @@ import (
 // usage_limit: 80% and 100% once per window and reset time, then reset
 // once after 100%.
 
-const alertDir = "/home/u/.claude"
+var alertDir = abs("/home/u/.claude")
 
 // alertQuiet is how long a test waits to see that nothing is pushed.
 const alertQuiet = 200 * time.Millisecond

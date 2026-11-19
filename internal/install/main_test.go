@@ -7,18 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 )
 
 func TestCLIOutputIsASCIIJSON(t *testing.T) {
 	te := newTestEnv(t, "linux")
 	home := filepath.Join(t.TempDir(), "café😀")
-	t.Setenv(paths.EnvHome, home)
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
-	te.l = l
+	te.l = pathstest.SetHome(t, home)
 	var out bytes.Buffer
 	if code := mainWith("install", []string{"--json"}, &out, &out, te.env); code != 0 {
 		t.Fatalf("exit %d: %s", code, out.String())

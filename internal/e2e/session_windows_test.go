@@ -16,7 +16,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -83,7 +83,7 @@ func fakeSession(stagent string) int {
 // running for hours.
 func TestWindowsBridgeEndsWithItsSessionProcess(t *testing.T) {
 	bin := compileStagent(t)
-	t.Setenv(paths.EnvHome, t.TempDir())
+	pathstest.SetHome(t, t.TempDir())
 	session := exec.Command(os.Args[0])
 	session.Env = append(os.Environ(), envFakeSessionStagent+"="+bin)
 	if _, err := session.StdinPipe(); err != nil { // keeps it running until killed

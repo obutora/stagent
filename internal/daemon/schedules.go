@@ -516,7 +516,7 @@ func (d *Daemon) entryLocked(s *wire.Schedule) wire.ScheduleEntry {
 			at, ok = schedule.Next(s.When, loc, now)
 		}
 		if ok {
-			e.HostClock = schedule.HostClockAt(loc, at)
+			e.HostClock = schedule.HostClockAt(loc, d.opts.HostLocation, at)
 		}
 	}
 	return e
@@ -599,7 +599,7 @@ func (d *Daemon) schedulePreview(p wire.ScheduleCreateParams) (wire.SchedulePrev
 		res.NextOffsets = append(res.NextOffsets, schedule.OffsetAt(loc, t))
 	}
 	if len(res.Next) > 0 {
-		res.HostClock = schedule.HostClockAt(loc, time.UnixMilli(res.Next[0]))
+		res.HostClock = schedule.HostClockAt(loc, d.opts.HostLocation, time.UnixMilli(res.Next[0]))
 	}
 	if st, err := os.Stat(s.Cwd); err != nil || !st.IsDir() {
 		res.Warnings = append(res.Warnings, wire.ScheduleWarning{Code: wire.WarnCwdMissing, Message: s.Cwd + " is not a directory on this host"})

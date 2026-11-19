@@ -42,13 +42,9 @@ func TestHolderReadsOverriddenRules(t *testing.T) {
 	from := 0
 	d.waitFor(t, &from, "holder.register", func(m *wire.Msg) bool { return m.Method == wire.MethodHolderRegister })
 	d.notifyHolders(t, wire.MethodHolderQuestionWatch, wire.HolderPromptWatchParams{ID: id, Gen: 3, On: true, Harness: wire.HarnessCodex})
-	time.Sleep(4 * promptEvalEvery) // the question is up
 
 	c := dialHolder(t, l, id)
-	var e wire.ScreenExplain
-	if err := c.call(t, wire.MethodSessionExplain, wire.ScreenExplainParams{ID: id, Harness: wire.HarnessCodex}, &e); err != nil {
-		t.Fatal(err)
-	}
+	e := waitScreenCheck(t, c, id, wire.HarnessCodex, wire.CheckQuestion)
 	var q *wire.ScreenCheck
 	for i := range e.Checks {
 		if e.Checks[i].Check == wire.CheckQuestion {
@@ -61,6 +57,7 @@ func TestHolderReadsOverriddenRules(t *testing.T) {
 		b, _ := json.Marshal(e)
 		t.Fatalf("session.explain = %s", b)
 	}
+	time.Sleep(4 * promptEvalEvery) // the watch saw the question
 
 	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil) // answered
 	m := d.waitFor(t, &from, "holder.question_gone", func(m *wire.Msg) bool {

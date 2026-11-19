@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -54,10 +54,18 @@ type scheduleEnv struct {
 // login shell's environment is login and whose holders are only recorded.
 func startScheduleDaemon(t *testing.T, at time.Time, login []string, spawnErr error) *scheduleEnv {
 	t.Helper()
+	return startScheduleDaemonOn(t, nil, at, login, spawnErr)
+}
+
+// startScheduleDaemonOn is startScheduleDaemon on a host whose own clock
+// is host (nil: time.Local).
+func startScheduleDaemonOn(t *testing.T, host *time.Location, at time.Time, login []string, spawnErr error) *scheduleEnv {
+	t.Helper()
 	clock := &fakeClock{t: at}
 	spawns := make(chan spawned, 8)
 	e := startDaemon(t, fastConfig(), Options{
 		Now:          clock.Now,
+		HostLocation: host,
 		ScheduleTick: 10 * time.Millisecond,
 		LoginEnv:     func() ([]string, error) { return login, nil },
 		SpawnHolder: func(exe string, args []string, dir string, env []string, logPath string) (int, bool, error) {
@@ -139,13 +147,10 @@ func commandSchedule(cwd, command string, when wire.ScheduleWhen) wire.Schedule 
 // shell's environment), tied to the schedule and run; its exit is the
 // run's result.
 func TestScheduleRunsAtItsTime(t *testing.T) {
-	oldLocal := time.Local
-	time.Local = time.UTC
-	t.Cleanup(func() { time.Local = oldLocal })
 	t.Setenv("SHELL", "/bin/zsh")
 	cwd := t.TempDir()
 	start := time.Date(2026, 10, 19, 23, 59, 0, 0, time.UTC) // 08:59 in Tokyo
-	e := startScheduleDaemon(t, start, []string{"PATH=/login/bin:/usr/bin", "SHELL=/bin/zsh"}, nil)
+	e := startScheduleDaemonOn(t, time.UTC, start, []string{"PATH=/login/bin:/usr/bin", "SHELL=/bin/zsh"}, nil)
 
 	entry := e.create(commandSchedule(cwd, "date; exit 2", wire.ScheduleWhen{Every: wire.EveryDaily, Time: "09:00"}))
 	nine := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
@@ -327,7 +332,7 @@ func TestScheduleCreateRefusesBadSchedules(t *testing.T) {
 // daemon started again finds its schedules.
 func TestSchedulesKeepUnknownMembers(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
+	pathstest.SetHome(t, home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	cwd := t.TempDir()
@@ -369,7 +374,7 @@ func TestSchedulesKeepUnknownMembers(t *testing.T) {
 // restart ends undetermined.
 func TestScheduleRunLostOverRestart(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
+	pathstest.SetHome(t, home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	stateDir := filepath.Join(home, ".ssh-term", "agent", "state")

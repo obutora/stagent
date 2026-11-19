@@ -4,18 +4,14 @@ import (
 	"os"
 	"testing"
 
-	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 )
 
 // --handoff=auto: STAGENT_HANDOFF 0 / 1 decides, other values are ignored;
 // without it config.json's disable_handoff decides, else handoff. Plain
 // --handoff and no flag do not look at either.
 func TestHandoffChoice(t *testing.T) {
-	t.Setenv(paths.EnvHome, t.TempDir())
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
+	l := pathstest.SetHome(t, t.TempDir())
 	if err := os.MkdirAll(l.Root, 0o700); err != nil {
 		t.Fatal(err)
 	}

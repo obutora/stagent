@@ -16,6 +16,9 @@ func holder(state, source string, at int64) step {
 func hook(state string, at int64) step {
 	return func(t stateTrack) stateTrack { return t.hookState(state, at) }
 }
+func input(at int64) step {
+	return func(t stateTrack) stateTrack { return t.holderInput(at) }
+}
 func clearHook() step { return func(t stateTrack) stateTrack { return t.hookClear() } }
 func exit() step      { return func(t stateTrack) stateTrack { return t.exited() } }
 
@@ -42,8 +45,15 @@ func TestMergedState(t *testing.T) {
 		{"terminal state without hook", []step{holder(waiting, srcTerm, 100)}, waiting, srcTerm},
 		{"hook beats later idle activity", []step{hook(working, 100), holder(idle, srcAct, 5000)}, working, srcHook},
 		{"approval survives output going quiet", []step{hook(needsAp, 100), holder(idle, srcAct, 5000)}, needsAp, srcHook},
-		{"later working activity overrides hook", []step{hook(needsAp, 100), holder(working, srcAct, 2000)}, working, srcAct},
-		{"working inside the grace does not override", []step{hook(needsAp, 100), holder(working, srcAct, 100+overrideGraceMs-1)}, needsAp, srcHook},
+		{"working after input overrides an approval", []step{hook(needsAp, 100), input(1500), holder(working, srcAct, 2000)}, working, srcAct},
+		{"working after input overrides waiting", []step{hook(waiting, 100), input(1500), holder(working, srcAct, 2000)}, working, srcAct},
+		{"redraw without input keeps an approval", []step{hook(needsAp, 100), holder(working, srcAct, 2000), holder(idle, srcAct, 5000)}, needsAp, srcHook},
+		{"redraw without input keeps waiting", []step{hook(waiting, 100), holder(working, srcAct, 2000), holder(idle, srcAct, 5000)}, waiting, srcHook},
+		{"input before the hook does not count", []step{input(50), hook(needsAp, 100), holder(working, srcAct, 2000)}, needsAp, srcHook},
+		{"input before a later waiting hook does not count", []step{hook(waiting, 100), input(500), hook(waiting, 1000), holder(working, srcAct, 3000)}, waiting, srcHook},
+		{"input is kept until output comes", []step{hook(needsAp, 100), input(1500), holder(idle, srcAct, 1600), holder(working, srcAct, 4000)}, working, srcAct},
+		{"redraw overrides idle without input", []step{hook(idle, 100), holder(working, srcAct, 2000)}, working, srcAct},
+		{"working inside the grace does not override", []step{hook(needsAp, 100), input(150), holder(working, srcAct, 100+overrideGraceMs-1)}, needsAp, srcHook},
 		{"working before the hook does not override", []step{holder(working, srcAct, 50), hook(needsAp, 100)}, needsAp, srcHook},
 		{"terminal working does not override", []step{hook(waiting, 100), holder(working, srcTerm, 5000)}, waiting, srcHook},
 		{"override consumes the hook state", []step{hook(idle, 100), holder(working, srcAct, 2000), holder(idle, srcAct, 6000)}, idle, srcAct},

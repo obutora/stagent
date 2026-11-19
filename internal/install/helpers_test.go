@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -99,11 +100,7 @@ type testEnv struct {
 func newTestEnv(t *testing.T, goos string) *testEnv {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
+	l := pathstest.SetHome(t, home)
 	te := &testEnv{run: &fakeRunner{}, daemon: &fakeDaemon{}, others: map[string]*fakeDaemon{}, vars: map[string]string{}, bins: map[string]string{}}
 	clock := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	te.env = &env{

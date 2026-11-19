@@ -10,26 +10,13 @@ import (
 	"github.com/obutora/stagent/internal/wire"
 )
 
-// hostClockIn sets the host's own clock (time.Local) to zone name.
-func hostClockIn(t *testing.T, name string) {
-	t.Helper()
-	loc, err := time.LoadLocation(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := time.Local
-	time.Local = loc
-	t.Cleanup(func() { time.Local = old })
-}
-
 // A cron schedule "0 3 1 * *" in Asia/Tokyo runs at 3:00 on the 1st of each
 // month there; on a host whose clock is UTC its entry says so (the host's
 // zone and both offsets at the next time).
 func TestScheduleCronRunsAtItsTime(t *testing.T) {
-	hostClockIn(t, "UTC")
 	tokyo, _ := time.LoadLocation("Asia/Tokyo")
 	start := time.Date(2026, 11, 1, 2, 59, 0, 0, tokyo)
-	e := startScheduleDaemon(t, start, nil, nil)
+	e := startScheduleDaemonOn(t, time.UTC, start, nil, nil)
 
 	entry := e.create(commandSchedule(t.TempDir(), "true", wire.ScheduleWhen{Every: wire.EveryCron, Cron: "0 3 1 * *"}))
 	three := time.Date(2026, 11, 1, 3, 0, 0, 0, tokyo)
@@ -58,9 +45,8 @@ func TestScheduleCronRunsAtItsTime(t *testing.T) {
 // schedule.preview answers a cron expression's next three times, its
 // mistake as bad_request, and the host's clock only where it differs.
 func TestSchedulePreviewCron(t *testing.T) {
-	hostClockIn(t, "Asia/Tokyo")
 	tokyo, _ := time.LoadLocation("Asia/Tokyo")
-	e := startScheduleDaemon(t, time.Date(2026, 10, 20, 14, 7, 0, 0, tokyo), nil, nil)
+	e := startScheduleDaemonOn(t, tokyo, time.Date(2026, 10, 20, 14, 7, 0, 0, tokyo), nil, nil)
 	cwd := t.TempDir()
 	var p wire.SchedulePreview
 	call(t, e.c, wire.MethodSchedulePreview, wire.ScheduleCreateParams{Schedule: commandSchedule(cwd, "true",

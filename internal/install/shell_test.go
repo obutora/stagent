@@ -11,7 +11,7 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 )
 
 func TestShellWrapperBlockAddRemoveIdempotent(t *testing.T) {
@@ -114,11 +114,7 @@ func TestShellWrapperFishFile(t *testing.T) {
 // without BOM is warned about. UTF-16 profiles are skipped.
 func TestShellWrapperPowerShellProfile(t *testing.T) {
 	te := newTestEnv(t, "windows")
-	t.Setenv(paths.EnvHome, filepath.Join(t.TempDir(), "ユーザー"))
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
+	l := pathstest.SetHome(t, filepath.Join(t.TempDir(), "ユーザー"))
 	te.l = l
 	te.vars["USERPROFILE"] = l.Home
 	te.bins["pwsh"] = `C:\Program Files\PowerShell\7\pwsh.exe`
@@ -163,7 +159,7 @@ func TestShellWrapperPowerShellProfile(t *testing.T) {
 	// A UTF-16 profile is a skipped target with its own error code.
 	writeFile(t, ps5, "\xff\xfe#\x00\r\x00\n\x00")
 	te.reload()
-	r, err = te.env.integrate(integrateOpts{shellWrapper: true})
+	r, err := te.env.integrate(integrateOpts{shellWrapper: true})
 	if err != nil {
 		t.Fatal(err)
 	}

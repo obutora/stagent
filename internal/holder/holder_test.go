@@ -56,6 +56,16 @@ func TestDetachedRawAttachInputAndClose(t *testing.T) {
 		if attempt > 200 {
 			t.Fatalf("snapshot never contained hello: %q", out.Data)
 		}
+		// The program's hello may stream live on this attachment before
+		// the next attach; detach and skip what it sent: the holder stops
+		// the sender before answering, and the client records
+		// notifications in arrival order.
+		if err := c.call(t, wire.MethodSessionDetach, wire.SessionRef{ID: id}, nil); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		from = len(c.notes)
+		c.mu.Unlock()
 		time.Sleep(20 * time.Millisecond)
 	}
 
@@ -533,12 +543,12 @@ func TestPromptWatchReportsMenuGone(t *testing.T) {
 	from := 0
 	d.waitFor(t, &from, "holder.register", func(m *wire.Msg) bool { return m.Method == wire.MethodHolderRegister })
 	d.notifyHolders(t, wire.MethodHolderPromptWatch, wire.HolderPromptWatchParams{ID: id, Gen: 5, On: true})
-
-	time.Sleep(4 * promptEvalEvery) // the menu is up
+	c := dialHolder(t, l, id)
+	waitScreenCheck(t, c, id, wire.HarnessClaude, wire.CheckPermission)
+	time.Sleep(4 * promptEvalEvery) // the watch saw the menu
 	if g := d.promptGones(0); len(g) != 0 {
 		t.Fatalf("prompt_gone while the menu is up: %+v", g)
 	}
-	c := dialHolder(t, l, id)
 	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil) // answered
 	m := d.waitFor(t, &from, "holder.prompt_gone", func(m *wire.Msg) bool { return m.Method == wire.MethodHolderPromptGone })
 	var p wire.HolderPromptGoneParams

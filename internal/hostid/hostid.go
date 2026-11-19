@@ -55,8 +55,12 @@ func Ensure(path string) (string, error) {
 		return "", err
 	}
 	// A file that exists but holds no valid id is replaced; anything else
-	// (another process won the race) is read back.
-	if Read(path) == "" && fileExists(path) {
+	// (another process won the race) is read back. Existence is checked
+	// before the content: a linked file is complete, so one that is there
+	// but unreadable as an id was invalid before this call. Reading first
+	// would let a winner's file linked in between pass as invalid, and the
+	// rename would replace an id the winner already returned.
+	if fileExists(path) && Read(path) == "" {
 		if err := os.Rename(tmp, path); err != nil {
 			return "", err
 		}

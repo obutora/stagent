@@ -121,9 +121,11 @@ func TestQueuedChatMessageDroppedForMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	// More than the PTY buffers: the queue blocks writing it until the
-	// program reads, and the chat message waits behind it.
-	const fill = 8 << 20
+	// More than the PTY buffers (about 1 KiB on macOS, 64 KiB on Linux):
+	// the queue blocks writing it until the program reads, and the chat
+	// message waits behind it. Not much more: a PTY moves it slowly on a
+	// busy mac (8 MiB took over 10 s with a few such writes at once).
+	const fill = 1 << 20
 	// The program draws the menu once told to (file "menu"), then reads
 	// the filler and one more byte (file "read") and prints that byte.
 	id, done := startDetached(t, l, 60, 30, "sh", "-c", `stty raw -echo

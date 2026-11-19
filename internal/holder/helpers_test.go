@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
+	"github.com/obutora/stagent/internal/pathstest"
 	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/wire"
 )
@@ -26,17 +26,8 @@ const testTimeout = 10 * time.Second
 func isolate(t *testing.T) *paths.Layout {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv(paths.EnvHome, home)
+	l := pathstest.SetHome(t, home)
 	t.Setenv("STAGENT_EXE", filepath.Join(home, "no-such-stagent"))
-	l, err := paths.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Long temp paths move the socket directory out of home (into a
-	// directory namespaced by this home); remove it with the test.
-	if !strings.HasPrefix(l.RunDir, home) {
-		t.Cleanup(func() { os.RemoveAll(l.RunDir) })
-	}
 	return l
 }
 
@@ -48,15 +39,36 @@ type runResult struct {
 func startDetached(t *testing.T, l *paths.Layout, cols, rows int, command ...string) (string, <-chan runResult) {
 	t.Helper()
 	id := wire.NewSessionID()
+	return id, runDetached(t, Options{
+		Command: command, Detached: true, ID: id, Cols: cols, Rows: rows,
+		Dir: t.TempDir(), Layout: l, Logf: func(string, ...any) {},
+	})
+}
+
+// runDetached runs a holder for the test. A holder the test leaves
+// running (it failed before the program exited) is killed when the test
+// ends, before isolate's environment is restored: past that it would
+// auto-start the daemon from os.Executable, the test binary, which runs
+// the whole package again.
+func runDetached(t *testing.T, o Options) <-chan runResult {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan runResult, 1)
+	exited := make(chan struct{})
 	go func() {
-		code, err := Run(context.Background(), Options{
-			Command: command, Detached: true, ID: id, Cols: cols, Rows: rows,
-			Dir: t.TempDir(), Layout: l, Logf: func(string, ...any) {},
-		})
+		code, err := Run(ctx, o)
 		done <- runResult{code, err}
+		close(exited)
 	}()
-	return id, done
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-exited:
+		case <-time.After(testTimeout):
+			t.Error("holder did not exit after the test")
+		}
+	})
+	return done
 }
 
 func waitExit(t *testing.T, done <-chan runResult) runResult {
@@ -107,6 +119,35 @@ func (tc *testClient) call(t *testing.T, method string, params, result any) erro
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 	return tc.Call(ctx, method, params, result)
+}
+
+// waitScreenCheck polls session.explain until check (wire.CheckQuestion,
+// wire.CheckPermission) matches the holder's screen read as harnessID and
+// returns that explanation: the program drew what a watch looks for. A
+// watch reads the screen at most promptEvalEvery after the program's last
+// output and reports only a menu it saw, so a test waits past that before
+// answering; waiting from the watch's start instead loses the race to a
+// program that starts slowly on a busy machine (#1659): its question drawn
+// and answered between two reads is never seen.
+func waitScreenCheck(t *testing.T, c *testClient, id, harnessID, check string) wire.ScreenExplain {
+	t.Helper()
+	deadline := time.Now().Add(testTimeout)
+	for {
+		var e wire.ScreenExplain
+		if err := c.call(t, wire.MethodSessionExplain, wire.ScreenExplainParams{ID: id, Harness: harnessID}, &e); err != nil {
+			t.Fatal(err)
+		}
+		for _, ch := range e.Checks {
+			if ch.Check == check && ch.Matched {
+				return e
+			}
+		}
+		if time.Now().After(deadline) {
+			b, _ := json.Marshal(e)
+			t.Fatalf("the screen never showed the %s: %s", check, b)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // next returns the first notification after index *from matching method,
