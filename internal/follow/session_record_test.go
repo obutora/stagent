@@ -90,6 +90,35 @@ func TestFollowSessionRecordGoneFileFallsBack(t *testing.T) {
 	}
 }
 
+// Any process of the user can report a hook, so a record's path outside
+// the harness's transcript directory — a key, a token file, anything that
+// happens to be JSON lines — is not streamed, even through a ".." that
+// starts below the root.
+func TestFollowSessionRecordOutsideRootsFallsBack(t *testing.T) {
+	for name, report := range map[string]func(home, root, file string) string{
+		"outside": func(home, _, file string) string { return filepath.Join(home, "outside", file) },
+		// Unclean, as a hook may send it: lexically below the root first.
+		"traversal": func(_, root, file string) string { return root + "/../../../outside/" + file },
+	} {
+		t.Run(name, func(t *testing.T) {
+			x := newRecordFixture(t)
+			root := x.piRoot()
+			newest := piSession(t, root, "/work", false, time.Now().Add(-time.Minute), time.Now().Add(-time.Second), 1)
+			// A readable Pi transcript, so only where it lies keeps it out.
+			secret := piSession(t, filepath.Join(x.home, "outside"), "/work", true, time.Now().Add(-time.Minute), time.Now(), 2)
+			reported := report(x.home, root, filepath.Base(secret))
+			x.d.record = wire.Session{ID: testSessionID, Harness: wire.HarnessPi, TranscriptPath: reported}
+			x.pi(602, 601)
+			x.do(x.f.scan())
+
+			fs := x.frames()
+			if len(fs) != 2 || fs[1].Path != newest {
+				t.Fatalf("frames: %+v, want the fallback %q, not %q", fs, newest, reported)
+			}
+		})
+	}
+}
+
 // The record names the conversation of its harness's agent only: a kept
 // shell running a Pi agent and a Claude Code one keeps the Claude agent on
 // its own conversation, not the Pi session's.

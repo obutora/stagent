@@ -413,9 +413,12 @@ func (f *follower) agent(s *ptable.Snapshot, c candidate, cwds map[instance]stri
 	// the directory. The record, when its file exists, wins — for the
 	// agent of the record's harness only: a kept shell may run agents of
 	// other harnesses too, and the record names none of their
-	// conversations.
+	// conversations. Any process of the user can report a hook, so the
+	// path counts only as a transcript of that harness under the agent's
+	// own roots: a reported ~/.ssh key or any other file outside them is
+	// never streamed to the app.
 	if f.recOK && f.rec.Harness == c.harness {
-		if rp := f.rec.TranscriptPath; rp != "" && isFile(rp) {
+		if rp := f.rec.TranscriptPath; rp != "" && isTranscriptOf(roots, c.harness, rp) {
 			path = rp
 		} else if f.rec.ConversationID != "" && finders[c.harness].matcher != nil {
 			if rp := fromSessionID(f.tr, c.harness, roots, f.rec.ConversationID); rp != "" {
@@ -453,6 +456,15 @@ func find(agents []agent, key string) *agent {
 		}
 	}
 	return nil
+}
+
+// isTranscriptOf reports whether p is an existing transcript file of
+// harness h under roots: an absolute .jsonl path below the harness's
+// transcript directory (transcript.Roots.HarnessOf, the check the daemon's
+// transcript.get applies to a path it is given).
+func isTranscriptOf(roots transcript.Roots, h, p string) bool {
+	rh, ok := roots.HarnessOf(p)
+	return ok && rh == h && isFile(p)
 }
 
 // fromSessionID finds a conversation of harness h by its id (Pi's
