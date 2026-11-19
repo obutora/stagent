@@ -8,7 +8,6 @@ package follow
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -25,7 +24,6 @@ import (
 	"github.com/obutora/stagent/internal/ipc"
 	"github.com/obutora/stagent/internal/paths"
 	"github.com/obutora/stagent/internal/ptable"
-	"github.com/obutora/stagent/internal/rpc"
 	"github.com/obutora/stagent/internal/transcript"
 	"github.com/obutora/stagent/internal/version"
 	"github.com/obutora/stagent/internal/wire"
@@ -134,6 +132,7 @@ func Main(args []string) int {
 		return 1
 	}
 	loc := newLocator(execMux{}, owner)
+	var record *daemonRecord
 	if session != "" {
 		layout, err := paths.Resolve()
 		if err != nil {
@@ -144,50 +143,17 @@ func Main(args []string) int {
 			return ipc.Dial(layout.HolderAddr(session), holderTimeout)
 		}}
 		loc.session = h.root
-		f := newFollower(os.Stdout, home, ptable.Take, loc, os.Getenv)
-		f.sessionRecord = func() (wire.Session, bool) {
-			return sessionFromDaemon(layout, session)
-		}
-		if err := f.run(os.Stdin); err != nil {
-			fmt.Fprintln(os.Stderr, "stagent follow:", err)
-			return 1
-		}
-		return 0
+		record = &daemonRecord{id: session, dial: func() (net.Conn, error) {
+			return daemonclient.Dial(layout, holderTimeout)
+		}}
 	}
 	f := newFollower(os.Stdout, home, ptable.Take, loc, os.Getenv)
+	f.record = record
 	if err := f.run(os.Stdin); err != nil {
 		fmt.Fprintln(os.Stderr, "stagent follow:", err)
 		return 1
 	}
 	return 0
-}
-
-// sessionFromDaemon reads the daemon's record of a session: the
-// ConversationID and TranscriptPath its hooks reported (Pi's extension
-// does) name the conversation the session's agent writes, which the cwd
-// fallback cannot tell from another agent's in the same directory.
-// "" and false when the daemon does not answer or has no such session;
-// a scan goes on without the record then.
-func sessionFromDaemon(l *paths.Layout, id string) (wire.Session, bool) {
-	conn, err := daemonclient.Dial(l, holderTimeout)
-	if err != nil {
-		return wire.Session{}, false
-	}
-	defer conn.Close()
-	c := rpc.NewClient(conn, nil)
-	defer c.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), holderTimeout)
-	defer cancel()
-	var res wire.SessionsListResult
-	if err := c.Call(ctx, wire.MethodSessionsList, struct{}{}, &res); err != nil {
-		return wire.Session{}, false
-	}
-	for _, s := range res.Sessions {
-		if s.ID == id {
-			return s, true
-		}
-	}
-	return wire.Session{}, false
 }
 
 // parseArgs returns the session id of --session ("" without it); it
@@ -248,14 +214,14 @@ type follower struct {
 	loc    *locator
 	getenv func(string) string // stagent's own environment
 	tr     *transcripts
-	// sessionRecord, set by `follow --session`, reads the daemon's
-	// record of the session: its ConversationID and TranscriptPath name
-	// the conversation the session's hooks reported (Pi's extension
-	// does), which the cwd fallback cannot tell apart from another
-	// agent's in the same directory.
-	sessionRecord func() (wire.Session, bool)
-	rec           wire.Session
-	recOK         bool
+	// record, set by `follow --session`, reads the daemon's record of the
+	// session: its ConversationID and TranscriptPath name the conversation
+	// the session's hooks reported (Pi's extension does), which the cwd
+	// fallback cannot tell apart from another agent's in the same
+	// directory.
+	record *daemonRecord
+	rec    wire.Session
+	recOK  bool
 
 	last   location // of the last scan
 	agents []agent
@@ -344,17 +310,21 @@ func (f *follower) scan() error {
 	return f.publish()
 }
 
-// readRecord reads the daemon's record of the followed session. The
-// daemon's answer is not waited for: a scan never blocks on it, and a
-// record that arrives is used by the next one.
+// readRecord reads the daemon's record of the followed session. The scan
+// waits for the daemon's answer, bounded by holderTimeout as the holder's
+// is. A daemon that does not answer leaves the record of the last scan in
+// place, so a restarting daemon does not hand the agent the cwd
+// fallback's conversation for a scan; one that answers without the
+// session (ended, or unknown to it) drops the record.
 func (f *follower) readRecord() {
-	if f.sessionRecord == nil {
-		f.recOK = false
+	if f.record == nil {
 		return
 	}
-	if rec, ok := f.sessionRecord(); ok {
-		f.rec, f.recOK = rec, true
+	rec, found, err := f.record.read()
+	if err != nil {
+		return
 	}
+	f.rec, f.recOK = rec, found
 }
 
 // report writes the problems that were not already reported by the
@@ -440,8 +410,11 @@ func (f *follower) agent(s *ptable.Snapshot, c candidate, cwds map[instance]stri
 	// A stagent session's hooks may name the conversation the agent in it
 	// writes (Pi's extension reports it), while the cwd fallback picks the
 	// directory's newest conversation — another agent's when two share
-	// the directory. The record, when its file exists, wins.
-	if f.recOK {
+	// the directory. The record, when its file exists, wins — for the
+	// agent of the record's harness only: a kept shell may run agents of
+	// other harnesses too, and the record names none of their
+	// conversations.
+	if f.recOK && f.rec.Harness == c.harness {
 		if rp := f.rec.TranscriptPath; rp != "" && isFile(rp) {
 			path = rp
 		} else if f.rec.ConversationID != "" && finders[c.harness].matcher != nil {
