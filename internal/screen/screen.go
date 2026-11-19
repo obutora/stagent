@@ -136,6 +136,15 @@ func New(cols, rows int, respond func([]byte)) *Screen {
 		s.reseed = true
 		return false
 	})
+	// Output prepared before a resize may set margins beyond the new height.
+	// The pinned vt accepts them, then panics when scrolling. Consume these
+	// requests without changing the scroll region or cursor; let vt handle
+	// valid margins and defaults as usual.
+	e.RegisterCsiHandler('r', func(params ansi.Params) bool {
+		top, _, _ := params.Param(0, 1)
+		bottom, _, _ := params.Param(1, e.Height())
+		return top > e.Height() || bottom > e.Height()
+	})
 	go s.drain()
 	return s
 }
