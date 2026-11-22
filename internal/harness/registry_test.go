@@ -149,6 +149,20 @@ func TestBatchArgs(t *testing.T) {
 		{"grok", []string{"grok", "fix the update script"}, false},
 		{"grok", []string{"/home/u/.grok/bin/grok", "--resume", "01a1e529"}, false},
 		{"grok", []string{"grok", "-c"}, false},
+		// Antigravity CLI: -p / --print / --prompt run one turn; its
+		// commands run no conversation in the terminal UI; -i runs its
+		// prompt in the terminal UI (a positional argument is rejected).
+		{"antigravity", []string{"agy", "-p", "hi"}, true},
+		{"antigravity", []string{"agy", "--print", "hi"}, true},
+		{"antigravity", []string{"agy", "--prompt=hi"}, true},
+		{"antigravity", []string{"agy", "acp"}, true},
+		{"antigravity", []string{"agy", "mcp", "list"}, true},
+		{"antigravity", []string{"agy", "update"}, true},
+		{"antigravity", []string{"agy", "--version"}, true},
+		{"antigravity", []string{"agy"}, false},
+		{"antigravity", []string{"agy", "-i", "fix the -p flag"}, false},
+		{"antigravity", []string{"agy", "--settings", `{"agentMode":""}`, "--conversation", "215bbd83"}, false},
+		{"antigravity", []string{"/home/u/.local/bin/agy", "-c"}, false},
 		{"claude", []string{"claude", "fix it"}, false},         // a positional prompt is interactive in the others
 		{"claude", []string{"claude", "--mode", "json"}, false}, // --mode is omp's and pi's
 		{"other", []string{"vim", "-p"}, false},
@@ -168,8 +182,8 @@ func TestRegistryEntriesComplete(t *testing.T) {
 			t.Errorf("entry %+v: id empty, other or duplicated", h)
 		}
 		seen[h.ID] = true
-		if h.Command == "" || len(h.Packages) == 0 && len(h.NativePrefixes) == 0 || h.TranscriptRoot == nil || h.Resume == nil {
-			t.Errorf("%s: command, package or native binary, transcript root and resume are required", h.ID)
+		if h.Command == "" || h.TranscriptRoot == nil || h.Resume == nil {
+			t.Errorf("%s: command, transcript root and resume are required", h.ID)
 		}
 		if Name(h.Command) != h.ID {
 			t.Errorf("%s: its command %q is judged %q", h.ID, h.Command, Name(h.Command))
@@ -181,14 +195,15 @@ func TestRegistryEntriesComplete(t *testing.T) {
 // does; an unknown harness has none.
 func TestResumeArgv(t *testing.T) {
 	want := map[string][]string{
-		wire.HarnessClaude:   {"claude", "--resume", "c1"},
-		wire.HarnessCodex:    {"codex", "resume", "c1"},
-		wire.HarnessCopilot:  {"copilot", "--resume=c1"},
-		wire.HarnessOmp:      {"omp", "--resume", "c1"},
-		wire.HarnessPi:       {"pi", "--session", "c1"},
-		wire.HarnessQwen:     {"qwen", "--resume", "c1"},
-		wire.HarnessOpenCode: {"opencode", "--standalone", "--session", "c1"},
-		wire.HarnessGrok:     {"grok", "--resume", "c1"},
+		wire.HarnessClaude:      {"claude", "--resume", "c1"},
+		wire.HarnessCodex:       {"codex", "resume", "c1"},
+		wire.HarnessCopilot:     {"copilot", "--resume=c1"},
+		wire.HarnessOmp:         {"omp", "--resume", "c1"},
+		wire.HarnessPi:          {"pi", "--session", "c1"},
+		wire.HarnessQwen:        {"qwen", "--resume", "c1"},
+		wire.HarnessOpenCode:    {"opencode", "--standalone", "--session", "c1"},
+		wire.HarnessGrok:        {"grok", "--resume", "c1"},
+		wire.HarnessAntigravity: {"agy", "--conversation", "c1"},
 	}
 	if m := Missing(want); len(m) > 0 {
 		t.Fatalf("no expected resume command for %v", m)
@@ -334,6 +349,16 @@ func TestGrokTranscriptRoot(t *testing.T) {
 		if got != want {
 			t.Errorf("GROK_HOME=%q: root %q, want %q", env, got, want)
 		}
+	}
+}
+
+// Antigravity CLI keeps its conversations in ~/.gemini/antigravity-cli,
+// which no environment variable moves.
+func TestAntigravityTranscriptRoot(t *testing.T) {
+	h, _ := Lookup(wire.HarnessAntigravity)
+	got := h.TranscriptRoot("/home/u", func(string) string { return "/srv/elsewhere" })
+	if want := filepath.Join("/home/u", ".gemini", "antigravity-cli"); got != want {
+		t.Errorf("root %q, want %q", got, want)
 	}
 }
 

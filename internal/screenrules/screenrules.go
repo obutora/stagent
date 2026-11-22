@@ -58,6 +58,12 @@ const (
 // the column of its number.
 const FrameBox = "box"
 
+// WrapFirstColumn is Menu.Wrap of a harness that wraps a long option's
+// label to the first column of the lines under it, not under the label
+// (Antigravity CLI): such a line right under an option continues its
+// label.
+const WrapFirstColumn = "first_column"
+
 // UnnumberedTitledDialog is Unnumbered.Kind of a menu without numbers
 // that only a dialog of a given title has: options in one column, one
 // under the menu's cursor, a key hint below them.
@@ -179,14 +185,17 @@ type Rules struct {
 // Menu is how the harness draws its numbered menus: Cursor marks the
 // highlighted option, DialogEdge (Edge*) finds the dialog's top edge (the
 // text from there to the options identifies a permission prompt), Frame
-// ("" or FrameBox) says whether they are in a box, and a menu whose first
-// option (number 1) matches PermissionLabel is a permission prompt. Ends
-// tells a menu with no key hint below it; with Ends.Permission, such a
-// menu is a permission prompt too, and PermissionLabel may be left out.
+// ("" or FrameBox) says whether they are in a box, Wrap ("" or
+// WrapFirstColumn) where a long option's label wraps to ("": indented
+// under it), and a menu whose first option (number 1) matches
+// PermissionLabel is a permission prompt. Ends tells a menu with no key
+// hint below it; with Ends.Permission, such a menu is a permission prompt
+// too, and PermissionLabel may be left out.
 type Menu struct {
 	Cursor          string  `json:"cursor"`
 	DialogEdge      string  `json:"dialog_edge"`
 	Frame           string  `json:"frame,omitempty"`
+	Wrap            string  `json:"wrap,omitempty"`
 	PermissionLabel *Regexp `json:"permission_label,omitempty"`
 	Ends            *Ends   `json:"ends,omitempty"`
 }
@@ -462,6 +471,10 @@ func (r *Rules) validate() error {
 			return fmt.Errorf("menu.dialog_edge: %q is not %s, %s, %s or %s", m.DialogEdge, EdgeSolidRule, EdgeFirstColumn, EdgeBoxTop, EdgeShallowIndent)
 		case m.Frame != "" && m.Frame != FrameBox:
 			return fmt.Errorf("menu.frame: %q is not %s", m.Frame, FrameBox)
+		case m.Wrap != "" && m.Wrap != WrapFirstColumn:
+			return fmt.Errorf("menu.wrap: %q is not %s", m.Wrap, WrapFirstColumn)
+		case m.Wrap != "" && (m.Frame != "" || m.Ends != nil):
+			return errors.New("menu.wrap: not with frame or ends")
 		}
 		if m.PermissionLabel != nil || m.Ends == nil || !m.Ends.Permission {
 			if err := m.PermissionLabel.compile("menu.permission_label"); err != nil {

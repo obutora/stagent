@@ -91,7 +91,9 @@ func TestExplainWithBrokenOverride(t *testing.T) {
 
 // explain names the rules the harnesses added since the screen rules read
 // their menus with: Qwen Code's menu told by its own end, OpenCode's and
-// Grok Build's dialogs right of a bar, their question dialogs too.
+// Grok Build's dialogs right of a bar, their question dialogs too, and
+// Antigravity CLI's menus, the lines its wrapped options continue on
+// included.
 func TestExplainNamesDialogRules(t *testing.T) {
 	for _, c := range []struct {
 		fixture, harness, check, rule string
@@ -102,6 +104,8 @@ func TestExplainNamesDialogRules(t *testing.T) {
 		{"opencode_ask_60x30", wire.HarnessOpenCode, wire.CheckQuestion, "opencode.dialogs", 4},
 		{"grok_approval_shell_60x30", wire.HarnessGrok, wire.CheckPermission, "grok.dialogs", 4},
 		{"grok_ask_60x30", wire.HarnessGrok, wire.CheckQuestion, "grok.dialogs", 4},
+		{"antigravity_approval_shell_60x30", wire.HarnessAntigravity, wire.CheckPermission, "antigravity.menu", 6},
+		{"antigravity_ask_60x30", wire.HarnessAntigravity, wire.CheckQuestion, "antigravity.menu", 3},
 	} {
 		e := builtinRules.explain(fixtureText(t, c.fixture), c.harness)
 		var got *wire.ScreenCheck

@@ -266,6 +266,31 @@ var All = []Harness{
 		QuestionTool: "ask_user_question",
 		Resume:       func(id string) []string { return []string{"--resume", id} },
 	},
+	{
+		ID:      wire.HarnessAntigravity,
+		Command: "agy",
+		// Antigravity CLI is one native binary, installed as
+		// ~/.local/bin/agy (Windows: agy.exe).
+		//
+		// -p / --print / --prompt run one turn and print it; the commands
+		// run no conversation in the terminal UI (agy --help, 1.5.14).
+		// -i / --prompt-interactive run the prompt in the terminal UI. A
+		// positional argument is rejected, not a prompt.
+		Batch: Batch{
+			Subcommands: []string{
+				"acp", "agent", "agents", "changelog", "help", "install", "mcp", "mic-serve",
+				"models", "plugin", "plugins", "remote-control", "update",
+			},
+			Flags:    []string{"-p", "--print", "--prompt", "-h", "--help", "--version"},
+			Prefixes: []string{"--print=", "--prompt="},
+		},
+		// brain/<conversation id>/.system_generated/logs/transcript_full.jsonl.
+		TranscriptRoot: func(home string, _ func(string) string) string {
+			return AntigravityHome(home)
+		},
+		QuestionTool: "ask_question",
+		Resume:       func(id string) []string { return []string{"--conversation", id} },
+	},
 }
 
 // CopilotHome is Copilot CLI's configuration directory (hooks, sessions):
@@ -314,6 +339,14 @@ func GrokHome(home string, getenv func(string) string) string {
 		return dir
 	}
 	return filepath.Join(home, ".grok")
+}
+
+// AntigravityHome is Antigravity CLI's directory (conversations, their
+// transcripts, history.jsonl): ~/.gemini/antigravity-cli. Its hooks file
+// is the one it shares with the Antigravity app, ~/.gemini/config/hooks.json.
+// Antigravity CLI reads no environment variable that moves either.
+func AntigravityHome(home string) string {
+	return filepath.Join(home, ".gemini", "antigravity-cli")
 }
 
 // expandHome expands a leading ~ of dir as Pi and Qwen Code do.

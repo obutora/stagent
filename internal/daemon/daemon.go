@@ -699,6 +699,12 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 			d.holderPromptGone(cs, p)
 		}
 		return nil, nil
+	case wire.MethodHolderPromptShown:
+		var p wire.HolderPromptGoneParams
+		if rpc.Decode(m, &p) == nil {
+			d.holderPromptShown(cs, p)
+		}
+		return nil, nil
 	case wire.MethodHolderQuestionGone:
 		var p wire.HolderPromptGoneParams
 		if rpc.Decode(m, &p) == nil {

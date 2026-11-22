@@ -121,14 +121,15 @@ type finder struct {
 }
 
 var finders = map[string]finder{
-	wire.HarnessClaude:   claudeFinder,
-	wire.HarnessCodex:    codexFinder,
-	wire.HarnessOmp:      ompFinder,
-	wire.HarnessPi:       piFinder,
-	wire.HarnessCopilot:  copilotFinder,
-	wire.HarnessQwen:     qwenFinder,
-	wire.HarnessOpenCode: openCodeFinder,
-	wire.HarnessGrok:     grokFinder,
+	wire.HarnessClaude:      claudeFinder,
+	wire.HarnessCodex:       codexFinder,
+	wire.HarnessOmp:         ompFinder,
+	wire.HarnessPi:          piFinder,
+	wire.HarnessCopilot:     copilotFinder,
+	wire.HarnessQwen:        qwenFinder,
+	wire.HarnessOpenCode:    openCodeFinder,
+	wire.HarnessGrok:        grokFinder,
+	wire.HarnessAntigravity: antigravityFinder,
 }
 
 // resolve returns the transcript an agent writes ("" before it has one)

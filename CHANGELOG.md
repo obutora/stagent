@@ -3,6 +3,70 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.23.0
+
+### Added
+
+- Antigravity CLI (Google's `agy`) is a supported harness. `stagent
+  integrate --harness antigravity` adds a group of stagent's,
+  `ssh-term-stagent`, to the hooks file Antigravity CLI shares with the
+  Antigravity app, `~/.gemini/config/hooks.json`, whose other groups
+  (Orca's `orca-status`, the user's own) stay as they are; its hooks run
+  `stagent hook antigravity <event>` for `SessionStart`, `PreInvocation`,
+  `PreToolUse` (every tool), `PostToolUse` (`ask_question`) and `Stop` (on
+  Windows the binary's path for `cmd /c`). `--remove antigravity` deletes
+  the group (the file stagent created, when nothing else is left in it).
+  A running Antigravity CLI reads the file again, so there is no restart
+  note. `doctor` reports Antigravity CLI, and notes a group turned off with
+  `"enabled": false`.
+- `stagent hook antigravity` reads Antigravity CLI's camelCase payloads
+  (`conversationId`, `transcriptPath`, `toolCall`, …), adds Claude Code's
+  fields to them, and answers on stdout what Antigravity CLI reads there
+  without deciding anything: `{"decision":"ask"}` for `PreToolUse` (its
+  own permission rules decide; `{}` would deny the call), `{}` for the
+  other events. A turn's first model call
+  (`PreInvocation` with `invocationNum` 0) is `UserPromptSubmit`; the
+  later ones are dropped; a `Stop` the user cancelled
+  (`terminationReason` `USER_CANCELED`) is `StopCancelled`.
+- Antigravity CLI's sessions change state from its hooks and its screen:
+  working, its `ask_question` as a question, turn complete. It sends no
+  hook when its permission menu shows, so its `PreToolUse` starts a prompt
+  watch with the new `shown`: the holder reports the menu's coming
+  (`holder.prompt_shown`, local IPC), which registers the approval, named
+  by that `PreToolUse`'s tool, and its leaving, which closes it. A menu
+  turned down or dismissed and an Esc while it works end the turn with no
+  hook: its spinner runs for as long as it works, so the hook-derived
+  `working` of such a session ends once the holder reports its output
+  quiet.
+- The holder reads Antigravity CLI's menus — its permission menus (`>
+  1. Yes, run command`, long labels wrapped to the first column, read
+  whole), its question and its folder trust prompt — so an approval
+  closes when its menu leaves the screen and a chat message never lands on
+  one. Its screen rules are `screenrules/builtin/antigravity.json`, with
+  the new `menu.wrap` `first_column`; a `titled_dialog` with no edge above
+  it is titled by the first line of the screen.
+- The transcript readers, `stagent follow`, the conversation list and the
+  usage count (per reply of the model) read Antigravity CLI's
+  conversations (`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl`,
+  their directories from its `history.jsonl`, also for a conversation's
+  first prompt, which it records without the conversation's id): prompts,
+  replies, tool calls (summarized by its capitalized arguments,
+  `CommandLine`, `Path`, …), `ask_question` as a question and its answer
+  (`A<n>:` lines; `User Skipped` no answer) and the first line of a tool
+  call that failed or was turned down. `stagent follow` finds the
+  conversation by the presence lock it holds open, else by
+  `--conversation <id>`, and `stopped.resume` continues it with `agy
+  --conversation <id>`.
+- The shell wrappers wrap `agy` and leave its non-interactive runs alone
+  (`-p` / `--print` / `--prompt`, its commands, `--help`, `--version`).
+
+### Fixed
+
+- Output made only of key modifier options (`CSI > Pp;Pv m`) is no output
+  activity, as DEC private mode changes are not: Antigravity CLI re-sends
+  modifyOtherKeys with bracketed paste every 2.1 s while it waits, which
+  kept its sessions working.
+
 ## 0.22.1
 
 ### Fixed

@@ -1,0 +1,31 @@
+|> Use your ask_question tool to ask me
+|  whether I prefer red or blue, then reply
+|  with just my choice.
+|
+|? Do you prefer red or blue?
+|> Blue
+|
+|  Blue
+|
+|──────────────────────────────────────────
+|> Create a file named /tmp/agy-outside.txt
+|  containing the word hi.
+|
+|● Edited 1 file (ctrl+o to expand)
+|
+|Create file
+|─────────────────────────────────────────────
+|
+|/private/tmp/agy-outside.txt  +1
+|  1  +  hi
+|Reason: outside workspace
+|
+|Allow creation of this file?
+|> 1. Yes, allow creation
+|  2. Yes, and always allow non-workspace
+|access
+|  3. No, deny creation
+|
+|  ↑/↓ Navigate · f full diff
+|esc to cancel            Gemini 4 Neon · high
+cursor=44,29 alt=false appCursor=false bracketed=false

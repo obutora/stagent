@@ -86,7 +86,7 @@ func TestUsageGetCountsClaudeTranscripts(t *testing.T) {
 	if len(r.Days) != 1 || r.Days[0].Date != "2026-10-06" || r.Days[0].Harness != wire.HarnessClaude {
 		t.Errorf("days = %+v", r.Days)
 	}
-	if want := []string{wire.HarnessClaude, wire.HarnessCodex, wire.HarnessOmp, wire.HarnessPi, wire.HarnessQwen, wire.HarnessOpenCode, wire.HarnessGrok}; !slices.Equal(r.Counted, want) {
+	if want := []string{wire.HarnessClaude, wire.HarnessCodex, wire.HarnessOmp, wire.HarnessPi, wire.HarnessQwen, wire.HarnessOpenCode, wire.HarnessGrok, wire.HarnessAntigravity}; !slices.Equal(r.Counted, want) {
 		t.Errorf("counted = %v, want %v", r.Counted, want)
 	}
 	err := c.Call(context.Background(), wire.MethodUsageGet, wire.UsageGetParams{TZ: "Nowhere/Else"}, &r)

@@ -62,9 +62,15 @@ type session struct {
 
 	// checkTool and checkInput are the tool the latest permission check
 	// of a harness that asks before its menu (daemonHarness.checkHook:
-	// Copilot CLI, Grok Build) named, for the approval its menu brings.
+	// Copilot CLI, Grok Build, Antigravity CLI) named, for the approval its
+	// menu brings.
 	checkTool  string
 	checkInput json.RawMessage
+	// checkGen is the prompt watch that looks for the menu the latest
+	// permission check may bring, of a harness whose menu comes with no
+	// hook (daemonHarness.menuOnScreen; 0: none); its holder.prompt_shown
+	// registers the approval (prompt.go).
+	checkGen int64
 
 	// Pushes (push.go). remoteControl: the session's latest hook ran
 	// connected to Claude's Remote Control. graceTimers hold pushes back
@@ -267,6 +273,13 @@ func (d *Daemon) holderUpdate(cs *connState, p wire.SessionPatch) {
 			source = *p.StateSource
 		}
 		s.track = s.track.holderReport(*p.State, source, now)
+		if daemonHarnesses[s.s.Harness].turnEndsUnheard && *p.State == wire.StateIdle {
+			if t := s.track.quietEnded(); t != s.track {
+				// The turn ended with no hook: so did its last check.
+				s.track = t
+				d.endCheckWatchLocked(s)
+			}
+		}
 		if d.recomputeLocked(s, true) {
 			changed = true
 		}

@@ -44,6 +44,11 @@ func TestOf(t *testing.T) {
 		{"grok-linux-x86_", nil, "grok"},
 		{"grok.exe", []string{`C:\Users\u\.grok\bin\grok.exe`}, "grok"},
 		{"agent", []string{"/home/u/.grok/bin/agent"}, ""},
+		// Antigravity CLI is one native binary, run as agy (agy.exe on
+		// Windows).
+		{"agy", []string{"agy", "--settings", `{"agentMode":""}`, "--conversation", "215bbd83"}, "antigravity"},
+		{"agy", []string{"/Users/u/.local/bin/agy"}, "antigravity"},
+		{"agy.exe", []string{`C:\Users\u\.local\bin\agy.exe`}, "antigravity"},
 		{"node", []string{"node", "server.js"}, ""},
 		{"vim", []string{"vim", "claude"}, ""},
 		{"bash", []string{"bash", "/usr/local/bin/claude"}, ""},

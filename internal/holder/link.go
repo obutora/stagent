@@ -53,6 +53,8 @@ type daemonLink struct {
 	notes []queuedNote
 	// goneGen is a holder.prompt_gone waiting to be sent (0: none).
 	goneGen int64
+	// shownGen is a holder.prompt_shown waiting to be sent (0: none).
+	shownGen int64
 	// questionGoneGen is a holder.question_gone waiting to be sent (0:
 	// none).
 	questionGoneGen int64
@@ -91,6 +93,16 @@ func (l *daemonLink) notify(p wire.HolderNotifyParams) {
 func (l *daemonLink) promptGone(gen int64) {
 	l.mu.Lock()
 	l.goneGen = max(l.goneGen, gen)
+	l.mu.Unlock()
+	l.wake()
+}
+
+// promptShown queues holder.prompt_shown for watch gen: the menu of a
+// watch started with shown came on the screen. Reports not sent yet fold
+// into the newest one: the daemon heeds the newest permission check only.
+func (l *daemonLink) promptShown(gen int64) {
+	l.mu.Lock()
+	l.shownGen = max(l.shownGen, gen)
 	l.mu.Unlock()
 	l.wake()
 }
@@ -167,7 +179,7 @@ func (l *daemonLink) session(conn net.Conn) (registered bool, err error) {
 	l.h.prompt.stop()
 	l.h.question.stop()
 	l.mu.Lock()
-	l.goneGen, l.questionGoneGen = 0, 0
+	l.goneGen, l.shownGen, l.questionGoneGen = 0, 0, 0
 	l.mu.Unlock()
 	// stopping: daemon.stopping came on this connection (guarded by l.mu,
 	// together with setting l.stopped).
@@ -182,7 +194,11 @@ func (l *daemonLink) session(conn net.Conn) (registered bool, err error) {
 		case wire.MethodHolderPromptWatch:
 			var p wire.HolderPromptWatchParams
 			if rpc.Decode(m, &p) == nil && p.ID == l.h.id {
-				l.h.prompt.set(p.Gen, p.On, p.Harness)
+				if p.On && p.Shown {
+					l.h.prompt.startShown(p.Gen, p.Harness)
+				} else {
+					l.h.prompt.set(p.Gen, p.On, p.Harness)
+				}
 			}
 		case wire.MethodHolderQuestionWatch:
 			var p wire.HolderPromptWatchParams
@@ -254,14 +270,21 @@ func (l *daemonLink) flush(c *rpc.Client, sent *wire.Session) error {
 	l.mu.Lock()
 	notes := l.notes
 	l.notes = nil
-	goneGen, questionGoneGen := l.goneGen, l.questionGoneGen
-	l.goneGen, l.questionGoneGen = 0, 0
+	goneGen, shownGen, questionGoneGen := l.goneGen, l.shownGen, l.questionGoneGen
+	l.goneGen, l.shownGen, l.questionGoneGen = 0, 0, 0
 	l.mu.Unlock()
 	for _, n := range notes {
 		if time.Since(n.at) > noteMaxAge {
 			continue
 		}
 		if err := c.Notify(wire.MethodHolderNotify, n.p); err != nil {
+			return err
+		}
+	}
+	// A menu that came and went before this flush is reported in that
+	// order.
+	if shownGen != 0 {
+		if err := c.Notify(wire.MethodHolderPromptShown, wire.HolderPromptGoneParams{ID: l.h.id, Gen: shownGen}); err != nil {
 			return err
 		}
 	}

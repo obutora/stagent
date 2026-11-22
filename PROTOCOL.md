@@ -44,7 +44,7 @@ another user (see `hello`'s `blocked`). Nothing was sent there. The
 message names the location and its owner.
 
 `agent_refused`: the local connection came from a process that a coding
-agent (claude, codex, omp, pi, copilot, qwen, opencode, grok) started — stagent walks its parents — or, on
+agent (claude, codex, omp, pi, copilot, qwen, opencode, grok, agy) started — stagent walks its parents — or, on
 macOS, from a process in a sandbox (Seatbelt, which coding agents run
 their commands in), or from one it could not check: it exited first, or
 its parents were more than 256 deep or kept changing (ADR 0004). A
@@ -954,7 +954,7 @@ directories too; `env` entries override), running
 `<resume argv>` continues the conversation the way the app's resume does:
 `claude --resume <id>`, `codex resume <id>`, `copilot --resume=<id>`, `omp
 --resume <id>`, `pi --session <id>`, `qwen --resume <id>`, `opencode --standalone
---session <id>`, `grok --resume <id>` (the harness
+--session <id>`, `grok --resume <id>`, `agy --conversation <id>` (the harness
 registry's `Resume`); the
 `conversation_id` must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`
 (`bad_request` otherwise). When the agent exits, the user is left in their
@@ -2430,6 +2430,21 @@ others are not counted):
   is the session's directory, its name decoded (or the `.cwd` file of a
   directory named by a slug and a hash). A turn that spent nothing is not
   a request.
+- **antigravity** (since 0.23.0): every
+  `brain/<id>/.system_generated/logs/transcript_full.jsonl` below
+  Antigravity CLI's home (`~/.gemini/antigravity-cli`; the truncated
+  `transcript.jsonl` and the `chunks/` beside it not). Each
+  `type: "PLANNER_RESPONSE"` record (a reply of the model) is one request,
+  keyed by the conversation (the brain directory) and its `step_index`:
+  `input_tokens` is `input` — it leaves out the cached part, which
+  `cache_read_tokens` counts as `cache_read` (the cache reads are mostly
+  larger than `input_tokens`, and their sum never shrinks along a
+  conversation) — `output_tokens` `output` [INFERENCE: the thinking
+  included; no count of its own is written]; the record's `model` and
+  `created_at`; the project is the conversation's directory as
+  `history.jsonl` records it (see "How the tab's agent is found"). A
+  reply that spent nothing is not a request. Antigravity CLI writes no
+  cache writes.
 
 One request is one key: Claude `message.id:requestId` (no `requestId`:
 `message.id`; neither: `uuid`); codex the line's `timestamp` with its
@@ -3014,8 +3029,8 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 
 ## Objects
 
-`Session`: `id, harness (claude|codex|omp|pi|copilot|qwen|opencode|grok|other), command_harness
-(claude|codex|omp|pi|copilot|qwen|opencode|grok|other), command[], cwd, pid,
+`Session`: `id, harness (claude|codex|omp|pi|copilot|qwen|opencode|grok|antigravity|other), command_harness
+(claude|codex|omp|pi|copilot|qwen|opencode|grok|antigravity|other), command[], cwd, pid,
 holder_pid, mode (passthrough|detached), attached, state (working|idle|
 waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
 process), title?, conversation_id?, transcript_path?, last_message?,
@@ -3177,6 +3192,24 @@ PermissionRequest is (named by its `tool_name`), and the `Notification`
 closes like a Codex approval (prompt watch, output activity, Stop) and at
 `StopCancelled` — Grok Build sends no hook for an answer that allows until
 the tool finished.
+Antigravity CLI has neither a `PermissionRequest` nor a `Notification`:
+nothing but its screen tells that its menu shows. Its `PreToolUse` comes
+before it checks the call's permission (its rules, the conversation's
+"always allow" answers and Auto mode may allow the call without asking)
+and is kept as Grok Build's is; with it the daemon sends the holder
+`holder.prompt_watch {id, gen, on: true, harness: "antigravity", shown:
+true}`, which registers nothing yet. The holder answers
+`holder.prompt_shown {id, gen}` once the menu comes on the screen (before
+its `holder.prompt_gone`), and that registers the approval on that watch,
+`tool_name` and `summary` from that `PreToolUse`. The session's next hook
+(the call ran: its `PostToolUse`, the next check, `Stop`, the next prompt)
+or the output going quiet after its turn ended unheard (see "Hooks"),
+before the menu showed, ends that watch (`on: false`), and a late
+`holder.prompt_shown` of it registers nothing. The approval closes like a
+Codex approval (prompt watch, output activity after input, Stop):
+Antigravity CLI sends no hook when its menu is answered, nor when a menu
+turned down or dismissed ends the turn. A holder of 0.22.1 or earlier
+ignores `shown`: Antigravity CLI's sessions there show no approval.
 The holder takes the permission menu — numbered options starting with `1.
 Yes`, one under the cursor (claude's `❯`, Codex's `›`), a key hint below
 them, claude's plan approval included — that is on the screen during the
@@ -3204,6 +3237,16 @@ scrollback); its text is read from the line above the bar, the bars and
 here`, its key hint `↑/↓ navigate · … Enter:submit` in the bar) and its
 folder trust prompt (`Do you trust the contents of this directory?`,
 `Yes, proceed  y` / `No, quit  n`) are menus but no approval.
+Antigravity CLI's menu has its own cursor `>` (`> 1. Yes, run command`
+over `  2. …`) and wraps a long option's label to the first column of
+the lines under it, which continue that option; its key hint is below
+the options (`↑/↓ Navigate · tab Amend · …`), and its text is read from
+the full-width rule under the dialog's title (`Command`, `Create file`)
+down to the question (`Run this command?`). Its `ask_question` menu (the
+same kind, its last option `Write-in...`) and its folder trust prompt
+(`Accessing workspace:` at the top of an otherwise empty screen, options
+`> Yes, I trust this folder` / `  No, exit` without numbers) are menus
+but no approval.
 claude shows parallel tool calls' prompts one after the other, so a watch
 whose menu is still up when the next one starts keeps being watched (the
 next one does not take that menu) and is reported when it goes. The
@@ -3242,7 +3285,7 @@ sessions are tied to tasks by `Session.task_id`, not by it.
 `setup_pending` (`{script, hash}`, since 0.19.0) is the `scripts.setup` a
 `preparing` task waits on for the app to run or skip (`task.setup`).
 
-`UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp|pi|copilot|qwen|opencode|grok), cwd, reason
+`UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp|pi|copilot|qwen|opencode|grok|antigravity), cwd, reason
 (old_terminal|bypassed|ide|ssh|no_terminal), first_seen_at,
 last_activity_at` (unix ms, host clock: the first and the latest hook of
 the conversation). `reason`:
@@ -3259,7 +3302,7 @@ ends with the connection (start it in a kept shell); `no_terminal`
 without a terminal (cannot be shown).
 
 `StoppedAgent` (since 0.21.0): `id` (the old session's), `harness
-(claude|codex|omp|pi|copilot|qwen|opencode|grok)`, `conversation_id`, `cwd`, `title?`,
+(claude|codex|omp|pi|copilot|qwen|opencode|grok|antigravity)`, `conversation_id`, `cwd`, `title?`,
 `task_id?`, `started_at` (the old session's), `found_at` (when the daemon
 found it stopped; unix ms, host clock), `reason (reboot|lost)`: `reboot` —
 the host restarted under it; `lost` — its holder went away otherwise (see
@@ -3341,7 +3384,8 @@ is `bad_request`.
 ## `stagent follow` (terminal chat view, follow protocol 1)
 
 `stagent follow` streams the transcript of the coding agent (Claude Code,
-Codex, omp, Pi, Copilot CLI, Qwen Code, OpenCode, Grok Build) running in a terminal tab. The app runs it over
+Codex, omp, Pi, Copilot CLI, Qwen Code, OpenCode, Grok Build, Antigravity
+CLI) running in a terminal tab. The app runs it over
 an exec channel **on the same SSH connection as the tab's shell**, with the
 command forms of
 "Starting the bridge" (`follow` instead of `bridge`). It needs no daemon,
@@ -3477,7 +3521,8 @@ In the tab's process tree, agents are recognized by process name or argv
 (`claude`, `codex`, `omp`, `pi`, `copilot`, `qwen`, `opencode` (its native
 binary `opencode.exe`, its private server a child of the same binary),
 `grok` (its native binary, which macOS names after the file the link
-points to, `grok-macos-aarch64`, cut short), also `node|bun … <script>` of
+points to, `grok-macos-aarch64`, cut short), `agy` (Antigravity CLI's
+native binary, `agy.exe` on Windows), also `node|bun … <script>` of
 their npm packages; Pi sets its process title to `pi`, which Linux shows as
 its name and macOS as its argv, `["pi", "", …]`, its arguments
 overwritten); a process of the same harness below an agent belongs to it
@@ -3531,7 +3576,8 @@ match wins:
    overwrite it (Windows);
 4. the harness's newest conversation in the agent's working directory
    written since the agent started that no other running agent process
-   (Codex, omp, Pi, Copilot CLI, Qwen Code, OpenCode, Grok Build) has open or names on its command line,
+   (Codex, omp, Pi, Copilot CLI, Qwen Code, OpenCode, Grok Build,
+   Antigravity CLI) has open or names on its command line,
    and no other listed agent already follows. An agent that starts a new
    conversation (no resume / continue) prefers one created since it
    started.
@@ -3591,6 +3637,43 @@ other updates and lines that do not parse are skipped. `summary.json`
 beside the file names the session's `cwd` (`info.cwd`) and titles it
 (`generated_title`, else `session_summary`, else the first prompt).
 
+Antigravity CLI (`agy`, one native process):
+`brain/<id>/.system_generated/logs/transcript_full.jsonl` below its home
+(`~/.gemini/antigravity-cli`; no environment variable moves it) of the
+conversation whose `presence/<id>.lock` (held while it shows that
+conversation, also after `/resume`, `/clear` or `/fork` switched to
+another in the same process) or `conversations/<id>.db` (`-wal`, `-shm`)
+one of its processes has open — it does not hold the transcript open —
+else the conversation `--conversation[=]<id>` names, else 4 (`-c` /
+`--continue` is a resume there). The conversation's directory is in none
+of its files but `history.jsonl` in the home, a line per prompt
+submitted (`display`, `timestamp` in unix ms, `workspace`,
+`conversationId`): the `workspace` of the first line with its id, else of
+the line of its first prompt, which Antigravity CLI writes without a
+`conversationId` (the conversation is created after it), told by its
+`display` equal to the first prompt's text and its `timestamp` within 3 s
+of the prompt's `created_at` (else the line within 1 s); `type:
+"slash_command"` lines are skipped. A conversation `history.jsonl` does
+not place is not listed. It is titled by its first prompt (Antigravity
+CLI keeps titles only in a database). Its records are read tolerantly:
+`USER_INPUT` (the prompt, the inside of `<USER_REQUEST>`, Antigravity
+CLI's own blocks after it dropped), `PLANNER_RESPONSE` (the model's text,
+`content`, not its `thinking`; a tool row per `tool_calls[]`, named by
+`name`, summarized by `args` — `CommandLine`, `Path`, … — an
+`ask_question` call a question row), `GENERIC` (a tool's result: one of
+`ask_question`, `A<n>: <answer>` lines after the `Created At:` /
+`Completed At:` lines, is the answer row — a question answered `User
+Skipped` has no answer, all skipped close it unanswered; one with
+`status: "ERROR"` — a call that failed or was turned down — a system row
+of its `error`'s first line; other results are skipped) and
+`ERROR_MESSAGE` (a system row of its error). The transcript has no tool
+call ids: the results of a reply's calls are the steps right after it in
+the order of its calls, so the question row and the answer row share the
+result's `step_index` as their id. `SYSTEM_MESSAGE` (Antigravity CLI's
+notes to the model), other types and lines that do not parse are
+skipped, and so are `transcript.jsonl` (the same with long values cut)
+and `chunks/` beside the file.
+
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` (Pi's sessions
 are in its `sessions`, default `~/.pi/agent/sessions`), `COPILOT_HOME`
 (default `~/.copilot`), `QWEN_RUNTIME_DIR` / `QWEN_HOME` (default
@@ -3639,7 +3722,7 @@ success (non-zero with `{"error": "..."}` on failure).
 |---|---|
 | `stagent install --json` | `{ok, version, layout{root, bin, run_dir, data_dir, data_on_network_fs}, replaced_daemon?, changes[], notes[{code, text, args?}]}` — creates directories and the manifest and completes an update (below); idempotent |
 | `stagent doctor --json` | `DoctorReport` |
-| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp,pi,copilot,qwen,opencode,grok] [--shell-wrapper] [--service] [--linger] [--terminal] [--execution-policy] [--wsl-keep-running] [--statusline] [--remove claude,codex,omp,pi,copilot,qwen,opencode,grok,shell-wrapper,service,linger,terminal,wsl-keep-running,statusline]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
+| `stagent integrate --json --plan\|--apply [--harness claude,codex,omp,pi,copilot,qwen,opencode,grok,antigravity] [--shell-wrapper] [--service] [--linger] [--terminal] [--execution-policy] [--wsl-keep-running] [--statusline] [--remove claude,codex,omp,pi,copilot,qwen,opencode,grok,antigravity,shell-wrapper,service,linger,terminal,wsl-keep-running,statusline]` | `{applied, result, login_shell, changes[{id, target, action (create\|modify\|delete\|skip), summary, diff, error?, error_code?}], notes[{code, text, args?}]}` |
 | `stagent uninstall --json --level stop\|unhook\|purge [--uploads] [--linger]` | `{level, steps[{action, target, ok, error?}], removed[], failed[{path, reason, sessions[]}], remaining[]}` |
 | `stagent wsl-shutdown --json` | (WSL) runs `wsl.exe --shutdown`, which normally ends this command, see below |
 
@@ -4220,7 +4303,7 @@ as it is.
 
 The shell wrappers (`integrate --shell-wrapper`; bash/zsh block, fish file,
 PowerShell profile block) define functions `claude`, `codex`, `omp`, `pi`,
-`copilot`, `qwen`, `opencode` and `grok` (every harness stagent knows)
+`copilot`, `qwen`, `opencode`, `grok` and `agy` (every harness stagent knows)
 that run the real command as `stagent run --handoff=auto -- <name>
 <args…>` when the shell is interactive, stdin and stdout are terminals, the
 shell is not already inside a stagent session (`STAGENT_SESSION_ID` unset)
@@ -4256,7 +4339,12 @@ grok with `-p` / `--single` / `--prompt-file` / `--prompt-json` (also
 `inspect`, `leader`, `login`, `logout`, `mcp`, `memory`, `models`,
 `plugin`, `sessions`, `setup`, `trace`, `update`, `usage`, `version`, `v`,
 `worker`, `worktree`, `wrap`; not `dashboard`, a view of its terminal UI —
-a positional argument is the terminal UI's first prompt).
+a positional argument is the terminal UI's first prompt); agy with `-p` /
+`--print` / `--prompt` (also `--print=…`, `--prompt=…`; `-i` /
+`--prompt-interactive` runs its prompt in the terminal UI), `-h` /
+`--help` / `--version`, or a first argument that is one of its commands
+(`acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`,
+`mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, `update`).
 The block also exports `STAGENT_SHELL_WRAPPER=1`, marking shells
 that have the wrapper.
 The wrapper itself does not look at `STAGENT_HANDOFF`; `stagent run
@@ -4332,8 +4420,8 @@ and question UIs apart: the permission menu of a prompt watch
 (`holder.prompt_watch`), the question UI of a question watch
 (`holder.question_watch`) and any menu, on which a chat message is refused
 (`menu_open`). What it looks for is in rules files, one per harness
-(`claude`, `codex`, `omp`, `pi`, `copilot`, `qwen`, `opencode`, `grok`)
-and one every harness shares (`common`). The ones stagent ships are built in
+(`claude`, `codex`, `omp`, `pi`, `copilot`, `qwen`, `opencode`, `grok`,
+`antigravity`) and one every harness shares (`common`). The ones stagent ships are built in
 (`internal/screenrules/builtin/<name>.json`); a host overrides them with
 a file of the same name in `~/.ssh-term/agent/screen-rules/`
 (`<name>.json`). A holder reads them when it starts, so an override
@@ -4355,7 +4443,7 @@ value, or a name that is no rules file (`gemini.json`). Other files than
 | rule | members |
 |---|---|
 | `common.menu` | `hint`: the pattern of the key hint under a menu's options; `hint_rows`: the rows under the options it may be on (a list with only blanks below is a menu too); `transcript_mark`: the pattern of a transcript entry or a sent prompt, which below a list makes it part of the conversation |
-| `<harness>.menu` | `cursor`: the mark of the highlighted option of the harness's numbered menus; `dialog_edge`: how to find its dialog's top edge, the nearest line above the options that is `solid_rule` (a rule of `─━═▔` from the first column), `first_column` (text in the first column) or `box_top` (text starting with `╭`) or `shallow_indent` (text indented two columns at most) — the text from there to the options is a permission menu's signature; `frame`: `box` when its menus are drawn in `│ … │` and read there only (omitted: none); `permission_label`: the pattern of the first option's label (number 1) of a permission menu (may be omitted with `ends.permission`); `ends`: a menu with no key hint below it, told by its own end — the last option's label matches `last_label` and within `rows` rows under it there are only blanks before a line matching `below` (a spinner) or the bottom of the screen, `scroll_bar` (a mark drawn in the last column) left out; with `permission` `true` such a menu is a permission menu whatever its first label |
+| `<harness>.menu` | `cursor`: the mark of the highlighted option of the harness's numbered menus; `dialog_edge`: how to find its dialog's top edge, the nearest line above the options that is `solid_rule` (a rule of `─━═▔` from the first column), `first_column` (text in the first column) or `box_top` (text starting with `╭`) or `shallow_indent` (text indented two columns at most) — the text from there to the options is a permission menu's signature; `frame`: `box` when its menus are drawn in `│ … │` and read there only (omitted: none); `wrap`: `first_column` when a long option's label wraps to the first column of the lines under it, which continue that option (omitted: a wrapped label is indented under it; not with `frame` or `ends`); `permission_label`: the pattern of the first option's label (number 1) of a permission menu (may be omitted with `ends.permission`); `ends`: a menu with no key hint below it, told by its own end — the last option's label matches `last_label` and within `rows` rows under it there are only blanks before a line matching `below` (a spinner) or the bottom of the screen, `scroll_bar` (a mark drawn in the last column) left out; with `permission` `true` such a menu is a permission menu whatever its first label |
 | `<harness>.unnumbered` | `kind` `titled_dialog`: a menu without numbers, options in one column with one under `menu.cursor` and a key hint below, recognized in a dialog (under its `menu.dialog_edge`) whose first line is `title` only |
 | `<harness>.question` | the question UI of a harness that draws it as no menu: `kind` `hint_and_header` — `hint` among the last `hint_rows` rows and above it `header`, nothing between starting in the first column (or, the header scrolled away, indented rows up to the top); or `bottom_box` — a box at the bottom of the screen whose top edge matches `title` (or, scrolled away, rows up to the top with an option under `cursor`). A harness without one has its menus read for its questions |
 | `<harness>.dialogs` | dialogs drawn right of a bar (`bar`, e.g. `┃`; `scroll_bar`: a mark in the last column, left out), told by their rows and key hints, not by a cursor: `permission`, `question` (the harness's question UI; not with `<harness>.question`) and `trust` (a folder trust prompt, a menu only), the first the screen shows being the harness's menu. `dialog_edge`: `outside_bar` (a line out of the bar) or `title_mark` (a line holding `title_mark`). Each dialog's `kind`: `choice_row` — all options on one row matching `row`, two or more spaces apart, `hint` on one of the `hint_rows` non-blank lines under it; `numbered_rows` — options `1. label` (a description indented under each) without a cursor, right above the lowest line matching `hint`; `radio_rows` — consecutive rows in the bar `N (○) label` numbered from 1 (`z`, a typed answer, last; `●` on the highlighted one), `hint` on one of the `hint_rows` non-blank lines under them; `titled_rows` — under a line reading `title`, consecutive lines matching `rows` one by one. `hint_place`: `bar` or `outside_bar` when the hint must be in or out of the bar (omitted: either) |
@@ -4365,8 +4453,11 @@ prompt), `codex` `menu` and `question` (`hint_and_header`), `copilot`
 `menu` with `frame` `box`, `omp` `question` (`bottom_box`), `pi` none,
 `qwen` `menu` with `ends` (its permission menu, translated, with no key
 hint), `opencode` `dialogs` (`choice_row` permission, `numbered_rows`
-question) and `grok` `dialogs` (`radio_rows` permission and question,
-`titled_rows` trust).
+question), `grok` `dialogs` (`radio_rows` permission and question,
+`titled_rows` trust) and `antigravity` `menu` with `wrap` `first_column`
+and `unnumbered` (its folder trust prompt, at the top of an otherwise
+empty screen: a `titled_dialog` with no edge above it is titled by the
+first line of the screen).
 Walking the rows, the box and rule characters and the ways the names
 above stand for stay code (the comment at the top of
 `internal/holder/prompt.go` draws the line).
@@ -4451,7 +4542,8 @@ reports a UI in rpc mode, and in a pi that Pi's bash tool started
 (`PI_SESSION_ID` set, which Pi gives only to those commands; such a pi
 has no terminal and is one of the former anyway), so a nested agent is
 not counted twice. A hook never fails the harness: when the daemon is
-unreachable it exits 0 without output.
+unreachable it exits 0 without output (Antigravity CLI's prints its
+answer, as always; see below).
 A hook run with `CLAUDE_CODE_BRIDGE_SESSION_ID` set (claude connected to
 Remote Control) tells the daemon so (`notify.skip_when_claude_app_notifies`).
 On Windows the commands run `stagent.exe` by its absolute path. Claude Code
@@ -4597,13 +4689,65 @@ Build asks whether to trust a folder (outside `$HOME`) the first time a
 session starts there, and runs no hook until it is answered (`y` trusts it,
 `n` quits).
 
+Antigravity CLI reads its hooks from the file it shares with the
+Antigravity app, `~/.gemini/config/hooks.json` (no environment variable
+moves it; also from a workspace's `.agents/hooks.json`, which stagent does
+not touch), an object of named groups: stagent adds its group
+`ssh-term-stagent` after the others there (Orca's `orca-status`, the
+user's own), which stay as they are, creating the file (and its
+directories) when there is none; `stagent integrate --apply --remove
+antigravity` deletes the group (the file, when stagent created it and
+nothing else is left; the pre-stagent content when nothing changed since).
+A running Antigravity CLI reads the file again when it changes: no restart
+is needed (no note). The group has a handler for `SessionStart`,
+`PreInvocation` and `Stop`, and a matcher group for `PreToolUse` (`matcher`
+`*`, every tool) and `PostToolUse` (`matcher` `ask_question`), each one
+command `stagent hook antigravity <event>` with `timeout` 10 (seconds;
+Antigravity CLI waits on its hooks, 30 s by default); it runs no
+`PostInvocation`. The command is bash's (`[ -x '<bin>' ] && '<bin>' hook
+antigravity <event> || true`); on Windows, where Antigravity CLI runs a
+command with `cmd /c`, it is the binary's path with backslashes (cmd takes
+`/` for a switch), double-quoted when it holds a space or a character cmd
+reads specially (`C:\…\stagent.exe hook antigravity <event>`). Antigravity
+CLI reads a JSON object on the hook's stdout: `stagent hook antigravity`
+prints `{"decision":"ask"}` for `PreToolUse`, which leaves the call to
+Antigravity CLI's own permission rules (an object without a decision, `{}`,
+denies the call), and `{}` for every other event, which asks nothing of
+it. Its payloads are camelCase (`conversationId`, `transcriptPath`,
+`cwd`, `lastUserInput`, `toolCall: {id, name, args}`, `invocationNum`,
+`terminationReason`, …); the hook adds Claude Code's fields to them
+(`hook_event_name`, `session_id` from `conversationId`, `transcript_path`,
+`tool_name` and `tool_input` from `toolCall`, `prompt` from `lastUserInput`
+on a turn's first model call) and names the events as the daemon reads
+them. The hooks run as children of the agy process, which tells
+`parent_batch` (`agy -p` runs them too). Antigravity CLI:
+
+| Antigravity CLI hook | effect |
+|---|---|
+| `SessionStart` (a new conversation, at its first prompt; not on resume) | the conversation and its transcript |
+| `PreInvocation` with `invocationNum` 0 (the first model call of a turn) | `UserPromptSubmit`: working |
+| `PreInvocation` with another `invocationNum` | dropped by `stagent hook antigravity` |
+| `PreToolUse` | the tool its permission is checked for next; its menu, if it comes, registers the approval when the holder sees it (see `Approval`); its `ask_question` a question |
+| `PostToolUse` of `ask_question` | answered (also when skipped with Esc) |
+| `Stop` | turn complete |
+| `Stop` with `terminationReason` `USER_CANCELED` | `StopCancelled`: idle, the approvals closed, no `turn_complete` |
+
+A menu turned down or dismissed (Esc) and an Esc while it works end the
+turn with no hook at all. Antigravity CLI draws a spinner for as long as
+it works, so its output never goes quiet amid a turn: a hook-derived
+`working` of an Antigravity CLI session ends when its holder reports the
+output quiet (`idle` from output activity), and the session is idle. (It
+re-enables bracketed paste and modifyOtherKeys, `ESC[?2004h ESC[>4;2m`,
+every 2.1 s while it waits, which is no output activity.)
+
 ### Questions
 
 (since 0.20.0, #1548, #1549) A question tool is a tool through which an
 agent asks the user a choice question: claude's `AskUserQuestion`, Codex's
 `request_user_input`, omp's `ask`, OpenCode's `question` (since #1589),
 Grok Build's `ask_user_question` (since #1590; the tool of the session's
-harness when two harnesses name theirs alike), Qwen Code's
+harness when two harnesses name theirs alike), Antigravity CLI's
+`ask_question`, Qwen Code's
 `ask_user_question` (since
 #1587; like claude's, it goes through Qwen Code's permission flow: its
 `PermissionRequest` comes when it shows, and the `permission_prompt`
@@ -4616,7 +4760,8 @@ names one as `tool_name` is read the same way:
 | `PostToolUse` | answered: the session works again (`working`), `question` goes, its pushes settle |
 
 `tool_input` is read as `{questions: [{id?, question, header?,
-multiSelect? (claude) or multi? (omp), options?: [{label} or "label"]}]}`;
+multiSelect? (claude), multi? (omp) or is_multi_select? (Antigravity
+CLI), options?: [{label} or "label"]}]}`;
 questions without text are skipped, and an input with none sets `waiting_input`
 without `question`. While the session waits on a question, a
 `Notification` hook changes nothing: claude sends one with
@@ -4661,7 +4806,7 @@ questions when there are several (`notify.lang`: en `<q> (2 questions)`,
 ja `<q>（全 2 問）`, ko `<q> (질문 2개)`, zh `<q>（共 2 个问题）`). Outside a
 stagent session it is raised (in-app) once, by the hook that comes when
 the question shows: claude's and Qwen Code's `PermissionRequest`, Codex's,
-omp's, OpenCode's and Grok Build's `PreToolUse`.
+omp's, OpenCode's, Grok Build's and Antigravity CLI's `PreToolUse`.
 
 claude's hooks register `PreToolUse` and `PostToolUse` with `matcher`
 `AskUserQuestion` (a group of their own), so no other tool runs them.
@@ -4723,7 +4868,7 @@ only):
 | `shell_wrapper` | `STAGENT_SHELL_WRAPPER` is set: the shell has the wrapper's rc block |
 | `entrypoint` | `CLAUDE_CODE_ENTRYPOINT` (Claude Code: `cli`, `sdk-cli`, `sdk-ts`, `claude-vscode`, …) |
 | `parent_tty` | the harness — the hook's nearest ancestor that is not a shell (the installed Codex command keeps `sh -c` in between) — reads a terminal: its stdin (`/proc/<pid>/fd/0`) on Linux, its controlling terminal (as `ps -o tty=`) on macOS; absent when unknown (Windows) |
-| `parent_batch` | the harness's command line asks for a non-interactive run by the shell wrapper's rule (`claude -p` / `--print`; `codex exec` / `e` as the first argument; `omp -p` / `--print` or `--mode` other than `text`; the same for pi, plus `--no-session` and its subcommands, whose command line is the payload's `argv`: its process title hides it; `copilot -p` / `--prompt` / `--prompt=…` / `--acp` or one of its subcommands; `qwen` by the shell wrapper's rule, read from the arguments after node and its script; `opencode` by that rule from the command line of its server's parent, the terminal UI; `grok` by the shell wrapper's rule from its own command line) |
+| `parent_batch` | the harness's command line asks for a non-interactive run by the shell wrapper's rule (`claude -p` / `--print`; `codex exec` / `e` as the first argument; `omp -p` / `--print` or `--mode` other than `text`; the same for pi, plus `--no-session` and its subcommands, whose command line is the payload's `argv`: its process title hides it; `copilot -p` / `--prompt` / `--prompt=…` / `--acp` or one of its subcommands; `qwen` by the shell wrapper's rule, read from the arguments after node and its script; `opencode` by that rule from the command line of its server's parent, the terminal UI; `grok` by the shell wrapper's rule from its own command line; `agy` the same) |
 | `ssh` | `SSH_CONNECTION` is set |
 | `terminal_ancestor` | (Windows; absent elsewhere or when unknown) a shell — `powershell`, `pwsh`, `cmd`, `bash` or `sh` — runs above the harness, the hook's nearest ancestor that is not one of them (Claude Code runs hooks through Git Bash) |
 | `originator`, `subagent` | (codex) `originator` and whether `source` is a `subagent` thread, from the `session_meta` line that starts the conversation's rollout file: the payload's `transcript_path`, else `$CODEX_HOME/sessions/*/*/*/rollout-*-<thread-id>.jsonl` for the notify program. Seen (Codex 0.160): `codex-tui` (the terminal UI), `codex_exec` (`codex exec`), `Codex Desktop` (the desktop app) |
@@ -4741,7 +4886,7 @@ only, and the watchers get `unwrapped.updated`:
 | codex `originator` `Codex Desktop` / `codex_vscode` | `ide` |
 | Claude Code `entrypoint` `sdk-*` | not recorded (non-interactive) |
 | Claude Code `entrypoint` other than `cli` | `ide` |
-| codex / omp / pi / copilot / qwen / opencode / grok (and Claude Code without `entrypoint`) with `parent_tty` false or `parent_batch` | not recorded (non-interactive) |
+| codex / omp / pi / copilot / qwen / opencode / grok / antigravity (and Claude Code without `entrypoint`) with `parent_tty` false or `parent_batch` | not recorded (non-interactive) |
 | otherwise, on Windows with `ssh` | `ssh` |
 | otherwise, `shell_wrapper` set | `bypassed` |
 | otherwise, on Windows with `terminal_ancestor` false | `no_terminal` |
@@ -4757,6 +4902,6 @@ get it at most once a minute unless something else changed). The record
 goes away at the conversation's `SessionEnd` (Claude Code, Copilot CLI,
 Qwen Code, OpenCode, Grok Build — not when its terminal is closed;
 omp's and Pi's `session_shutdown`), 12 hours after its last hook (Codex
-sends no end), when
+and Antigravity CLI send no end), when
 a stagent session carries the conversation, and with the daemon; nothing is
 written to disk. Recording changes nothing else about the hook.

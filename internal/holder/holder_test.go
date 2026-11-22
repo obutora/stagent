@@ -568,3 +568,44 @@ func TestPromptWatchReportsMenuGone(t *testing.T) {
 	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil)
 	waitExit(t, done)
 }
+
+// A watch the daemon starts with shown (Antigravity CLI checks a call's
+// permission, and its menu comes with no hook) is reported when the menu
+// comes on the screen (holder.prompt_shown), then when it leaves
+// (holder.prompt_gone), in that order.
+func TestPromptWatchReportsMenuShown(t *testing.T) {
+	l := isolate(t)
+	d := startFakeDaemon(t, l)
+	working, err := filepath.Abs("testdata/antigravity_working_60x30.ansi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	menu, _ := filepath.Abs("testdata/antigravity_approval_shell_60x30.ansi")
+	ran, _ := filepath.Abs("testdata/antigravity_approval_answered_60x30.ansi")
+	id, done := startDetached(t, l, 60, 30, "sh", "-c",
+		`cat "$0"; read a; printf '\033[2J\033[H'; cat "$1"; read b; printf '\033[2J\033[H'; cat "$2"; read c`, working, menu, ran)
+	from := 0
+	d.waitFor(t, &from, "holder.register", func(m *wire.Msg) bool { return m.Method == wire.MethodHolderRegister })
+	d.notifyHolders(t, wire.MethodHolderPromptWatch, wire.HolderPromptWatchParams{ID: id, Gen: 7, On: true, Harness: wire.HarnessAntigravity, Shown: true})
+	c := dialHolder(t, l, id)
+	time.Sleep(4 * promptEvalEvery)
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil) // the menu comes
+	m := d.waitFor(t, &from, "holder.prompt_shown", func(m *wire.Msg) bool {
+		return m.Method == wire.MethodHolderPromptShown || m.Method == wire.MethodHolderPromptGone
+	})
+	var p wire.HolderPromptGoneParams
+	json.Unmarshal(m.Params, &p)
+	if m.Method != wire.MethodHolderPromptShown || p != (wire.HolderPromptGoneParams{ID: id, Gen: 7}) {
+		t.Fatalf("%s %+v, want holder.prompt_shown of watch 7", m.Method, p)
+	}
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil) // answered: the command runs
+	m = d.waitFor(t, &from, "holder.prompt_gone", func(m *wire.Msg) bool {
+		return m.Method == wire.MethodHolderPromptShown || m.Method == wire.MethodHolderPromptGone
+	})
+	json.Unmarshal(m.Params, &p)
+	if m.Method != wire.MethodHolderPromptGone || p != (wire.HolderPromptGoneParams{ID: id, Gen: 7}) {
+		t.Fatalf("%s %+v, want holder.prompt_gone of watch 7", m.Method, p)
+	}
+	c.call(t, wire.MethodSessionInput, wire.InputParams{ID: id, Submit: true}, nil)
+	waitExit(t, done)
+}

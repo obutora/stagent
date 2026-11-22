@@ -1,0 +1,30 @@
+
+[32m●[39m [1m[33mRan[0m [37m(curl -sI htt...)[39m [37m(ctrl+o to expand)[39m
+
+  The status line returned by [94mcurl -sI[39m
+  [94mhttps://example.com[39m is:
+
+    [38;5;252mHTTP/2 200[39m
+
+[90m──────────────────────────────────────────[39m
+[1m[34m> Use your ask_question tool to ask me[0m
+[1m[34m  whether I prefer red or blue, then reply[0m
+[1m[34m  with just my choice.[0m
+
+[1m[33m?[0m Do you prefer red or blue?
+[1m[34m> Blue[0m
+
+  Blue
+
+[90m──────────────────────────────────────────[39m
+[1m[34m> Create a file named /tmp/agy-outside.txt[0m
+[1m[34m  containing the word hi.[0m
+
+[90m●[39m [1m[33mEdited[0m 1 file [37m(ctrl+o to expand)[39m
+
+[90m  ⎿  Interrupted · What should Antigravity CL
+─────────────────────────────────────────────
+[94m>[39m Create a file named /tmp/agy-outside2.txt
+  containing the word hi.
+[90m─────────────────────────────────────────────
+[39m			 [2mGemini 4 Neon · high

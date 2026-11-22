@@ -29,14 +29,15 @@ type harnessIntegration interface {
 // integrations holds the integration of every harness of the registry, by
 // harness id.
 var integrations = map[string]harnessIntegration{
-	wire.HarnessClaude:   claudeIntegration{},
-	wire.HarnessCodex:    codexIntegration{},
-	wire.HarnessOmp:      ompIntegration{},
-	wire.HarnessPi:       piIntegration{},
-	wire.HarnessCopilot:  copilotIntegration{},
-	wire.HarnessQwen:     qwenIntegration{},
-	wire.HarnessOpenCode: openCodeIntegration{},
-	wire.HarnessGrok:     grokIntegration{},
+	wire.HarnessClaude:      claudeIntegration{},
+	wire.HarnessCodex:       codexIntegration{},
+	wire.HarnessOmp:         ompIntegration{},
+	wire.HarnessPi:          piIntegration{},
+	wire.HarnessCopilot:     copilotIntegration{},
+	wire.HarnessQwen:        qwenIntegration{},
+	wire.HarnessOpenCode:    openCodeIntegration{},
+	wire.HarnessGrok:        grokIntegration{},
+	wire.HarnessAntigravity: antigravityIntegration{},
 }
 
 // hookFile is how a harness reads our hooks from its JSON hooks file.

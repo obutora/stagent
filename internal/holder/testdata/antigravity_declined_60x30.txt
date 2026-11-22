@@ -1,0 +1,31 @@
+|─────────────────────────────────────────────────────────
+|> Use your ask_question tool to ask me whether I prefer red
+|  or blue, then reply with just my choice.
+|
+|? Do you prefer red or blue?
+|> Blue
+|
+|  Blue
+|
+|─────────────────────────────────────────────────────────
+|> Create a file named /tmp/agy-outside.txt containing the
+|  word hi.
+|
+|● Edited 1 file (agy-outside.txt) (ctrl+o to expand)
+|
+|─────────────────────────────────────────────────────────
+|> Create a file named /tmp/agy-outside2.txt containing the
+|  word hi.
+|
+|○ Thought for 4.3s (The previous file write was interru...)
+|● Edited 1 file (agy-outside2.txt) (ctrl+o to expand)
+|
+|Create file
+|  ⎿  User declined the tool call
+|
+|  ⎿  Interrupted · What should Antigravity CLI do instead?
+|────────────────────────────────────────────────────────────
+|>
+|────────────────────────────────────────────────────────────
+|? for shortcuts                         Gemini 4 Neon · high
+cursor=59,29 alt=false appCursor=false bracketed=false

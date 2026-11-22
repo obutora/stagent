@@ -1,0 +1,31 @@
+|
+|
+|      ▄▀▀▄        Antigravity CLI 1.5.14
+|     ▀▀▀▀▀▀       user@example.com (Google AI Pro)
+|    ▀▀▀▀▀▀▀▀      Gemini 4 Neon (High)
+|   ▄▀▀    ▀▀▄     /tmp/agy-lab
+|  ▄▀▀      ▀▀▄
+|
+|
+| ┃ Auto is now the default agent mode
+| ┃ Press Shift+Tab to switch agent modes, or change Agent
+| ┃ Mode in /config.
+| ┃ esc to dismiss
+|────────────────────────────────────────────────────────────
+|> Run the shell command `curl -sI https://example.com` and
+|  tell me the status line.
+|────────────────────────────────────────────────────────────
+|                                        Gemini 4 Neon · high
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=0,29 alt=false appCursor=false bracketed=false

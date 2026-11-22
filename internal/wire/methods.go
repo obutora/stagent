@@ -380,6 +380,10 @@ const (
 	// the daemon asked to watch for (holder.question_watch) left the
 	// screen: the question was answered or cancelled there.
 	MethodHolderQuestionGone = "holder.question_gone"
+	// notification, HolderPromptGoneParams: the permission menu a watch
+	// started with shown (HolderPromptWatchParams.Shown) looks for came on
+	// the screen. Its watch goes on, to report when it leaves.
+	MethodHolderPromptShown = "holder.prompt_shown"
 
 	// hook → daemon (one request per connection)
 	// Answers {} once the daemon applied the event; a PermissionRequest of a
@@ -405,11 +409,14 @@ const (
 	// auto-starting the daemon, so `uninstall --level stop` sticks.
 	MethodDaemonStopping = "daemon.stopping"
 	// daemon → holder notification, HolderPromptWatchParams: watch the
-	// screen for the permission menu while a claude, Codex, Copilot CLI or
-	// Qwen Code approval of the session is pending (on), or stop (off).
-	// Holders before 0.4.0 ignore it, like any notification they do not
-	// know; 0.5.0 and earlier know only claude's menu, 0.15.0 and earlier
-	// no Copilot CLI menu, 0.21.1 and earlier no Qwen Code menu.
+	// screen for the permission menu while an approval of the session from
+	// a harness whose menu is watched is pending (on), or while such a
+	// harness checks a tool call's permission and may show its menu with
+	// no hook (Shown), or stop (off). Holders before 0.4.0 ignore it, like
+	// any notification they do not know; 0.5.0 and earlier know only
+	// claude's menu, 0.15.0 and earlier no Copilot CLI menu, 0.21.1 and
+	// earlier no Qwen Code menu, 0.22.1 and earlier neither Antigravity
+	// CLI's menu nor Shown.
 	MethodHolderPromptWatch = "holder.prompt_watch"
 	// daemon → holder notification, HolderPromptWatchParams (since
 	// 0.20.0): watch the screen for the question UI of the harness while a
@@ -505,20 +512,27 @@ type SessionEndParams struct {
 }
 
 // HolderPromptWatchParams starts (on) or ends a prompt watch. Gen names
-// the watch; a new one starts with every claude, Codex, Copilot CLI or Qwen
-// Code approval registered. Harness (since 0.16.0, with on) is the harness
-// whose menu the approval brings: Copilot CLI's menu has claude's cursor
-// (❯), so the holder reads the screen as that harness draws it. Empty from
-// older daemons: every harness's menus are looked for.
+// the watch; a new one starts with every approval registered of a harness
+// whose menu is watched, and with every permission check of one whose
+// menu comes with no hook (Antigravity CLI). Harness (since 0.16.0, with
+// on) is the harness whose menu the approval brings: Copilot CLI's menu
+// has claude's cursor (❯), so the holder reads the screen as that harness
+// draws it. Empty from older daemons: every harness's menus are looked
+// for. Shown (with on): no approval is registered yet; the holder also
+// reports when the menu comes on the screen (holder.prompt_shown), which
+// registers it.
 type HolderPromptWatchParams struct {
 	ID      string `json:"id"`
 	Gen     int64  `json:"gen"`
 	On      bool   `json:"on"`
 	Harness string `json:"harness,omitempty"`
+	Shown   bool   `json:"shown,omitempty"`
 }
 
 // HolderPromptGoneParams reports that the permission menu watch Gen saw
-// is no longer on the screen: the prompt was answered somewhere.
+// is no longer on the screen: the prompt was answered somewhere
+// (holder.prompt_gone); or that it came on the screen
+// (holder.prompt_shown).
 type HolderPromptGoneParams struct {
 	ID  string `json:"id"`
 	Gen int64  `json:"gen"`

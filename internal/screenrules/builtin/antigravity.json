@@ -1,0 +1,12 @@
+{
+  "menu": {
+    "cursor": ">",
+    "dialog_edge": "solid_rule",
+    "wrap": "first_column",
+    "permission_label": "^Yes"
+  },
+  "unnumbered": {
+    "kind": "titled_dialog",
+    "title": "Accessing workspace:"
+  }
+}

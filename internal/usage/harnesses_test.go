@@ -38,13 +38,14 @@ type tree struct {
 func newTree(t *testing.T) *tree {
 	dir := t.TempDir()
 	return &tree{t: t, index: filepath.Join(dir, "usage-index.json"), roots: transcript.Roots{
-		wire.HarnessClaude:   filepath.Join(dir, ".claude", "projects"),
-		wire.HarnessCodex:    filepath.Join(dir, ".codex"),
-		wire.HarnessOmp:      filepath.Join(dir, ".omp", "agent", "sessions"),
-		wire.HarnessPi:       filepath.Join(dir, ".pi", "agent", "sessions"),
-		wire.HarnessQwen:     filepath.Join(dir, ".qwen", "projects"),
-		wire.HarnessOpenCode: filepath.Join(dir, ".ssh-term", "agent", "state", "opencode"),
-		wire.HarnessGrok:     filepath.Join(dir, ".grok", "sessions"),
+		wire.HarnessClaude:      filepath.Join(dir, ".claude", "projects"),
+		wire.HarnessCodex:       filepath.Join(dir, ".codex"),
+		wire.HarnessOmp:         filepath.Join(dir, ".omp", "agent", "sessions"),
+		wire.HarnessPi:          filepath.Join(dir, ".pi", "agent", "sessions"),
+		wire.HarnessQwen:        filepath.Join(dir, ".qwen", "projects"),
+		wire.HarnessOpenCode:    filepath.Join(dir, ".ssh-term", "agent", "state", "opencode"),
+		wire.HarnessGrok:        filepath.Join(dir, ".grok", "sessions"),
+		wire.HarnessAntigravity: filepath.Join(dir, ".gemini", "antigravity-cli"),
 	}}
 }
 
@@ -233,6 +234,7 @@ func TestTotalIsSumOfHarnesses(t *testing.T) {
 	tr.write(wire.HarnessQwen, "p/chats/"+qwenSession+".jsonl", fixture(t, "qwen.jsonl"))
 	tr.write(wire.HarnessOpenCode, openCodeSession+".jsonl", fixture(t, "opencode.jsonl"))
 	tr.write(wire.HarnessGrok, "%2Fp/"+grokSession+"/updates.jsonl", fixture(t, "grok.jsonl"))
+	tr.write(wire.HarnessAntigravity, agyRel, fixture(t, "antigravity.jsonl"))
 	s := tr.open()
 	scan(t, s)
 	r := report(t, s, wire.UsageGetParams{})
@@ -245,7 +247,7 @@ func TestTotalIsSumOfHarnesses(t *testing.T) {
 		addTokens(&sum, h)
 	}
 	all := total(r)
-	if all.Requests != 2+2+2+2+10+9+13 || all.Total() != sum.Total() {
+	if all.Requests != 2+2+2+2+10+9+13+15 || all.Total() != sum.Total() {
 		t.Fatalf("total %+v, sum of harnesses %+v", all, sum)
 	}
 }

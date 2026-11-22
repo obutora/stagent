@@ -102,7 +102,8 @@ func (d *Daemon) holderQuestionGone(cs *connState, p wire.HolderPromptGoneParams
 
 // questionOf reads the questions of a question tool's input:
 // {"questions": [{"id", "question", "header", "multiSelect" (claude) |
-// "multi" (omp), "options": [{"label"} | "label"]}]} (claude, codex, omp).
+// "multi" (omp) | "is_multi_select" (Antigravity CLI), "options":
+// [{"label"} | "label"]}]} (claude, codex, omp, Antigravity CLI).
 // nil when it holds no question text.
 func questionOf(tool string, input json.RawMessage) *wire.Question {
 	var in struct {
@@ -112,6 +113,7 @@ func questionOf(tool string, input json.RawMessage) *wire.Question {
 			Header      string            `json:"header"`
 			MultiSelect bool              `json:"multiSelect"`
 			Multi       bool              `json:"multi"`
+			IsMulti     bool              `json:"is_multi_select"`
 			Options     []json.RawMessage `json:"options"`
 		} `json:"questions"`
 	}
@@ -124,7 +126,7 @@ func questionOf(tool string, input json.RawMessage) *wire.Question {
 		if text == "" {
 			continue
 		}
-		item := wire.QuestionItem{ID: it.ID, Question: text, Header: strings.TrimSpace(it.Header), Multi: it.MultiSelect || it.Multi}
+		item := wire.QuestionItem{ID: it.ID, Question: text, Header: strings.TrimSpace(it.Header), Multi: it.MultiSelect || it.Multi || it.IsMulti}
 		for _, raw := range it.Options {
 			if l := optionLabel(raw); l != "" {
 				item.Options = append(item.Options, l)

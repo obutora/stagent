@@ -217,6 +217,49 @@ var fixtureWant = map[string][]msg{
 		// the unknown updates and the broken line skipped
 		{"assistant", "", "Anything else?"},
 	},
+	// A transcript_full.jsonl of Antigravity CLI 1.5.14's shapes (written
+	// for the test from real runs' records; paths shortened): prompts, a
+	// command and its result, a reply of a text and two calls with their
+	// results (an image's, a command's), questions answered, partly and
+	// wholly skipped, a call turned down, a background command and the
+	// note of its end, a step of a type never seen, a line cut short and a
+	// question still waiting.
+	wire.HarnessAntigravity: {
+		{"user", "", "Run `curl -sI https://example.com` and tell me the status line."}, // its metadata and settings blocks dropped
+		{"tool", "run_command", "curl -sI https://example.com"},
+		// the command's result skipped
+		{"assistant", "", "The status line is:\n\n```\nHTTP/2 200\n```"}, // the thinking dropped
+		{"user", "", "Look at the logo and the build script."},
+		{"assistant", "", "Let me read both."},
+		{"tool", "read_file", "/home/user/proj/logo.png"},
+		{"tool", "run_command", "cat build.sh"},
+		// the image result and the command's output (an "A1:" line in it) skipped
+		{"assistant", "", "The logo is blue; the script runs make."},
+		{"user", "", "Ask me two things."},
+		{"tool", "ask_question", "Tea or coffee?\nCats or dogs?"},
+		{"user", "", "Coffee\nCats, Dogs"},
+		{"assistant", "", "Coffee, and both cats and dogs."},
+		{"user", "", "Ask me again."},
+		{"tool", "ask_question", "Red or blue?\nUp or down?"},
+		{"user", "", "(no answer)\nDown"}, // the first skipped; the answers name no question (the app takes them in order)
+		{"assistant", "", "Down it is."},
+		{"user", "", "One more question."},
+		{"tool", "ask_question", "Red or blue?"},
+		{"system", "", "Question dismissed"}, // skipped
+		{"assistant", "", "Skipped."},
+		{"user", "", "Create /tmp/outside.txt containing hi."},
+		{"tool", "write_file", "/tmp/outside.txt"},
+		{"system", "", `permission check failed for write_file "/tmp/outside.txt": user denied permission for write_file(/tmp/outside.txt)`},
+		{"user", "", "Deploy it in the background."},
+		{"tool", "run_command", "npm run deploy"},
+		// the result of the command still running skipped
+		{"assistant", "", "The deploy is running."},
+		// the system message skipped
+		{"assistant", "", "The deploy finished."},
+		// the checkpoint and the broken line skipped
+		{"user", "", "Which one?"},
+		{"tool", "ask_question", "A or B?"},
+	},
 }
 
 func fixture(h string) string { return filepath.Join("testdata", h+".jsonl") }
@@ -371,6 +414,10 @@ func TestSummarize(t *testing.T) {
 		{`{"command":"*** Begin Patch\n*** Add File: a.txt\n+x\n*** Delete File: b.txt\n*** End Patch"}`, "Add a.txt, Delete b.txt"},
 		{`{"questions":[1]}`, ""},
 		{`not json`, ""},
+		// Antigravity CLI's capitalized arguments, its toolSummary last.
+		{`{"CommandLine":"curl -sI https://example.com","WaitMsBeforeAsync":10000,"toolSummary":"Fetch headers"}`, "curl -sI https://example.com"},
+		{`{"Content":"hi\n","Overwrite":true,"Path":"/tmp/a.txt"}`, "/tmp/a.txt"},
+		{`{"Foo":1,"toolSummary":"Do the thing"}`, "Do the thing"},
 	}
 	for _, c := range cases {
 		if got := Summarize(json.RawMessage(c.in)); got != c.want {
@@ -396,6 +443,7 @@ type tree struct {
 	qwen     string
 	opencode string
 	grok     string
+	agy      string
 }
 
 func setupTree(t *testing.T) tree {
@@ -409,7 +457,8 @@ func setupTree(t *testing.T) tree {
 	qwenRoot := filepath.Join(home, ".qwen", "projects")
 	opencodeRoot := filepath.Join(home, ".ssh-term", "agent", "state", "opencode")
 	grokRoot := filepath.Join(home, ".grok", "sessions")
-	tr := tree{roots: Roots{wire.HarnessClaude: claudeRoot, wire.HarnessCodex: codexRoot, wire.HarnessOmp: ompRoot, wire.HarnessPi: piRoot, wire.HarnessCopilot: copilotRoot, wire.HarnessQwen: qwenRoot, wire.HarnessOpenCode: opencodeRoot, wire.HarnessGrok: grokRoot}}
+	agyRoot := filepath.Join(home, ".gemini", "antigravity-cli")
+	tr := tree{roots: Roots{wire.HarnessClaude: claudeRoot, wire.HarnessCodex: codexRoot, wire.HarnessOmp: ompRoot, wire.HarnessPi: piRoot, wire.HarnessCopilot: copilotRoot, wire.HarnessQwen: qwenRoot, wire.HarnessOpenCode: opencodeRoot, wire.HarnessGrok: grokRoot, wire.HarnessAntigravity: agyRoot}}
 	copyFile := func(src, dst string, mtime time.Time) string {
 		b, err := os.ReadFile(src)
 		if err != nil {
@@ -472,8 +521,35 @@ func setupTree(t *testing.T) tree {
 	longDir := filepath.Join(grokRoot, "bbbb-42f84f551da93751", "01a1e600-0000-7000-8000-000000000000")
 	writeFile(t, filepath.Join(grokRoot, "bbbb-42f84f551da93751", ".cwd"), []byte("/home/user/"+strings.Repeat("b", 300)), base.Add(time.Minute))
 	writeFile(t, filepath.Join(longDir, "updates.jsonl"), []byte(`{"timestamp":1794846119,"method":"session/update","params":{"sessionId":"01a1e600-0000-7000-8000-000000000000","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"long one"}}}}`+"\n"), base.Add(time.Minute))
+
+	// Antigravity CLI conversations: the fixture's, of whose prompts
+	// history.jsonl holds only the first, without the conversation's id
+	// (matched by its time and text, not by another first prompt a moment
+	// later), and one whose later prompt is recorded with its id. The
+	// truncated copy and the chunks beside a transcript, history.jsonl
+	// itself, the databases and a conversation without
+	// transcript_full.jsonl are no conversation.
+	agyLogs := filepath.Join(agyRoot, "brain", agyConversation, ".system_generated", "logs")
+	tr.agy = copyFile(fixture("antigravity"), filepath.Join(agyLogs, "transcript_full.jsonl"), base.Add(2*time.Minute))
+	writeFile(t, filepath.Join(agyLogs, "transcript.jsonl"), []byte(`{"step_index": 0, "type": "USER_INPUT"}`+"\n"), base.Add(9*time.Hour))
+	writeFile(t, filepath.Join(agyLogs, "chunks", "transcript_full_0.jsonl"), []byte(`{"step_index": 0, "type": "USER_INPUT"}`+"\n"), base.Add(9*time.Hour))
+	writeFile(t, filepath.Join(agyRoot, "brain", "5b8f1d20-0000-4000-8000-000000000002", ".system_generated", "logs", "transcript_full.jsonl"),
+		[]byte(`{"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-22T02:00:00Z", "content": "<USER_REQUEST>\nfirst one\n</USER_REQUEST>"}`+"\n"+
+			`{"step_index": 2, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-22T02:01:00Z", "content": "<USER_REQUEST>\nsecond one\n</USER_REQUEST>"}`+"\n"), base.Add(90*time.Second))
+	writeFile(t, filepath.Join(agyRoot, "brain", "5b8f1d20-0000-4000-8000-000000000003", "scratch", "notes.md"), []byte("x"), base.Add(9*time.Hour))
+	writeFile(t, filepath.Join(agyRoot, "conversations", agyConversation+".db"), []byte("SQLite format 3"), base.Add(9*time.Hour))
+	writeFile(t, filepath.Join(agyRoot, "history.jsonl"), []byte(
+		`{"display":"/model","timestamp":1795309700000,"workspace":"/home/user/other","type":"slash_command"}`+"\n"+
+			`{"display":"Run `+"`curl -sI https://example.com`"+` and tell me the status line.","timestamp":1795309741716,"workspace":"/home/user/proj"}`+"\n"+
+			`{"display":"something else","timestamp":1795309742100,"workspace":"/home/user/other"}`+"\n"+
+			`{"display":"first one","timestamp":1795312800300,"workspace":"/home/user/second"}`+"\n"+
+			`{"display":"second one","timestamp":1795312860300,"workspace":"/home/user/second","conversationId":"5b8f1d20-0000-4000-8000-000000000002"}`+"\n"), base.Add(9*time.Hour))
 	return tr
 }
+
+// agyConversation is the id of the Antigravity CLI conversation of
+// setupTree, the fixture's.
+const agyConversation = "7c2e0a51-3f0e-4d39-9c43-2f1f0e0b6a11"
 
 // copilotWorkspaceYAML is a workspace.yaml of Copilot CLI 1.0.98 [INFERENCE:
 // its fields are those the bundle compares (cli-main.js) and the runtime's
@@ -529,6 +605,10 @@ func TestIndexListsInteractiveConversationsNewestFirst(t *testing.T) {
 		{"opencode", "ses_e1ad4a0c9ffe59ybAJc2LhlyvP", "/home/user/proj", "Explain the diff", tr.opencode},
 		// summary.json's generated title; nothing else of the session.
 		{"grok", "01a1e529-d6eb-7ca1-a972-905c1d336da5", "/home/user/proj", "Mock title", tr.grok},
+		// Antigravity CLI: titled by the first prompt; the cwd of its
+		// history line (no id, its time and text), of the line with its id.
+		{"antigravity", agyConversation, "/home/user/proj", "Run `curl -sI https://example.com` and tell me the status line.", tr.agy},
+		{"antigravity", "5b8f1d20-0000-4000-8000-000000000002", "/home/user/second", "first one", filepath.Join(tr.roots[wire.HarnessAntigravity], "brain", "5b8f1d20-0000-4000-8000-000000000002", ".system_generated", "logs", "transcript_full.jsonl")},
 		// No summary yet: the first prompt, the cwd of the group's .cwd.
 		{"grok", "01a1e600-0000-7000-8000-000000000000", "/home/user/" + strings.Repeat("b", 300), "long one", filepath.Join(tr.roots[wire.HarnessGrok], "bbbb-42f84f551da93751", "01a1e600-0000-7000-8000-000000000000", "updates.jsonl")},
 	}
@@ -597,6 +677,7 @@ func TestIndexFind(t *testing.T) {
 		{"qwen", "a2730fef-0f6d-48da-9317-c9dc99d18525", tr.qwen},
 		{"opencode", "ses_e1ad4a0c9ffe59ybAJc2LhlyvP", tr.opencode},
 		{"grok", "01a1e529-d6eb-7ca1-a972-905c1d336da5", tr.grok},
+		{"antigravity", agyConversation, tr.agy},
 	} {
 		if p, ok := x.Find(c.harness, c.id); !ok || p != c.want {
 			t.Errorf("Find(%s, %s) = %q %v, want %q", c.harness, c.id, p, ok, c.want)
@@ -621,6 +702,8 @@ func TestHarnessOfConfinesPaths(t *testing.T) {
 		{tr.qwen, "qwen", true},
 		{tr.opencode, "opencode", true},
 		{tr.grok, "grok", true},
+		{tr.agy, "antigravity", true},
+		{filepath.Join(tr.roots[wire.HarnessAntigravity], "history.jsonl"), "", false}, // not under brain/
 		{filepath.Join(tr.roots[wire.HarnessCopilot], "..", "settings.json"), "", false},
 		{filepath.Join(tr.roots[wire.HarnessClaude], "..", "settings.json"), "", false},
 		{filepath.Join(tr.roots[wire.HarnessClaude], "..", "..", "x.jsonl"), "", false},

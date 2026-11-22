@@ -278,6 +278,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 	}
 	h.scr = screen.New(cols, rows, respond)
 	h.prompt = newPromptWatch(h.scr.Lines, h.rules.permissionMenu, h.link.promptGone)
+	h.prompt.shown = h.link.promptShown
 	h.question = newPromptWatch(h.scr.Lines, h.rules.questionMenu, h.link.questionGone)
 	h.in.menuUp = h.menuShown
 	// vt.NewEmulator allocates a 4 MiB parser buffer and 10,000-line

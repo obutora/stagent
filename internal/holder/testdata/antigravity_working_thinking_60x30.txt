@@ -1,0 +1,31 @@
+|
+|      ▄▀▀▄        Antigravity CLI 1.5.14
+|     ▀▀▀▀▀▀       user@example.com (Google AI Pro)
+|    ▀▀▀▀▀▀▀▀      Gemini 4 Neon (High)
+|   ▄▀▀    ▀▀▄     /tmp/agy-lab
+|  ▄▀▀      ▀▀▄
+|
+|─────────────────────────────────────────────────────────
+|> Run the shell command `curl -sI https://example.com` and
+|  tell me the status line.
+|
+|● Ran (curl -sI https://example.com) (ctrl+o to expand)
+|
+|  The status line returned by curl -sI
+|  https://example.com is:
+|
+|    HTTP/2 200
+|
+|─────────────────────────────────────────────────────────
+|> Use your ask_question tool to ask me whether I prefer red
+|  or blue, then reply with just my choice.
+|⢿  Working...
+|────────────────────────────────────────────────────────────
+|>
+|────────────────────────────────────────────────────────────
+|esc to cancel                           Gemini 4 Neon · high
+|
+|
+|
+|
+cursor=0,29 alt=false appCursor=false bracketed=false

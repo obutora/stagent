@@ -78,14 +78,15 @@ type lineState struct {
 // entry is a harness whose usage is not counted. Copilot CLI writes the
 // output tokens of a reply but not its input, so it is not counted.
 var readers = map[string]*reader{
-	wire.HarnessClaude:   claudeReader,
-	wire.HarnessCodex:    codexReader,
-	wire.HarnessOmp:      ompReader,
-	wire.HarnessPi:       ompReader,
-	wire.HarnessCopilot:  nil,
-	wire.HarnessQwen:     qwenReader,
-	wire.HarnessOpenCode: openCodeReader,
-	wire.HarnessGrok:     grokReader,
+	wire.HarnessClaude:      claudeReader,
+	wire.HarnessCodex:       codexReader,
+	wire.HarnessOmp:         ompReader,
+	wire.HarnessPi:          ompReader,
+	wire.HarnessCopilot:     nil,
+	wire.HarnessQwen:        qwenReader,
+	wire.HarnessOpenCode:    openCodeReader,
+	wire.HarnessGrok:        grokReader,
+	wire.HarnessAntigravity: antigravityReader,
 }
 
 // Counted lists, in the order of harness.All, the harnesses whose usage is

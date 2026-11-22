@@ -8,7 +8,7 @@ binaries were built from this code.
 ## What it does
 
 SSH Term's **chat view** shows the conversation of the coding agent (Claude
-Code, Codex, Oh My Pi, Pi, Copilot CLI, Qwen Code, OpenCode, Grok Build) running in a terminal tab, also when it runs inside
+Code, Codex, Oh My Pi, Pi, Copilot CLI, Qwen Code, OpenCode, Grok Build, Antigravity CLI) running in a terminal tab, also when it runs inside
 tmux, zellij, screen or herdr. For that the app runs `stagent follow` over an
 SSH exec channel on the terminal's own connection. It:
 
@@ -20,7 +20,8 @@ SSH exec channel on the terminal's own connection. It:
   writes (`~/.claude`, `~/.codex`, `~/.omp`, `~/.pi`, `~/.copilot`,
   `~/.qwen`; for OpenCode, which keeps its sessions in a database, the
   record stagent keeps of each session under `~/.ssh-term/agent/state/opencode`,
-  read from `opencode session export`; `~/.grok/sessions` for Grok Build),
+  read from `opencode session export`; `~/.grok/sessions` for Grok Build;
+  `~/.gemini/antigravity-cli/brain` for Antigravity CLI),
 - streams new messages of that file as JSON lines until the app closes the
   channel.
 
@@ -76,12 +77,13 @@ the server:
   command starts, `stagent run` tells you in one line how many agent
   sessions are held on the host (see `stagent ls`), if any.
 - Shell wrappers installed with `stagent integrate --shell-wrapper` make
-  `claude`, `codex`, `omp`, `pi`, `copilot`, `qwen`, `opencode` and `grok` typed in an
+  `claude`, `codex`, `omp`, `pi`, `copilot`, `qwen`, `opencode`, `grok` and `agy` typed in an
   interactive terminal run as `stagent run --handoff=auto -- …`, so they
   survive the terminal by default. Non-interactive runs (`claude -p`,
   `codex exec`, `omp -p`, `omp --mode json`, `qwen -p`, `qwen "a prompt"`
   without `-i`, `opencode run` and OpenCode's other commands, `grok -p`
-  and Grok Build's commands but `dashboard`) are left alone. OpenCode 2 is started with `--standalone`, a server of its own,
+  and Grok Build's commands but `dashboard`, `agy -p` and Antigravity
+  CLI's commands) are left alone. OpenCode 2 is started with `--standalone`, a server of its own,
   so its plugin reports to this session. To have the agent end with the
   terminal instead, set `STAGENT_HANDOFF=0` in that shell, or turn on
   `disable_handoff` in `config.json` (what the app's switch sets);
@@ -212,7 +214,8 @@ the app each one can be resumed: a new kept shell opens in the same
 directory, tied to the same task, running the harness's resume command
 (`claude --resume <id>`, `codex resume <id>`, `copilot --resume=<id>`,
 `omp --resume <id>`, `pi --session <id>`, `qwen --resume <id>`,
-`opencode --standalone --session <id>`, `grok --resume <id>`), and your
+`opencode --standalone --session <id>`, `grok --resume <id>`,
+`agy --conversation <id>`), and your
 login shell when the
 agent exits. A stopped agent stays listed until it is resumed, removed,
 continued some other way, or for 7 days. Coding agents cannot resume or
@@ -229,7 +232,9 @@ spent on the host (使用量) and the limit windows of their subscriptions
   `projects/`, sub-agents included), codex (`$CODEX_HOME` or `~/.codex`,
   `sessions/`), omp, pi and Qwen Code (`$QWEN_RUNTIME_DIR`, `$QWEN_HOME` or
   `~/.qwen`, `projects/*/chats/`), Grok Build (`$GROK_HOME` or `~/.grok`,
-  `sessions/*/*/updates.jsonl`, by turn) and stagent's records of OpenCode's
+  `sessions/*/*/updates.jsonl`, by turn), Antigravity CLI
+  (`~/.gemini/antigravity-cli`, `brain/*/.system_generated/logs/transcript_full.jsonl`,
+  by reply of the model) and stagent's records of OpenCode's
   sessions — only the token counts, models, times and
   working directories, and the `rate_limits` Codex writes in its rollouts.
   It keeps what it counted in `~/.ssh-term/agent/state/usage-index.json`,

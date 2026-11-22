@@ -83,6 +83,8 @@ func TestBrokenOverrideKeepsBuiltin(t *testing.T) {
 		{"grok.json", `{"dialogs": {"question": {"kind": "list"}}}`, `dialogs.question.kind: "list" is not`},
 		{"grok.json", `{"dialogs": {"permission": {"hint_place": "above"}}}`, `dialogs.permission.hint_place: "above" is not`},
 		{"grok.json", `{"dialogs": {"trust": {"rows": ["("]}}}`, "dialogs.trust.rows[0]: error parsing regexp"},
+		{"antigravity.json", `{"menu": {"wrap": "hanging"}}`, `menu.wrap: "hanging" is not first_column`},
+		{"antigravity.json", `{"menu": {"frame": "box"}}`, "menu.wrap: not with frame or ends"},
 	} {
 		writeRules(t, dir, c.file, c.content)
 		s := Load(dir)
@@ -130,5 +132,25 @@ func TestOverrideOfDialogIsLaidOverBuiltin(t *testing.T) {
 	}
 	if got := s.Origin("grok", "dialogs"); got != path {
 		t.Errorf("origin of grok.dialogs = %q, want %q", got, path)
+	}
+}
+
+// Antigravity CLI's built-in rules: its cursor >, options whose long labels
+// wrap to the first column, a permission menu's first option "Yes, …"
+// under a solid rule, and its trust prompt as a menu without numbers. An
+// override may turn the wrapping off.
+func TestAntigravityRules(t *testing.T) {
+	m := Builtin().Harnesses["antigravity"].Menu
+	if m == nil || m.Cursor != ">" || m.Wrap != WrapFirstColumn || m.DialogEdge != EdgeSolidRule ||
+		!m.PermissionLabel.MatchString("Yes, run command") || m.PermissionLabel.MatchString("No, cancel") {
+		t.Fatalf("menu %+v", m)
+	}
+	if u := Builtin().Harnesses["antigravity"].Unnumbered; u == nil || u.Title != "Accessing workspace:" {
+		t.Errorf("unnumbered %+v", u)
+	}
+	dir := t.TempDir()
+	writeRules(t, dir, "antigravity.json", `{"menu": {"wrap": ""}}`)
+	if s := Load(dir); s.Files[0].Err != nil || s.Harnesses["antigravity"].Menu.Wrap != "" || s.Harnesses["antigravity"].Menu.Cursor != ">" {
+		t.Errorf("files %+v, menu %+v", s.Files, s.Harnesses["antigravity"].Menu)
 	}
 }

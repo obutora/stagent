@@ -63,6 +63,21 @@ func (t stateTrack) holderReport(state, source string, at int64) stateTrack {
 	return t
 }
 
+// quietEnded applies the holder's report of a state (holderReport, just
+// before) to a session of a harness whose turn may end with no hook
+// (daemonHarness.turnEndsUnheard): when its output went quiet (idle from
+// output activity) while a hook-derived working is in force, the turn
+// ended unheard (an Esc), and that working goes; the holder's idle takes
+// over. A waiting state stays: the harness waits quietly for the answer.
+// The harness draws a spinner for as long as it works, so its output
+// never goes quiet amid a turn.
+func (t stateTrack) quietEnded() stateTrack {
+	if t.Hook == wire.StateWorking && t.Holder == wire.StateIdle && t.HolderSource == wire.SourceActivity {
+		t.Hook, t.HookAt = "", 0
+	}
+	return t
+}
+
 // holderInput applies the holder's report of when input was last written
 // to the program.
 func (t stateTrack) holderInput(at int64) stateTrack {

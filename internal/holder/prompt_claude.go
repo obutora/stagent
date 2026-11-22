@@ -61,18 +61,21 @@ func (r *screenRules) titledDialogMenu(cursor string, edge func(line string) boo
 }
 
 // titledDialog reports whether the dialog the options from line first on
-// are in is titled title: its first line under the top edge.
+// are in is titled title: its first line under the top edge, or on the
+// screen when no edge is above the options (Antigravity CLI draws its
+// trust prompt at the top of an otherwise empty screen).
 func titledDialog(lines []string, first int, edge func(line string) bool, title string) bool {
+	top := 0
 	for j := first - 1; j >= 0; j-- {
-		if !edge(lines[j]) {
-			continue
+		if edge(lines[j]) {
+			top = j + 1
+			break
 		}
-		for _, line := range lines[j+1 : first] {
-			if t := strings.TrimSpace(line); t != "" {
-				return t == title
-			}
+	}
+	for _, line := range lines[top:first] {
+		if t := strings.TrimSpace(line); t != "" {
+			return t == title
 		}
-		return false
 	}
 	return false
 }

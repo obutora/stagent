@@ -19,7 +19,10 @@ import (
 // (holder.prompt_gone): the prompt was answered, wherever that happened.
 // The programs themselves do not tell — claude's hook lives on until the
 // approved tool finished, and the others' returned before their prompt
-// showed (or with it).
+// showed (or with it). Antigravity CLI sends no hook for its menu at all:
+// the daemon starts its watch when it checks a call's permission, with
+// shown, and the holder reports the menu's coming as well
+// (holder.prompt_shown), which registers the approval.
 //
 // A menu is told apart from the next one by its signature (menuSignature):
 // claude shows parallel tool calls' prompts one after the other, switching
@@ -48,18 +51,23 @@ type promptTrack struct {
 	// the redrawn menu is seen again).
 	seen      bool
 	goneSince time.Time // no menu of sig on the screen since (zero: it is)
+	// report: the menu's coming on the screen is reported too, when the
+	// watch adopts it (promptWatch.shown).
+	report bool
 }
 
 // promptWatch is the holder's side of the prompt watches, and of the
 // question watches (question.go), which differ in the menu they look for.
 // lines reads the screen; menu tells whether it shows the menu looked for
 // as harnessID draws it, and its signature (permissionMenu, questionMenu);
-// gone reports a watch whose menu left it (called with mu held, it must
+// gone reports a watch whose menu left it, shown one started with
+// startShown whose menu came on it (both called with mu held, they must
 // not block or call back).
 type promptWatch struct {
 	lines func() []string
 	menu  func(lines []string, harnessID string) (sig string, ok bool)
 	gone  func(gen int64)
+	shown func(gen int64)
 
 	mu sync.Mutex
 	// tracks are the watches not reported yet, oldest first; the last one
@@ -94,6 +102,19 @@ func (w *promptWatch) set(gen int64, on bool, harnessID string) {
 		}
 		return
 	}
+	w.startLocked(gen, harnessID, false)
+}
+
+// startShown starts watch gen as set does, for a menu no approval is
+// registered for yet (holder.prompt_watch with shown): the menu's coming
+// on the screen is reported (shown) before its leaving is.
+func (w *promptWatch) startShown(gen int64, harnessID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.startLocked(gen, harnessID, true)
+}
+
+func (w *promptWatch) startLocked(gen int64, harnessID string, report bool) {
 	if gen <= w.gen {
 		return
 	}
@@ -104,7 +125,7 @@ func (w *promptWatch) set(gen int64, on bool, harnessID string) {
 			kept = append(kept, t)
 		}
 	}
-	w.tracks = append(kept, &promptTrack{gen: gen})
+	w.tracks = append(kept, &promptTrack{gen: gen, report: report})
 	w.evalLocked(time.Now()) // the menu may be up already
 }
 
@@ -184,6 +205,9 @@ func (w *promptWatch) evalLocked(now time.Time) {
 			// older watch is waiting for that menu to go.
 			if up && !awaited(kept, sig) {
 				t.adopted, t.sig, t.seen = true, sig, true
+				if t.report && w.shown != nil {
+					w.shown(t.gen)
+				}
 			}
 		case up && sig == t.sig:
 			t.seen, t.goneSince = true, time.Time{}
@@ -237,11 +261,12 @@ func (h *Holder) menuShown() bool {
 // ("Would you like to run the following command?" → "1. Yes, proceed
 // (y)"), Copilot CLI's ("Do you want to run this command?" → "1. Yes", in a
 // box). A harness may have a menu without numbers too, recognized its own
-// way (claude's workspace trust prompt), menus with no key hint below
-// them, told by their own end (Qwen Code's permission menu, whose labels
-// are translated), dialogs right of a bar told by their rows and key hints
-// instead (OpenCode's, Grok Build's), and a question UI that is no menu
-// (Codex's, omp's).
+// way (claude's and Antigravity CLI's workspace trust prompts), menus with
+// no key hint below them, told by their own end (Qwen Code's permission
+// menu, whose labels are translated), options whose long labels wrap to
+// the first column (Antigravity CLI's), dialogs right of a bar told by
+// their rows and key hints instead (OpenCode's, Grok Build's), and a
+// question UI that is no menu (Codex's, omp's).
 //
 // What is data and what is code. The screen rules (internal/screenrules:
 // built in as builtin/<name>.json, overridden per host by
@@ -250,10 +275,11 @@ func (h *Holder) menuShown() bool {
 // permission prompt's first option, the patterns of key hints, transcript
 // marks, headers, titles, rows and menu ends, and how many rows to look
 // at. They pick by name the way to find a dialog's top edge (dialogEdges,
-// barDialogEdge), a frame (boxFramed), a menu without numbers
-// (titledDialogMenu), a menu's own end (markedLastOption), a dialog right
-// of a bar (barDialogKinds) and a question UI (hintAndHeaderQuestion,
-// bottomBoxQuestion). Those ways stay code, as do walking the rows
+// barDialogEdge), a frame (boxFramed), where wrapped labels continue
+// (wrapMode), a menu without numbers (titledDialogMenu), a menu's own end
+// (markedLastOption), a dialog right of a bar (barDialogKinds) and a
+// question UI (hintAndHeaderQuestion, bottomBoxQuestion). Those ways stay
+// code, as do walking the rows
 // (numberedMenu, promptHintFollows, menuSignature), the option line
 // (optionPattern, radioRow) and the rule and box characters
 // (promptRuleChars, promptEdgeChars).
@@ -281,6 +307,10 @@ type menuStyle struct {
 	// are read there only (with option), an option's wrapped label
 	// continuing at the column of its number.
 	framed func(lines []string) []string
+	// wrap is where an option's wrapped label continues: wrapFirstColumn
+	// for a harness whose menus are read with option and that mode only
+	// (wrappedMenu).
+	wrap   wrapMode
 	option *regexp.Regexp
 	// question reports whether lines show the UI of a question the
 	// harness asked through its question tool (questionShown), for a
@@ -360,7 +390,11 @@ func (r *screenRules) findMenu(lines []string, harnessID string) (foundMenu, boo
 	if own.framed != nil {
 		return r.framedMenu(lines, own)
 	}
-	if group, ok := r.numberedMenu(lines, r.option, false, r.hintFollows); ok && (own.cursor != "" || !mine) {
+	if own.wrap != wrapIndented {
+		if m, ok := r.wrappedMenu(lines, own); ok {
+			return m, true
+		}
+	} else if group, ok := r.numberedMenu(lines, r.option, wrapIndented, r.hintFollows); ok && (own.cursor != "" || !mine) {
 		s := own
 		if s.cursor == "" {
 			s = r.plainStyle(group)
@@ -372,10 +406,16 @@ func (r *screenRules) findMenu(lines []string, harnessID string) (foundMenu, boo
 	}
 	if !mine {
 		for _, h := range harness.All {
-			if s := r.styles[h.ID]; s.ends != nil {
-				if m, ok := r.endedMenu(lines, s); ok {
-					return m, true
-				}
+			s := r.styles[h.ID]
+			read := r.endedMenu
+			switch {
+			case s.wrap != wrapIndented:
+				read = r.wrappedMenu
+			case s.ends == nil:
+				continue
+			}
+			if m, ok := read(lines, s); ok {
+				return m, true
 			}
 		}
 	}
@@ -410,16 +450,23 @@ func (r *screenRules) findMenu(lines []string, harnessID string) (foundMenu, boo
 
 // framedMenu returns the numbered menu in the boxes of style s.
 func (r *screenRules) framedMenu(lines []string, s menuStyle) (foundMenu, bool) {
-	group, ok := r.numberedMenu(s.framed(lines), s.option, true, r.hintFollows)
+	group, ok := r.numberedMenu(s.framed(lines), s.option, wrapHanging, r.hintFollows)
 	return foundMenu{options: group, style: s}, ok
 }
 
 // endedMenu returns the numbered menu under the cursor of style s that its
 // ends tells, a key hint below it or not.
 func (r *screenRules) endedMenu(lines []string, s menuStyle) (foundMenu, bool) {
-	group, ok := r.numberedMenu(lines, s.option, false, func(lines []string, group []promptItem) bool {
+	group, ok := r.numberedMenu(lines, s.option, wrapIndented, func(lines []string, group []promptItem) bool {
 		return r.hintFollows(lines, group) || s.ends(lines, group)
 	})
+	return foundMenu{options: group, style: s}, ok
+}
+
+// wrappedMenu returns the numbered menu under the cursor of style s, whose
+// options' labels wrap as its wrap says.
+func (r *screenRules) wrappedMenu(lines []string, s menuStyle) (foundMenu, bool) {
+	group, ok := r.numberedMenu(lines, s.option, s.wrap, r.hintFollows)
 	return foundMenu{options: group, style: s}, ok
 }
 
@@ -444,12 +491,38 @@ func (r *screenRules) plainStyle(group []promptItem) menuStyle {
 	return menuStyle{}
 }
 
+// wrapMode is where the wrapped label of an option continues on the lines
+// right under it (numberedMenu): indented deeper than the option (also a
+// description under it); with wrapHanging also at the column of its
+// number (a framed menu); with wrapFirstColumn also in the first column,
+// which continues the label itself.
+//
+// Antigravity CLI (1.5.14; screenrules builtin/antigravity.json)
+// highlights an option with > (`> 1. Yes, run command` over `  2. …`) and
+// wraps a long label to the first column (`that start with 'curl …'`).
+// Its permission menus sit under a full-width rule below their title
+// (Command, Create file, …; screenrules.EdgeSolidRule) and end with the
+// question (`Run this command?`), the first option allowing the call; its
+// key hint is below the options (`↑/↓ Navigate · tab Amend · …`). Its
+// ask_question menu is a plain menu of the same kind, the last option the
+// one to type an answer in (`Write-in...`). Its folder trust prompt
+// (`Accessing workspace:` at the top of an otherwise empty screen) has
+// two options without numbers, `> Yes, I trust this folder` and `No,
+// exit`. Its input box is a `> ` line between two rules, which a draft
+// numbered like a menu does not make one.
+type wrapMode int
+
+const (
+	wrapIndented wrapMode = iota
+	wrapHanging
+	wrapFirstColumn
+)
+
 // numberedMenu returns the lowest numbered list of lines that option
 // matches with one option under the cursor and its end told by ends (a key
-// hint below it: hintFollows). A line indented deeper than an option
-// continues it (a wrapped label, a description); with hanging, so does one
-// at the column of its number.
-func (r *screenRules) numberedMenu(lines []string, option *regexp.Regexp, hanging bool, ends func(lines []string, group []promptItem) bool) ([]promptItem, bool) {
+// hint below it: hintFollows). The lines continuing an option (wrap) are
+// part of it.
+func (r *screenRules) numberedMenu(lines []string, option *regexp.Regexp, wrap wrapMode, ends func(lines []string, group []promptItem) bool) ([]promptItem, bool) {
 	var groups [][]promptItem
 	cur := -1 // index in groups of the menu being read
 	// Blank lines and rules since the last line of the current menu; one is
@@ -477,8 +550,14 @@ func (r *screenRules) numberedMenu(lines []string, option *regexp.Regexp, hangin
 			continue
 		}
 		last := &groups[cur][len(groups[cur])-1]
-		if in := indentOf(text); gap == 0 && (in > last.indent || hanging && in >= last.col) {
+		in := indentOf(text)
+		switch {
+		case gap == 0 && (in > last.indent || wrap == wrapHanging && in >= last.col):
 			last.end = i // a wrapped label or a description under it
+			continue
+		case gap == 0 && wrap == wrapFirstColumn && in == 0:
+			last.end = i
+			last.label += " " + t
 			continue
 		}
 		cur = -1

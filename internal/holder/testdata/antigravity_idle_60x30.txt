@@ -1,0 +1,31 @@
+|
+|
+|      ▄▀▀▄        Antigravity CLI 1.5.14
+|     ▀▀▀▀▀▀       user@example.com (Google AI Pro)
+|    ▀▀▀▀▀▀▀▀      Gemini 4 Neon (High)
+|   ▄▀▀    ▀▀▄     /tmp/agy-lab
+|  ▄▀▀      ▀▀▄
+|
+|
+| ┃ Introducing Gemini 4 Neon
+| ┃ Our best balance of intelligence, cost, and latency.
+| ┃ Get building today with Neon.
+| ┃ esc to dismiss
+|────────────────────────────────────────────────────────────
+|>
+|────────────────────────────────────────────────────────────
+|? for shortcuts                         Gemini 4 Neon · high
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=0,29 alt=false appCursor=false bracketed=false

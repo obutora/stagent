@@ -20,6 +20,15 @@ import "github.com/obutora/stagent/internal/wire"
 // 0.15.0 and earlier know no Copilot CLI menu, 0.21.1 and earlier no Qwen
 // Code menu) or never saw the menu send
 // nothing; Stop remains the fallback for those.
+//
+// Antigravity CLI sends no hook at all when its menu shows
+// (daemonHarness.menuOnScreen): only its PreToolUse, before it checks the
+// call's permission, which its rules may allow without asking. That check
+// starts a watch with shown (startCheckWatchLocked): the holder reports
+// when the menu comes on the screen (holder.prompt_shown), which registers
+// the approval on that same watch, and then when it leaves, as for the
+// others. Holders that know no Antigravity CLI menu (0.22.1 and earlier)
+// report neither: its sessions show no approval there.
 
 // startPromptWatchLocked starts a new watch for ap, a pending approval of
 // s. Every approval starts its own watch, so the report of an older watch
@@ -56,8 +65,50 @@ func (d *Daemon) sendPromptWatchLocked(s *session, on bool) {
 	p := wire.HolderPromptWatchParams{ID: s.s.ID, Gen: s.promptGen, On: on}
 	if on {
 		p.Harness = s.promptHarness
+		p.Shown = s.checkGen != 0 && s.checkGen == s.promptGen
 	}
 	s.holder.outLocked().push(notification(wire.MethodHolderPromptWatch, p))
+}
+
+// startCheckWatchLocked starts a watch for the menu the permission check
+// harnessID just made of a call may bring (holder.prompt_watch with
+// shown): no approval is registered until the holder reports the menu on
+// the screen (holderPromptShown). The next check's watch replaces it: the
+// holder drops a watch that saw no menu when a newer one starts.
+func (d *Daemon) startCheckWatchLocked(s *session, harnessID string) {
+	d.promptGens++
+	s.checkGen, s.promptGen, s.promptHarness = d.promptGens, d.promptGens, harnessID
+	d.sendPromptWatchLocked(s, true)
+}
+
+// endCheckWatchLocked ends s's check watch: the check went by without its
+// menu (the call ran, or the turn moved on or ended).
+func (d *Daemon) endCheckWatchLocked(s *session) {
+	if s.checkGen == 0 {
+		return
+	}
+	s.checkGen = 0
+	d.endPromptWatchLocked(s)
+}
+
+// holderPromptShown registers the approval of the menu the session's
+// latest permission check brought, which came on the screen (watch p.Gen):
+// named by the tool of that check, watched for its leaving by the same
+// watch. The session needs approval, as when a hook registers one. A
+// report of an older check's watch is about a check gone by.
+func (d *Daemon) holderPromptShown(cs *connState, p wire.HolderPromptGoneParams) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	s := d.liveSessionLocked(cs, p.ID)
+	if s == nil || s.holder != cs || p.Gen <= 0 || p.Gen != s.checkGen {
+		return
+	}
+	s.checkGen = 0
+	now := d.opts.Now().UnixMilli()
+	d.newApprovalLocked(s, s.promptHarness, hookPayload{}, now, p.Gen)
+	s.track = s.track.hookState(wire.StateNeedsApproval, now)
+	d.recomputeLocked(s, false)
+	d.sessionChangedLocked(s)
 }
 
 // holderPromptGone closes the watched approvals of the session that existed

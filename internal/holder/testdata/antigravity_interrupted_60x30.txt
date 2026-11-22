@@ -1,0 +1,31 @@
+|> Run the shell command `curl -sI https://example.com` and
+|  tell me the status line.
+|
+|● Ran (curl -sI https://example.com) (ctrl+o to expand)
+|
+|  The status line returned by curl -sI
+|  https://example.com is:
+|
+|    HTTP/2 200
+|
+|─────────────────────────────────────────────────────────
+|> Use your ask_question tool to ask me whether I prefer red
+|  or blue, then reply with just my choice.
+|
+|? Do you prefer red or blue?
+|> Blue
+|
+|  Blue
+|
+|─────────────────────────────────────────────────────────
+|> Create a file named /tmp/agy-outside.txt containing the
+|  word hi.
+|
+|● Edited 1 file (agy-outside.txt) (ctrl+o to expand)
+|
+|  ⎿  Interrupted · What should Antigravity CLI do instead?
+|────────────────────────────────────────────────────────────
+|>
+|────────────────────────────────────────────────────────────
+|? for shortcuts                         Gemini 4 Neon · high
+cursor=59,29 alt=false appCursor=false bracketed=false

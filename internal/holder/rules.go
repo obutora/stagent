@@ -16,7 +16,7 @@ type screenRules struct {
 	styles map[string]menuStyle
 	// option matches an option line, `❯ 1. Yes` (claude), `› 1. Yes,
 	// proceed (y)` (Codex) or `  2. No`, of the menus drawn without a
-	// frame.
+	// frame and wrapped under their labels.
 	option *regexp.Regexp
 	// hint: key hints every captured menu shows within hintRows lines
 	// under its options (`Esc to cancel · Tab to amend`, `ctrl+g to edit
@@ -68,16 +68,22 @@ func newScreenRules(set *screenrules.Set) *screenRules {
 				s.permission = m.PermissionLabel.Regexp
 			}
 			s.dialogEdge = dialogEdges[m.DialogEdge]
-			if m.Frame == screenrules.FrameBox {
+			switch {
+			case m.Frame == screenrules.FrameBox:
 				s.framed = boxFramed
-			} else if !slices.Contains(cursors, m.Cursor) {
+			case m.Wrap == screenrules.WrapFirstColumn:
+				// Its menus are read its own way only (wrappedMenu):
+				// another harness's reading would cut its options
+				// short.
+				s.wrap = wrapFirstColumn
+			case !slices.Contains(cursors, m.Cursor):
 				cursors = append(cursors, m.Cursor)
 			}
 			if e := m.Ends; e != nil {
 				s.ends = markedLastOption(e.LastLabel.Regexp, e.Below.Regexp, e.Rows, e.ScrollBar)
 				s.endsPermission = e.Permission
 			}
-			if s.framed != nil || s.ends != nil {
+			if s.framed != nil || s.ends != nil || s.wrap != wrapIndented {
 				s.option = optionPattern([]string{m.Cursor})
 			}
 			if u := rules.Unnumbered; u != nil {

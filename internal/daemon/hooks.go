@@ -49,6 +49,11 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 		s.stopReplyIdle() // any hook of the session voids its idle_prompt
 		s.remoteControl = p.RemoteControl
 		changed = d.hookMetaLocked(s, p.Harness, pl)
+		// Any other hook tells that the latest check went by without
+		// its menu (the call ran, the turn moved on).
+		if !eff.permissionCheck {
+			d.endCheckWatchLocked(s)
+		}
 	}
 	d.noteUnwrappedLocked(p, pl, eff, s != nil, now)
 	// An idle_prompt of a harness that sends one with every reply (Qwen
@@ -76,9 +81,13 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 	var ap *approval
 	switch {
 	case eff.permissionCheck:
-		// Its menu, if it comes, is told by the harness's notification.
+		// Its menu, if it comes, is told by the harness's notification,
+		// or by the screen for a harness that sends none (menuOnScreen).
 		if s != nil {
 			s.checkTool, s.checkInput = pl.ToolName, pl.ToolInput
+			if daemonHarnesses[p.Harness].menuOnScreen && s.s.ScheduleID == "" {
+				d.startCheckWatchLocked(s, p.Harness)
+			}
 		}
 	case eff.approval:
 		// A request outside stagent sessions (an IDE, `claude -p`, the SDK)
@@ -86,7 +95,7 @@ func (d *Daemon) hookEvent(cs *connState, id *int64, p wire.HookEventParams) (an
 		// is one of a schedule run's session: nobody watches it, and claude
 		// -p refuses the tool once the hook returns.
 		if s != nil && s.s.ScheduleID == "" {
-			ap = d.newApprovalLocked(s, p.Harness, pl, now)
+			ap = d.newApprovalLocked(s, p.Harness, pl, now, 0)
 			s.track = s.track.hookState(wire.StateNeedsApproval, now)
 			changed = d.recomputeLocked(s, false) || changed
 		}
@@ -189,7 +198,7 @@ func (d *Daemon) hookSessionLocked(p wire.HookEventParams, pl hookPayload) *sess
 
 // daemonHarness is what the daemon does its own way for one harness's hooks
 // (claude.go, codex.go, omp.go, pi.go, copilot.go, qwen.go, opencode.go,
-// grok.go).
+// grok.go, antigravity.go).
 type daemonHarness struct {
 	// watchPrompt: while an approval of the harness is pending, the
 	// session's holder watches the screen for its permission menu
@@ -201,8 +210,19 @@ type daemonHarness struct {
 	// is its menu): Copilot CLI's PermissionRequest, Grok Build's
 	// PreToolUse (it has no PermissionRequest). Its menu then comes with
 	// a permission_prompt Notification, which registers the approval
-	// (named by the tool the latest check named).
+	// (named by the tool the latest check named), or on the screen alone
+	// (menuOnScreen).
 	checkHook string
+	// menuOnScreen: the harness sends no hook when its permission menu
+	// shows (Antigravity CLI): after each check (checkHook) the session's
+	// holder watches the screen for the menu, whose coming registers the
+	// approval (prompt.go).
+	menuOnScreen bool
+	// turnEndsUnheard: a turn of the harness may end with no hook (an Esc
+	// while its model works or at its menu ends the turn without Stop),
+	// so a hook-derived working ends once its output went quiet: the
+	// holder reports idle (stateTrack.quietEnded).
+	turnEndsUnheard bool
 	// launch tells how the agent of a sessionless hook was started, from
 	// what the harness reports about itself (unwrapped.go); nil when it
 	// reports nothing.
@@ -219,14 +239,15 @@ type daemonHarness struct {
 
 // daemonHarnesses has an entry for every harness of the registry.
 var daemonHarnesses = map[string]daemonHarness{
-	wire.HarnessClaude:   claudeDaemon,
-	wire.HarnessCodex:    codexDaemon,
-	wire.HarnessOmp:      ompDaemon,
-	wire.HarnessPi:       piDaemon,
-	wire.HarnessCopilot:  copilotDaemon,
-	wire.HarnessQwen:     qwenDaemon,
-	wire.HarnessOpenCode: openCodeDaemon,
-	wire.HarnessGrok:     grokDaemon,
+	wire.HarnessClaude:      claudeDaemon,
+	wire.HarnessCodex:       codexDaemon,
+	wire.HarnessOmp:         ompDaemon,
+	wire.HarnessPi:          piDaemon,
+	wire.HarnessCopilot:     copilotDaemon,
+	wire.HarnessQwen:        qwenDaemon,
+	wire.HarnessOpenCode:    openCodeDaemon,
+	wire.HarnessGrok:        grokDaemon,
+	wire.HarnessAntigravity: antigravityDaemon,
 }
 
 // hookMetaLocked records what a hook tells about the session: harness,
@@ -257,9 +278,10 @@ func (d *Daemon) hookMetaLocked(s *session, harnessID string, pl hookPayload) bo
 // once. Copilot CLI's approval comes with its notification, which names no
 // tool: the latest permission check's tool names it, else the
 // notification's message. For the harnesses with watchPrompt, s's holder
-// watches for the permission menu meanwhile (prompt.go); a Codex or
-// Copilot CLI approval also closes on output activity or Stop.
-func (d *Daemon) newApprovalLocked(s *session, harnessID string, pl hookPayload, now int64) *approval {
+// watches for the permission menu meanwhile (prompt.go): watch gen, which
+// saw the menu come already (holder.prompt_shown), or else a new one; a
+// Codex or Copilot CLI approval also closes on output activity or Stop.
+func (d *Daemon) newApprovalLocked(s *session, harnessID string, pl hookPayload, now int64, gen int64) *approval {
 	tool, input := pl.ToolName, pl.ToolInput
 	if tool == "" && len(input) == 0 {
 		tool, input = s.checkTool, s.checkInput
@@ -284,7 +306,10 @@ func (d *Daemon) newApprovalLocked(s *session, harnessID string, pl hookPayload,
 	if h, _ := harness.Lookup(harnessID); h.HookHeldForPrompt {
 		ap.hold = make(chan struct{})
 	}
-	if daemonHarnesses[harnessID].watchPrompt {
+	switch {
+	case gen > 0:
+		ap.gen = gen
+	case daemonHarnesses[harnessID].watchPrompt:
 		d.startPromptWatchLocked(s, ap)
 	}
 	return ap

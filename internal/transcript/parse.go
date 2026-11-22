@@ -90,9 +90,14 @@ func summarizeFreeform(name, input string) string {
 }
 
 // summaryKeys are tool argument keys in the order they best describe a call.
+// Antigravity CLI's are capitalized (run_command's CommandLine, the file
+// tools' Path, TargetFile, File, …); its toolSummary, the model's own
+// summary of the call, comes last.
 var summaryKeys = []string{
-	"command", "cmd", "file_path", "notebook_path", "path", "pattern", "query",
-	"url", "description", "prompt", "skill", "task", "intent", "i",
+	"command", "cmd", "CommandLine", "file_path", "notebook_path", "path",
+	"Path", "TargetFile", "File", "pattern", "query", "Query", "url", "Url",
+	"Uri", "description", "prompt", "skill", "task", "intent", "i",
+	"toolSummary",
 }
 
 // Summarize renders tool arguments (a JSON object, or a JSON string holding

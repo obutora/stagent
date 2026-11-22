@@ -1,0 +1,31 @@
+|
+|
+|      ▄▀▀▄        Antigravity CLI 1.5.14
+|     ▀▀▀▀▀▀       user@example.com (Google AI Pro)
+|    ▀▀▀▀▀▀▀▀      Gemini 4 Neon (High)
+|   ▄▀▀    ▀▀▄     /tmp/agy-lab
+|  ▄▀▀      ▀▀▄
+|
+|─────────────────────────────────────────────────────────
+|> Run the shell command `curl -sI https://example.com` and
+|  tell me the status line.
+|
+|● Ran (curl -sI https://example.com) (ctrl+o to expand)
+|
+|Command
+|────────────────────────────────────────────────────────────
+|
+|Requesting permission for:
+|   curl -sI https://example.com
+|
+|Run this command?
+|> 1. Yes, run command
+|  2. Yes, and always allow in this conversation for commands
+|that start with 'curl -sI https://example.com'
+|  3. Yes, and always allow for commands that start with
+|'curl -sI https://example.com' (Persist to settings.json)
+|  4. No, cancel
+|
+|  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
+|esc to cancel                           Gemini 4 Neon · high
+cursor=59,29 alt=false appCursor=false bracketed=false

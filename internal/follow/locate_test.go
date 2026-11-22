@@ -133,6 +133,19 @@ func TestLocateGrok(t *testing.T) {
 	}
 }
 
+// Antigravity CLI is one native process named agy (agy.exe on Windows),
+// with no child of its own; the command it runs is a child, not an agent.
+func TestLocateAntigravity(t *testing.T) {
+	tr := sshTree()
+	tr.add(102, 101, "agy", "agy", "--settings", `{"agentMode":""}`, "--conversation", "215bbd83").fg()
+	tr.add(103, 102, "sh", "sh", "-c", "curl -sI https://example.com").fg()
+	tr.add(104, 101, "agy", "/home/u/.local/bin/agy").bg()
+	loc := testLocator(&fakeMux{}).locate(tr.snapshot())
+	if got, want := summary(loc), "none|||antigravity[102]* antigravity[104]"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestLocateTmuxPane(t *testing.T) {
 	tr := sshTree()
 	// Linux names a tmux client "tmux: client" (macOS keeps "tmux").

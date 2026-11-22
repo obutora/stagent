@@ -152,10 +152,16 @@ func TestModeChangesAloneAreNotWork(t *testing.T) {
 		d.Feed([]byte("\x1b[?2004h"))
 	}
 	d.Feed([]byte("\x1b[?1004h\x1b[?25;2004l"))
+	// Antigravity CLI's, every 2.1 s while it waits: bracketed paste and
+	// modifyOtherKeys (XTMODKEYS).
+	for range 4 {
+		clk.Advance(2100 * time.Millisecond)
+		d.Feed([]byte("\x1b[?2004h\x1b[>4;2m"))
+	}
 	if want := []string{"idle/activity"}; !reflect.DeepEqual(r.states, want) {
 		t.Fatalf("states = %v, want %v", r.states, want)
 	}
-	d.Feed([]byte("\x1b[?2004hx"))
+	d.Feed([]byte("\x1b[>4;2mx"))
 	if want := []string{"idle/activity", "working/activity"}; !reflect.DeepEqual(r.states, want) {
 		t.Fatalf("states after drawn output = %v, want %v", r.states, want)
 	}

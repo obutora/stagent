@@ -1,10 +1,12 @@
 // Package hook is `stagent hook <harness> [event] [json]`, the command
 // harness hooks run. It forwards the hook payload to the daemon and prints
-// nothing: approvals are answered on the program's own screen. It never
-// breaks a harness: every path exits 0 and the daemon is never started from
-// here. Waiting is bounded except for claude's PermissionRequest, which the
-// daemon holds until its approval closes (the session's holder saw the
-// prompt leave the screen, or claude stopped the hook, or the turn ended).
+// nothing but the answer that decides nothing, for a harness that reads one
+// (hookHarness.output): approvals are answered on the program's own
+// screen. It never breaks a harness: every path exits 0 and the daemon is
+// never started from here. Waiting is bounded except for claude's
+// PermissionRequest, which the daemon holds until its approval closes (the
+// session's holder saw the prompt leave the screen, or claude stopped the
+// hook, or the turn ended).
 package hook
 
 import (
@@ -55,6 +57,8 @@ type procIO struct {
 	// harnesses' hooks too (hookRunner): a hook of another harness is
 	// not its own and is dropped.
 	ranBy string
+	// stdout receives the harness's answer (hookHarness.output).
+	stdout io.Writer
 }
 
 // launchInfo is what a hook outside a stagent session tells the daemon
@@ -72,7 +76,7 @@ type launchInfo struct {
 
 // hookHarness is what the hook command does its own way for one harness
 // (claude.go, codex.go, omp.go, pi.go, copilot.go, qwen.go, opencode.go,
-// grok.go).
+// grok.go, antigravity.go).
 type hookHarness struct {
 	// argv reads the event and payload of a harness that passes them as
 	// arguments in a form of its own; ok is false for the usual form.
@@ -82,22 +86,31 @@ type hookHarness struct {
 	// payload rewrites the harness's payload into the form the daemon
 	// reads; nil when it already is.
 	payload func(payload []byte) []byte
+	// event names an event of the harness's own, given its payload (as
+	// payload rewrote it), by the one the daemon reads; nil when the
+	// harness uses those names.
+	event func(event string, payload []byte) string
 	// local handles an event in the hook process: true when nothing is to
 	// reach the daemon (an event of the harness's own, one of a run that
 	// is not the user's session).
 	local func(event string, payload []byte) bool
+	// output is what the hook prints on stdout for the event argument (""
+	// when none was given), for a harness that reads an answer there: one
+	// that decides nothing; nil prints nothing.
+	output func(event string) string
 }
 
 // hookHarnesses has an entry for every harness of the registry.
 var hookHarnesses = map[string]hookHarness{
-	wire.HarnessClaude:   claudeHook,
-	wire.HarnessCodex:    codexHook,
-	wire.HarnessOmp:      ompHook,
-	wire.HarnessPi:       piHook,
-	wire.HarnessCopilot:  copilotHook,
-	wire.HarnessQwen:     qwenHook,
-	wire.HarnessOpenCode: openCodeHook,
-	wire.HarnessGrok:     grokHook,
+	wire.HarnessClaude:      claudeHook,
+	wire.HarnessCodex:       codexHook,
+	wire.HarnessOmp:         ompHook,
+	wire.HarnessPi:          piHook,
+	wire.HarnessCopilot:     copilotHook,
+	wire.HarnessQwen:        qwenHook,
+	wire.HarnessOpenCode:    openCodeHook,
+	wire.HarnessGrok:        grokHook,
+	wire.HarnessAntigravity: antigravityHook,
 }
 
 // Main runs the hook command. It always returns 0.
@@ -109,6 +122,7 @@ func Main(args []string) int {
 		remoteControl: os.Getenv(wire.EnvClaudeBridgeSessionID) != "",
 		launch:        osLaunch,
 		ranBy:         hookRunner(os.Getenv),
+		stdout:        os.Stdout,
 	})
 }
 
@@ -173,6 +187,13 @@ func run(args []string, pio procIO) (code int) {
 		return 0
 	}
 	harnessID, rest := args[0], args[1:]
+	if h := hookHarnesses[harnessID]; h.output != nil && pio.stdout != nil {
+		event := ""
+		if len(rest) > 0 {
+			event = rest[0]
+		}
+		defer io.WriteString(pio.stdout, h.output(event)+"\n")
+	}
 	if pio.ranBy != "" && pio.ranBy != harnessID {
 		return 0
 	}
@@ -200,6 +221,9 @@ func run(args []string, pio procIO) (code int) {
 	}
 	if event == "" {
 		event = eventName(payload)
+	}
+	if h := hookHarnesses[harnessID]; h.event != nil {
+		event = h.event(event, payload)
 	}
 	if h := hookHarnesses[harnessID]; h.local != nil && h.local(event, payload) {
 		return 0
@@ -290,10 +314,12 @@ func readPayload(r io.Reader) []byte {
 	return seen.bytes()
 }
 
-// Fields kept from a payload too large (or too broken) to forward whole.
+// Fields kept from a payload too large (or too broken) to forward whole;
+// the camelCase ones are Antigravity CLI's (hook/antigravity.go).
 var salvageFields = []string{
 	"hook_event_name", "session_id", "transcript_path", "cwd", "tool_name",
 	"notification_type", "permission_mode", "type", "thread-id",
+	"hookEventName", "conversationId", "transcriptPath",
 }
 
 var salvageInputFields = []string{"command", "file_path", "path", "url", "pattern", "description"}

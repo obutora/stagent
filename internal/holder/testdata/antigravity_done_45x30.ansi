@@ -1,0 +1,29 @@
+
+[90m──────────────────────────────────────────[39m
+[1m[34m> Create a file named /tmp/agy-outside.txt[0m
+[1m[34m  containing the word hi.[0m
+
+[90m●[39m [1m[33mEdited[0m 1 file [37m(ctrl+o to expand)[39m
+
+[90m──────────────────────────────────────────[39m
+[1m[34m> Create a file named /tmp/agy-outside2.txt[0m
+[1m[34m  containing the word hi.[0m
+
+[37m○[39m [37mThought for 4.3s[39m [37m(The previous file wr...)[39m
+[31m●[39m [1m[33mEdited[0m 1 file [37m(ctrl+o to expand)[39m
+
+[90m──────────────────────────────────────────[39m
+[1m[34m> Count slowly from 1 to 200, one number per[0m
+[1m[34m  line, and explain each.[0m
+
+[90m──────────────────────────────────────────[39m
+[1m[34m> ay ok.[0m
+
+[37m▸ Thought for 7s, 450 tokens[39m
+
+  ok.
+
+[90m─────────────────────────────────────────────
+[94m>[39m
+[90m─────────────────────────────────────────────
+? for shortcuts[39m          [2mGemini 4 Neon · high

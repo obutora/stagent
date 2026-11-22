@@ -1,0 +1,31 @@
+|
+|
+|      ▄▀▀▄        Antigravity CLI 1.5.14
+|     ▀▀▀▀▀▀       user@example.com (Google AI Pro)
+|    ▀▀▀▀▀▀▀▀      Gemini 4 Neon (High)
+|   ▄▀▀    ▀▀▄     /tmp/agy-lab
+|  ▄▀▀      ▀▀▄
+|
+|─────────────────────────────────────────────────────────
+|> Run the shell command `curl -sI https://example.com` and
+|  tell me the status line.
+|
+|○ Running (curl -sI https://exampl...) (ctrl+o to expand)
+|⣟  Running command...
+|────────────────────────────────────────────────────────────
+|>
+|────────────────────────────────────────────────────────────
+|esc to cancel                           Gemini 4 Neon · high
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+cursor=0,29 alt=false appCursor=false bracketed=false

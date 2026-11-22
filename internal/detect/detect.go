@@ -124,10 +124,12 @@ func (d *Detector) SetIdleAfter(v time.Duration) {
 }
 
 // Feed processes a chunk of program output. Escape sequences may be split
-// across chunks. A chunk of DEC private mode sets and resets only (`CSI ?
-// Pm h/l`) changes nothing on screen and is not work: Oh My Pi on Windows
-// re-enables bracketed paste every second while it waits. Neither is
-// output within redrawGrace of a resize (notifications in it still count).
+// across chunks. A chunk of DEC private mode sets and resets and key
+// modifier options only (`CSI ? Pm h/l`, `CSI > Pp;Pv m`) changes nothing
+// on screen and is not work: Oh My Pi on Windows re-enables bracketed
+// paste every second while it waits, and Antigravity CLI bracketed paste
+// and modifyOtherKeys every 2.1 s. Neither is output within redrawGrace of
+// a resize (notifications in it still count).
 func (d *Detector) Feed(b []byte) {
 	if len(b) == 0 {
 		return
@@ -157,17 +159,21 @@ func (d *Detector) Feed(b []byte) {
 }
 
 // onlyModeChanges reports whether b consists of whole `CSI ? Pm h` / `CSI
-// ? Pm l` sequences and nothing else.
+// ? Pm l` sequences (DEC private modes) and `CSI > Pp ; Pv m` ones (the
+// key modifier options, XTMODKEYS) and nothing else.
 func onlyModeChanges(b []byte) bool {
 	for len(b) > 0 {
-		if len(b) < 4 || b[0] != 0x1b || b[1] != '[' || b[2] != '?' {
+		if len(b) < 4 || b[0] != 0x1b || b[1] != '[' || (b[2] != '?' && b[2] != '>') {
 			return false
 		}
 		i := 3
 		for i < len(b) && (b[i] >= '0' && b[i] <= '9' || b[i] == ';') {
 			i++
 		}
-		if i == 3 || i >= len(b) || (b[i] != 'h' && b[i] != 'l') {
+		if i == 3 || i >= len(b) {
+			return false
+		}
+		if final := b[i]; b[2] == '?' && final != 'h' && final != 'l' || b[2] == '>' && final != 'm' {
 			return false
 		}
 		b = b[i+1:]
