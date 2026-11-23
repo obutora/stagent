@@ -1692,7 +1692,7 @@ max 1 MiB.
 | `schedule.pause` / `schedule.resume` | `{id}` | `ScheduleEntry`; refused to a coding agent's process tree |
 | `schedule.run_now` | `{id}` | the run started (`trigger: now`); `busy` while the previous run runs; refused to a coding agent's process tree |
 | `schedule.output` | `{id, run_id, session_id?, before?, max_bytes?}` | `{data, start, end, first, gone?}` — a page of a try's output (`session_id`; omitted: the newest try) from the disk, as `session.scrollback`; `gone: true` once it is no longer kept |
-| `usage.get` | `{tz?, from?, to?, refresh_limits?}` | `{scanning, scanned_at?, counted[], days[], sessions[], limits[]}` — the tokens the agents spent on this host, by calendar day of `tz` (since 0.19.0, #1557; see "Usage"), and the limit windows measured (`limits`, since 0.19.0, #1559; see "Limit windows"). `refresh_limits: true` (since 0.19.0, #1563): the usage screen was opened, call the private API if allowed (see "Private API") |
+| `usage.get` | `{tz?, from?, to?, refresh_limits?, daily?}` | `{scanning, scanned_at?, counted[], days[], sessions[], limits[], conversations[], daily[]?}` — the tokens the agents spent on this host, by calendar day of `tz` (since 0.19.0, #1557; see "Usage"), and the limit windows measured (`limits`, since 0.19.0, #1559; see "Limit windows"). `refresh_limits: true` (since 0.19.0, #1563): the usage screen was opened, call the private API if allowed (see "Private API") |
 | `stopped.remove` | `{id}` | `{}` — the stopped agent taken off the list (nothing when it is not listed; since 0.21.0, see "Stopped agents"); refused to a coding agent's process tree |
 
 Nothing in the protocol answers an approval: the program's own screen does
@@ -2480,6 +2480,9 @@ everything again. Deleting the file only costs a rescan.
 - `refresh_limits` (since 0.19.0, #1563): `true` when the usage screen was
   opened: the private API is called for the limit windows if allowed (see
   "Private API"). Ignored from a coding agent's process tree.
+- `daily` (since 0.24.0, #1864): `true` returns `daily[]` instead of the rows: `days`
+  and `sessions` come back `[]`, so even all time stays small. `limits`
+  is as usual.
 
 The result:
 
@@ -2494,6 +2497,17 @@ The result:
   requests, agent_cost?, long_context?}` — `agent_cost` the sum of the
   cost the agent wrote (US dollars, to the millionth; omp and pi only,
   absent when 0).
+- `conversations[]` (since 0.24.0, #1864): per day of `tz`, how many conversations (a
+  harness and a non-empty session id) spent tokens that day:
+  `[{date, count}]`, oldest first; days with none are left out. A
+  conversation spanning two days counts on both; usage without a session
+  id is not a conversation. Always present (`[]` when none). A stagent
+  before it leaves the key out.
+- `daily[]` (since 0.24.0, #1864, only with `daily: true`): one row per day and harness,
+  summed over models and projects, oldest first: `{date, harness, input,
+  output, cache_read, cache_write_5m, cache_write_1h, requests,
+  agent_cost?}`. A stagent before it ignores `daily` and leaves the key
+  out.
 - `long_context[]` (since #1561): the part of the row whose requests had
   a long prompt, for long-context prices: `[{over, input, output,
   cache_read, cache_write_5m, cache_write_1h, requests, agent_cost?}]`,
@@ -4799,11 +4813,15 @@ it is seen again at the new size) and one started before 0.20.0 (it
 ignores the notification) report nothing: the question then goes with the
 next hook only.
 
-Entering `waiting_input` from `working` with a question raises the
+Entering `waiting_input` with a question, from any other state (the agent
+may ask within `debounce_ms` of the prompt, so the `working` in between is
+never recorded), raises the
 `waiting_input` notification with `question: true` and as `body` the first
 question on one line (at most 200 bytes), followed by the number of
 questions when there are several (`notify.lang`: en `<q> (2 questions)`,
-ja `<q>（全 2 問）`, ko `<q> (질문 2개)`, zh `<q>（共 2 个问题）`). Outside a
+ja `<q>（全 2 問）`, ko `<q> (질문 2개)`, zh `<q>（共 2 个问题）`). Entering it
+without one raises the plain `waiting_input` notification from `working`
+only. Outside a
 stagent session it is raised (in-app) once, by the hook that comes when
 the question shows: claude's and Qwen Code's `PermissionRequest`, Codex's,
 omp's, OpenCode's, Grok Build's and Antigravity CLI's `PreToolUse`.

@@ -485,7 +485,7 @@ func (d *Daemon) settleLocked(s *session) {
 		d.settlePushLocked(s)
 	}
 	lang := d.eff.Notify.Lang
-	switch notifyReasonForTransition(from, to) {
+	switch notifyReasonForTransition(from, to, s.s.Question != nil) {
 	case reasonWaitingInput:
 		d.notifyLocked(s, waitingInputNotice(lang, sessionLabel(s.s.Harness, s.s.Cwd), s.s.Question), nil)
 	case reasonNeedsApproval:

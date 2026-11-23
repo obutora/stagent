@@ -240,6 +240,35 @@ func TestSingleQuestionNotificationBody(t *testing.T) {
 	}
 }
 
+// A question asked within the debounce of the prompt still notifies
+// (#1846): claude 2.1.330 calls AskUserQuestion some 1.6 s after
+// UserPromptSubmit, within the default debounce_ms (2000), so the working in
+// between is never recorded and the recorded change is idle → waiting_input.
+func TestQuestionRightAfterThePromptNotifies(t *testing.T) {
+	cfg := fastConfig()
+	cfg.Notify.DebounceMs = 500
+	e := startDaemon(t, cfg, Options{})
+	watcher, events := e.client()
+	call(t, watcher, wire.MethodWatch, wire.WatchParams{}, nil)
+	holderConn, _ := e.client()
+	call(t, holderConn, wire.MethodHolderRegister, testSession(sid), nil) // idle
+
+	_, prompt := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, SessionID: sid, Payload: json.RawMessage(
+		`{"hook_event_name":"UserPromptSubmit","session_id":"conv-1","prompt":"Ask me: red or blue?"}`)})
+	answered(t, prompt, "UserPromptSubmit")
+	_, perm := e.hookAsync(wire.HookEventParams{Harness: wire.HarnessClaude, SessionID: sid, Payload: askPayload("PermissionRequest")})
+	answered(t, perm, "PermissionRequest of AskUserQuestion")
+
+	m := await(t, events, "state_changed", event(wire.EventStateChanged, nil))
+	if _, c := decodeEvent[wire.StateChangedData](t, m); c.From != wire.StateIdle || c.To != wire.StateWaitingInput {
+		t.Fatalf("recorded change %+v, want idle → waiting_input", c)
+	}
+	m = await(t, events, "question notification", notificationWith(reasonWaitingInput))
+	if _, n := decodeEvent[wire.NotificationData](t, m); !n.Question || n.SessionID != sid {
+		t.Fatalf("notification %+v", n)
+	}
+}
+
 // codex's request_user_input and omp's ask are question tools too: their
 // PreToolUse puts the session in waiting_input with the question and a
 // push of its text, their PostToolUse (answered) puts it back to working.

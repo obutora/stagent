@@ -241,6 +241,9 @@ spent on the host (使用量) and the limit windows of their subscriptions
   the last value of each limit window in `state/usage-limits.json` and
   what it notified of them (80%, 100%, reset) in
   `state/usage-alerts.json`. Deleting them only costs a rescan.
+- `usage.get` also returns how many conversations spent tokens each day,
+  and with `daily: true` one row per day and harness instead of the
+  detailed rows, for the app's records (レコード) over all time.
 - `stagent integrate --statusline` (offered by the app's host setup) sets
   the `statusLine` of Claude Code's `settings.json` (`~/.claude`, and
   `$CLAUDE_CONFIG_DIR` when set) to `stagent statusline claude`, keeping

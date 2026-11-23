@@ -373,3 +373,93 @@ func TestScannedAtDoesNotWaitForScan(t *testing.T) {
 		t.Fatal("ScannedAt waited for the scanner's lock")
 	}
 }
+
+// convLine is the assistant record of the fixture moved to ts, in session
+// sess (empty: none), as request n.
+func convLine(t *testing.T, ts, sess string, n int) string {
+	t.Helper()
+	l := fixtureLines(t, "claude.jsonl")[5]
+	id := strconv.Itoa(n)
+	return strings.NewReplacer(
+		"2026-10-06T01:56:57.072Z", ts,
+		`"sessionId":"4d896274-834f-4ba1-a3da-b4ec86da1a92"`, `"sessionId":"`+sess+`"`,
+		"msg_011Cfk9qjkK6h5vgujFj9mA3", "msg_conv"+id,
+		"req_011Cfk9qjQEGrzhJUjzC2Wur", "req_conv"+id,
+	).Replace(l)
+}
+
+// Conversations count each harness and session id once per day it spent
+// tokens on, in the asked time zone; records without a session id are not
+// conversations.
+func TestConversationsPerDay(t *testing.T) {
+	c := newClaudeTree(t)
+	c.write("-home-user-proj/"+sessA+".jsonl", strings.Join([]string{
+		convLine(t, "2026-10-05T01:00:00.000Z", sessA, 1),
+		convLine(t, "2026-10-05T02:00:00.000Z", sessA, 2),
+		convLine(t, "2026-10-05T03:00:00.000Z", sessA, 3),
+		convLine(t, "2026-10-05T20:00:00.000Z", sessA, 4),
+	}, ""), time.Now())
+	c.write("-home-user-proj/"+sessB+".jsonl", strings.Join([]string{
+		convLine(t, "2026-10-05T04:00:00.000Z", sessB, 5),
+		convLine(t, "2026-10-05T05:00:00.000Z", "", 6),
+	}, ""), time.Now())
+	s := c.open()
+	scan(t, s)
+
+	for _, tc := range []struct {
+		tz   string
+		want []wire.UsageConversations
+	}{
+		{"UTC", []wire.UsageConversations{{Date: "2026-10-05", Count: 2}}},
+		{"Asia/Tokyo", []wire.UsageConversations{{Date: "2026-10-05", Count: 2}, {Date: "2026-10-06", Count: 1}}},
+	} {
+		r := report(t, s, wire.UsageGetParams{TZ: tc.tz})
+		if !reflect.DeepEqual(r.Conversations, tc.want) {
+			t.Errorf("%s: conversations %+v, want %+v", tc.tz, r.Conversations, tc.want)
+		}
+	}
+	r := report(t, s, wire.UsageGetParams{From: "2027-01-01"})
+	if r.Conversations == nil || len(r.Conversations) != 0 {
+		t.Errorf("no usage: conversations %#v, want []", r.Conversations)
+	}
+}
+
+// daily:true sums each day and harness over models and projects and
+// returns empty days and sessions.
+func TestDailyRows(t *testing.T) {
+	c := newClaudeTree(t)
+	c.write("-home-user-proj/"+sessA+".jsonl", strings.Join([]string{
+		convLine(t, "2026-10-05T01:00:00.000Z", sessA, 1),
+		convLine(t, "2026-10-06T01:00:00.000Z", sessA, 2),
+	}, ""), time.Now())
+	c.write("-home-user-other/"+sessB+".jsonl", convLine(t, "2026-10-05T02:00:00.000Z", sessB, 3), time.Now())
+	s := c.open()
+	scan(t, s)
+
+	full := report(t, s, wire.UsageGetParams{})
+	r := report(t, s, wire.UsageGetParams{Daily: true})
+	if r.Days == nil || len(r.Days) != 0 || r.Sessions == nil || len(r.Sessions) != 0 {
+		t.Errorf("daily: days %#v sessions %#v, want []", r.Days, r.Sessions)
+	}
+	var dates []string
+	var sum wire.UsageTokens
+	for _, d := range r.Daily {
+		if d.Harness != wire.HarnessClaude {
+			t.Errorf("row %+v: harness %q", d, d.Harness)
+		}
+		dates = append(dates, d.Date)
+		addTokens(&sum, d.UsageTokens)
+	}
+	if want := []string{"2026-10-05", "2026-10-06"}; !reflect.DeepEqual(dates, want) {
+		t.Errorf("daily dates %v, want %v", dates, want)
+	}
+	if r.Daily[0].Requests != 2 || r.Daily[1].Requests != 1 {
+		t.Errorf("daily requests %d, %d, want 2, 1", r.Daily[0].Requests, r.Daily[1].Requests)
+	}
+	if sum != total(full) {
+		t.Errorf("daily sum %+v, want %+v", sum, total(full))
+	}
+	if len(full.Daily) != 0 {
+		t.Errorf("daily without daily:true: %+v", full.Daily)
+	}
+}

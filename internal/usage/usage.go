@@ -580,6 +580,11 @@ func (s *Scanner) Report(p wire.UsageGetParams) (wire.UsageGetResult, error) {
 	}
 	rows := map[rowKey]*rowAcc{}
 	sessions := map[sessKey]*sessAcc{}
+	type convKey struct {
+		day         int64
+		harness, id string
+	}
+	convs := map[convKey]bool{}
 
 	s.mu.Lock()
 	res := wire.UsageGetResult{Scanning: !s.done.Load(), ScannedAt: s.scannedAt.Load(), Counted: Counted()}
@@ -609,6 +614,7 @@ func (s *Scanner) Report(p wire.UsageGetParams) (wire.UsageGetResult, error) {
 			if session == "" {
 				continue
 			}
+			convs[convKey{day, f.harness, session}] = true
 			sk := sessKey{f.harness, session}
 			a := sessions[sk]
 			if a == nil {
@@ -624,6 +630,47 @@ func (s *Scanner) Report(p wire.UsageGetParams) (wire.UsageGetResult, error) {
 		}
 	}
 	s.mu.Unlock()
+
+	dayStr := func(day int64) string { return time.Unix(day*86400, 0).UTC().Format(time.DateOnly) }
+	perDay := map[int64]int{}
+	for k := range convs {
+		perDay[k.day]++
+	}
+	res.Conversations = make([]wire.UsageConversations, 0, len(perDay))
+	for d, n := range perDay {
+		res.Conversations = append(res.Conversations, wire.UsageConversations{Date: dayStr(d), Count: n})
+	}
+	sort.Slice(res.Conversations, func(i, j int) bool { return res.Conversations[i].Date < res.Conversations[j].Date })
+
+	if p.Daily {
+		type dailyKey struct {
+			day     int64
+			harness string
+		}
+		daily := map[dailyKey]*wire.UsageTokens{}
+		for k, r := range rows {
+			dk := dailyKey{k.day, k.harness}
+			t := daily[dk]
+			if t == nil {
+				t = &wire.UsageTokens{}
+				daily[dk] = t
+			}
+			addTokens(t, r.t)
+		}
+		res.Daily = make([]wire.UsageDailyRow, 0, len(daily))
+		for k, t := range daily {
+			res.Daily = append(res.Daily, wire.UsageDailyRow{Date: dayStr(k.day), Harness: k.harness, UsageTokens: *t})
+		}
+		sort.Slice(res.Daily, func(i, j int) bool {
+			a, b := res.Daily[i], res.Daily[j]
+			if a.Date != b.Date {
+				return a.Date < b.Date
+			}
+			return a.Harness < b.Harness
+		})
+		res.Days, res.Sessions = []wire.UsageDay{}, []wire.UsageSession{}
+		return res, nil
+	}
 
 	res.Days = make([]wire.UsageDay, 0, len(rows))
 	for k, r := range rows {

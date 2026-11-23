@@ -321,12 +321,18 @@ func notificationState(p hookPayload) string {
 
 // notifyReasonForTransition is the notification a debounced state change
 // raises ("" = none): entering needs_approval from any other state,
-// entering waiting_input from working.
-func notifyReasonForTransition(from, to string) string {
+// entering waiting_input from working, and entering it with a question
+// (question) from any other state. A question is always a fresh ask, never
+// a reminder, and the agent may ask it within the debounce of the prompt
+// (claude calls AskUserQuestion some 1.6 s after UserPromptSubmit), so the
+// working in between is never recorded and the change is from idle (#1846).
+func notifyReasonForTransition(from, to string, question bool) string {
 	switch {
 	case to == wire.StateNeedsApproval && from != wire.StateNeedsApproval:
 		return reasonNeedsApproval
 	case to == wire.StateWaitingInput && from == wire.StateWorking:
+		return reasonWaitingInput
+	case to == wire.StateWaitingInput && from != wire.StateWaitingInput && question:
 		return reasonWaitingInput
 	}
 	return ""

@@ -38,6 +38,9 @@ type UsageGetParams struct {
 	// 5 minutes or has to wait (PROTOCOL.md "Private API"). Ignored from a
 	// coding agent's process tree.
 	RefreshLimits bool `json:"refresh_limits,omitempty"`
+	// Daily: return Daily (one row per day and harness) instead of Days
+	// and Sessions, which come back empty, so even all time stays small.
+	Daily bool `json:"daily,omitempty"`
 }
 
 // UsageTokens are the counts of one row: the tokens of each kind and the
@@ -124,6 +127,26 @@ type UsageGetResult struct {
 	// Limits are the limit windows measured so far, one item per account
 	// (harness order of the registry, then ConfigDir).
 	Limits []UsageLimits `json:"limits"`
+	// Conversations: per day, how many conversations (a harness and a
+	// non-empty session id) spent tokens that day, oldest first; days
+	// with none are left out. Always present (empty: []).
+	Conversations []UsageConversations `json:"conversations"`
+	// Daily: only for UsageGetParams.Daily, one row per day and harness
+	// summed over models and projects, oldest day first.
+	Daily []UsageDailyRow `json:"daily,omitempty"`
+}
+
+// UsageConversations is the number of conversations of one calendar day.
+type UsageConversations struct {
+	Date  string `json:"date"` // YYYY-MM-DD in UsageGetParams.TZ
+	Count int    `json:"count"`
+}
+
+// UsageDailyRow is the usage of one calendar day by one harness.
+type UsageDailyRow struct {
+	Date    string `json:"date"` // YYYY-MM-DD in UsageGetParams.TZ
+	Harness string `json:"harness"`
+	UsageTokens
 }
 
 // UsageTopSessions is how many sessions usage.get returns.

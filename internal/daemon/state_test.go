@@ -199,18 +199,28 @@ func TestClassifyHook(t *testing.T) {
 }
 
 func TestNotifyReasonForTransition(t *testing.T) {
-	cases := []struct{ from, to, want string }{
-		{working, waiting, reasonWaitingInput},
-		{idle, waiting, ""}, // idle reminders after a finished turn do not re-notify
-		{idle, needsAp, reasonNeedsApproval},
-		{working, needsAp, reasonNeedsApproval},
-		{needsAp, needsAp, ""},
-		{working, idle, ""},   // turn completion is notified by the Stop hook
-		{working, exited, ""}, // exits are notified by session end
+	cases := []struct {
+		from, to string
+		question bool
+		want     string
+	}{
+		{working, waiting, false, reasonWaitingInput},
+		{working, waiting, true, reasonWaitingInput},
+		{idle, waiting, false, ""}, // idle reminders after a finished turn do not re-notify
+		// A question asked within the debounce of the prompt: the working in
+		// between was never recorded (#1846).
+		{idle, waiting, true, reasonWaitingInput},
+		{needsAp, waiting, true, reasonWaitingInput},
+		{waiting, waiting, true, ""},
+		{idle, needsAp, false, reasonNeedsApproval},
+		{working, needsAp, false, reasonNeedsApproval},
+		{needsAp, needsAp, false, ""},
+		{working, idle, false, ""},   // turn completion is notified by the Stop hook
+		{working, exited, false, ""}, // exits are notified by session end
 	}
 	for _, c := range cases {
-		if got := notifyReasonForTransition(c.from, c.to); got != c.want {
-			t.Errorf("%s → %s = %q, want %q", c.from, c.to, got, c.want)
+		if got := notifyReasonForTransition(c.from, c.to, c.question); got != c.want {
+			t.Errorf("%s → %s (question %v) = %q, want %q", c.from, c.to, c.question, got, c.want)
 		}
 	}
 }

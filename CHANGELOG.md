@@ -3,6 +3,26 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.24.0
+
+### Added
+
+- `usage.get` returns `conversations` — per day, how many conversations
+  (harness and session id) spent tokens — and, with `daily: true`, `daily`
+  rows per day and harness instead of `days` and `sessions`, so the app
+  can show records over all time (#1864).
+
+### Fixed
+
+- A question (AskUserQuestion and the other question tools) raises its
+  `waiting_input` notification however soon the agent asks it after the
+  prompt (#1846). claude asks some 1.6 s after `UserPromptSubmit`, within
+  `debounce_ms` (2 s by default), so the `working` in between was never
+  recorded, the change was `idle` → `waiting_input`, and only one from
+  `working` raised the notification. Entering `waiting_input` with a
+  question now raises it from any other state; one without a question
+  (an idle reminder) still only from `working`.
+
 ## 0.23.0
 
 ### Added
