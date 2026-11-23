@@ -2567,8 +2567,16 @@ account:
   `CLAUDE_CONFIG_DIR` (as a clean path), else `~/.claude`; for codex `CODEX_HOME`, else
   `~/.codex` (since 0.19.0, #1560). Accounts come in the harness
   order of the registry, then by `config_dir`; windows `five_hour`,
-  `seven_day`, then any other by id (ignore ids you do not know). A
-  Codex window of another length is `<minutes>m` (e.g. `1440m`).
+  `seven_day`, then the windows of one model or quota group
+  (`seven_day_<x>`, `five_hour_<x>`, x lowercase letters and digits; in
+  the order they were first measured), then any other by id (ignore ids
+  you do not know). A Codex window of another length is `<minutes>m`
+  (e.g. `1440m`). For antigravity (since 0.25.0) the account is
+  Antigravity CLI's home, `~/.gemini/antigravity-cli`.
+- `label` (optional, since 0.25.0): the name of the quota group a scoped
+  window counts, as the harness wrote it (Antigravity's `Claude and GPT
+  models`); absent on every other window (Claude's `seven_day_<model>`
+  has none).
 - `plan` (optional, #1560): the account's plan when the harness tells it
   (Codex `plan_type`: `plus`, `pro`, …).
 - `used_percent`: the share of the window's limit used, 0–100 (may be
@@ -2581,7 +2589,9 @@ account:
   `token_count` events in its rollouts (below); `private_api` — the
   harness's undocumented usage API (since 0.19.0, #1563; see "Private
   API"); `omp_usage` — what omp (oh-my-pi) tells (since 0.19.1; see "omp
-  usage"). Items may gain keys: ignore what you do not know.
+  usage"); `antigravity_usage` — what Antigravity CLI's `/usage` tells
+  (since 0.25.0; see "Antigravity usage"). Items may gain keys: ignore
+  what you do not know.
 - `error` (optional, since 0.19.0, #1563): the last failure of the
   private API for the window's account, `{code, message, at, retry_at?}`
   (see "Private API"); the value beside it, if any, is the last one
@@ -2653,9 +2663,12 @@ is read as empty), so a restart notifies nothing again:
   compared: a statusLine that stopped, a rollout written earlier.
 
 The notification has `title` the service and the window in
-`notify.lang` (`Claude 5h`, `Codex Week`, `Codex 24h`, the weekly window
-of a model `Claude Week (Opus)`; ja `Claude 5時間`, `Claude 週`, `Claude
-週（Opus）`), `body` a fixed phrase with the reset time on the
+`notify.lang` (`Claude 5h`, `Codex Week`, `Codex 24h`, `Antigravity 5h`,
+the weekly window of a model `Claude Week (Opus)`, a labelled window by
+its quota group `Antigravity 5h (Claude and GPT models)`, `Antigravity
+Week (Gemini 4 Argon)`; ja `Claude 5時間`, `Claude 週`, `Claude
+週（Opus）`, `Antigravity 5時間（Claude and GPT models）`, `Antigravity
+週（Gemini 4 Argon）`), `body` a fixed phrase with the reset time on the
 host's wall clock (`HH:mm`, with `M/D` before it when a day or more
 away): en "80% used · resets at 14:20", "100% used · resets at
 14:20", "Reset"; ja "80% を使いました · 14:20 にリセット", "100% を使いました
@@ -2772,6 +2785,46 @@ Not run when `STAGENT_HOME` is set.
   the JSON expected: `bad_response`) sets `error` on the windows of the
   harnesses omp measured before, like the private API's; a successful
   omp run drops them. A failed history run is only logged.
+
+#### Antigravity usage
+
+(Since 0.25.0.) When Antigravity CLI is installed — `agy` found on the
+daemon's `PATH`, else in the per-user tool directories (`~/.local/bin`,
+…) — the daemon runs `agy -p /usage --output-format json`, a read-only
+slash command in print mode (no agent turn, no quota spent, no
+conversation left, no hook events), for the quota of the account agy is
+logged in to, with no setting. agy calls Google's quota API with its own
+login; stagent never reads agy's token. Not run when `STAGENT_HOME` is
+set.
+
+- Run only when the private API would be called (the schedule of
+  "Private API": in front at most once per 15 minutes, `refresh_limits`
+  after 5 minutes, the same waits after a failure), whether or not
+  `usage.private_api` is on; from the temporary directory, with the
+  daemon's environment; timed out after 30 s.
+- The account: `antigravity`, `config_dir` Antigravity CLI's home
+  (`~/.gemini/antigravity-cli`) as a clean absolute path. `measured_at`
+  is when the answer came.
+- Read: `status` `SUCCESS` and `command.data.groups[].buckets[]`. A
+  bucket with a `remaining_fraction` is a window (a disabled one has none
+  and is left out): `used_percent` = (1 − `remaining_fraction`) × 100,
+  two decimals, within 0–100; `resets_at` = `reset_time` (RFC 3339).
+  `window` `5h` is the base `five_hour`, `weekly` `seven_day`; another
+  `window` is left out. The buckets `gemini-5h` / `gemini-weekly` (the
+  "Gemini Models" group, Antigravity's own models) are plain `five_hour`
+  / `seven_day`; any other is `<base>_<scope>`, scope the bucket id
+  without a trailing `-5h` / `-weekly`, lowercased, every character
+  outside `[a-z0-9]` dropped (`3p-5h` → `five_hour_3p`,
+  `gemini-argon-wtu-weekly` → `seven_day_geminiargonwtu`; an empty scope
+  is left out), with `label` the group's `name`. Order: `five_hour`,
+  `seven_day`, then the scoped ones as agy lists them.
+- A failed run (exit status, timeout: `command_failed`; output not the
+  JSON expected or `status` not `SUCCESS`: `bad_response`) sets `error`
+  on the windows of the antigravity account when it has any (measured
+  earlier, or kept in `usage-limits.json`); an account never measured —
+  agy logged in with an API key (`GEMINI_API_KEY`, whose `/usage` fails)
+  or not at all — gets no windows, the failure only logged. A successful
+  run drops the errors.
 
 #### Click link
 

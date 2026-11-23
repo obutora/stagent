@@ -35,6 +35,8 @@ const AlertFresh = time.Hour
 // Alert is one notification to send about a limit window.
 type Alert struct {
 	Harness, ConfigDir, Window string
+	// Label is the window's quota group (wire.UsageLimitWindow.Label).
+	Label string
 	// ResetsAt is the window's reset time (unix ms) as first seen: the
 	// notifications of one window share it (their replace key).
 	ResetsAt int64
@@ -113,7 +115,7 @@ func (a *Alerts) Check(accounts []wire.UsageLimits, now time.Time) (out []Alert,
 			}
 			newWindow := later > sameWindow
 			if (newWindow || w.Reset) && s.Sent >= AlertFull && !s.ResetSent {
-				out = append(out, Alert{Harness: s.Harness, ConfigDir: s.ConfigDir, Window: s.Window, ResetsAt: s.ResetsAt})
+				out = append(out, Alert{Harness: s.Harness, ConfigDir: s.ConfigDir, Window: s.Window, Label: w.Label, ResetsAt: s.ResetsAt})
 				s.ResetSent, dirty = true, true
 			}
 			switch {
@@ -134,7 +136,7 @@ func (a *Alerts) Check(accounts []wire.UsageLimits, now time.Time) (out []Alert,
 				th = AlertNearly
 			}
 			if th > s.Sent {
-				out = append(out, Alert{Harness: s.Harness, ConfigDir: s.ConfigDir, Window: s.Window, ResetsAt: s.ResetsAt, Threshold: th})
+				out = append(out, Alert{Harness: s.Harness, ConfigDir: s.ConfigDir, Window: s.Window, Label: w.Label, ResetsAt: s.ResetsAt, Threshold: th})
 				s.Sent, dirty = th, true
 			}
 		}

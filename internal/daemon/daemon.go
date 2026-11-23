@@ -119,6 +119,12 @@ type Options struct {
 	OmpBin          func() string
 	Omp             usage.OmpUsage
 	OmpHistoryEvery time.Duration
+	// AgyBin finds Antigravity CLI's executable ("" when not installed;
+	// default: PATH then the per-user tool directories, nil — agy never
+	// run — when STAGENT_HOME is set) and Agy runs its /usage. See
+	// usage_agy.go.
+	AgyBin func() string
+	Agy    usage.AgyUsage
 	// BootID reads the id of the host's current boot ("" when unknown;
 	// default bootid.Get): agents.json recorded in another boot means the
 	// host restarted (stopped.go).
@@ -320,7 +326,11 @@ func New(opts Options) (*Daemon, error) {
 	}
 	if opts.OmpBin == nil && !opts.Layout.Isolated {
 		home := opts.Layout.Home
-		opts.OmpBin = func() string { return findOmp(home) }
+		opts.OmpBin = func() string { return findTool(home, "omp") }
+	}
+	if opts.AgyBin == nil && !opts.Layout.Isolated {
+		home := opts.Layout.Home
+		opts.AgyBin = func() string { return findTool(home, "agy") }
 	}
 	if opts.OmpHistoryEvery <= 0 {
 		opts.OmpHistoryEvery = defaultOmpHistoryEvery

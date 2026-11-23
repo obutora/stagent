@@ -21,6 +21,11 @@ func codexLimitsAt(minute int) int64 {
 	return time.Date(2026, 11, 14, 1, minute, 0, 0, time.UTC).UnixMilli()
 }
 
+// cw is a window measured at used percent, resetting at.
+func cw(id string, used float64, at int64) Window {
+	return Window{ID: id, UsedPercent: used, ResetsAt: at}
+}
+
 // Each prefix of codex-limits.jsonl leaves the windows of its last line
 // that has any: 300 and 10080 minutes (±1) are the 5-hour and weekly
 // windows, another length is named by its minutes, a window without a
@@ -34,15 +39,15 @@ func TestCodexRateLimitsFromRollout(t *testing.T) {
 		lines int
 		want  RateLimits
 	}{
-		{1, RateLimits{At: codexLimitsAt(0), Plan: "plus", Windows: []Window{{five, 12, 1794610000_000}, {week, 3, 1795100000_000}}}},
+		{1, RateLimits{At: codexLimitsAt(0), Plan: "plus", Windows: []Window{cw(five, 12, 1794610000_000), cw(week, 3, 1795100000_000)}}},
 		// rate_limits null, {}, and both windows null: unchanged.
-		{2, RateLimits{At: codexLimitsAt(0), Plan: "plus", Windows: []Window{{five, 12, 1794610000_000}, {week, 3, 1795100000_000}}}},
-		{4, RateLimits{At: codexLimitsAt(0), Plan: "plus", Windows: []Window{{five, 12, 1794610000_000}, {week, 3, 1795100000_000}}}},
+		{2, RateLimits{At: codexLimitsAt(0), Plan: "plus", Windows: []Window{cw(five, 12, 1794610000_000), cw(week, 3, 1795100000_000)}}},
+		{4, RateLimits{At: codexLimitsAt(0), Plan: "plus", Windows: []Window{cw(five, 12, 1794610000_000), cw(week, 3, 1795100000_000)}}},
 		{5, RateLimits{At: codexLimitsAt(4), Plan: "pro", Windows: []Window{
-			{five, 20.5, codexLimitsAt(4) + 3600_000}, {week, 5, codexLimitsAt(4) + 86400_000}}}},
-		{6, RateLimits{At: codexLimitsAt(5), Windows: []Window{{five, 25, 1794700000_000}, {week, 6, 1795200000_000}}}},
-		{7, RateLimits{At: codexLimitsAt(6), Windows: []Window{{"1440m", 30, 1794800000_000}, {week, 7, 1795200000_000}}}},
-		{8, RateLimits{At: codexLimitsAt(7), Windows: []Window{{five, 26, 1794700000_000}}}},
+			cw(five, 20.5, codexLimitsAt(4)+3600_000), cw(week, 5, codexLimitsAt(4)+86400_000)}}},
+		{6, RateLimits{At: codexLimitsAt(5), Windows: []Window{cw(five, 25, 1794700000_000), cw(week, 6, 1795200000_000)}}},
+		{7, RateLimits{At: codexLimitsAt(6), Windows: []Window{cw("1440m", 30, 1794800000_000), cw(week, 7, 1795200000_000)}}},
+		{8, RateLimits{At: codexLimitsAt(7), Windows: []Window{cw(five, 26, 1794700000_000)}}},
 	}
 	for _, tc := range tests {
 		tr := newTree(t)
@@ -75,7 +80,7 @@ func TestCodexRateLimitsSurviveNullLines(t *testing.T) {
 	tr.write(wire.HarnessCodex, codexRel, fixture(t, "codex.jsonl"))
 	s = tr.open()
 	scan(t, s)
-	want := []Window{{wire.UsageWindowFiveHour, 12, 1794610000_000}, {wire.UsageWindowSevenDay, 3, 1795100000_000}}
+	want := []Window{cw(wire.UsageWindowFiveHour, 12, 1794610000_000), cw(wire.UsageWindowSevenDay, 3, 1795100000_000)}
 	if got, ok := s.RateLimits(wire.HarnessCodex); !ok || !reflect.DeepEqual(got.Windows, want) || got.Plan != "plus" {
 		t.Fatalf("codex.jsonl: %+v (%v)", got, ok)
 	}

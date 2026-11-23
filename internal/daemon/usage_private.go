@@ -40,6 +40,7 @@ func (d *Daemon) runPrivateAPI() {
 	defer t.Stop()
 	sched := map[string]*usage.APISchedule{}
 	omp := &ompState{}
+	agy := &agyState{}
 	for {
 		d.mu.Lock()
 		foreground := d.appForegroundLocked()
@@ -48,6 +49,7 @@ func (d *Daemon) runPrivateAPI() {
 		d.mu.Unlock()
 		d.callPrivateAPI(ctx, sched, foreground, opened)
 		d.callOmp(ctx, omp, foreground, opened)
+		d.callAgy(ctx, agy, foreground, opened)
 		select {
 		case <-d.shutdown:
 			return

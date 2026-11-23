@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"cmp"
 	"fmt"
 	"hash/fnv"
 	"strings"
@@ -14,9 +15,10 @@ import (
 // before it), the body is a fixed phrase with the reset time.
 
 // UsageLimitTitle is the title of a notification about window (a
-// wire.UsageWindow* id or "<minutes>m") of harness in lang.
-func UsageLimitTitle(lang, harness, window string) string {
-	return usageOwner(harness) + " " + windowLabel(lang, window)
+// wire.UsageWindow* id or "<minutes>m") of harness in lang; label is the
+// window's quota group ("" when it has none).
+func UsageLimitTitle(lang, harness, window, label string) string {
+	return usageOwner(harness) + " " + windowLabel(lang, window, label)
 }
 
 // UsageLimitBody is the body of a notification in lang: the window passed
@@ -43,13 +45,16 @@ func usageOwner(harness string) string {
 		return "Claude"
 	case wire.HarnessCodex:
 		return "Codex"
+	case wire.HarnessAntigravity:
+		return "Antigravity"
 	}
 	return harness
 }
 
 // windowLabel names a window in lang: 5h, Week, the week and the model for
-// the weekly window of one model ("Week (Opus)"), or its length.
-func windowLabel(lang, window string) string {
+// the weekly window of one model ("Week (Opus)"), the window and its quota
+// group for a labelled one ("5h (Claude and GPT models)"), or its length.
+func windowLabel(lang, window, label string) string {
 	switch window {
 	case wire.UsageWindowFiveHour:
 		return Text(lang, PhraseWindowFiveHour)
@@ -57,7 +62,10 @@ func windowLabel(lang, window string) string {
 		return Text(lang, PhraseWindowSevenDay)
 	}
 	if model, ok := wire.UsageWindowModel(window); ok {
-		return Text(lang, PhraseWindowSevenDayModel, strings.ToUpper(model[:1])+model[1:])
+		return Text(lang, PhraseWindowSevenDayModel, cmp.Or(label, strings.ToUpper(model[:1])+model[1:]))
+	}
+	if scope, ok := wire.UsageWindowFiveHourScope(window); ok {
+		return Text(lang, PhraseWindowFiveHourScope, cmp.Or(label, scope))
 	}
 	m, ok := wire.UsageWindowLength(window)
 	switch {

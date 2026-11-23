@@ -198,12 +198,20 @@ const (
 	// --json` and records in its hourly snapshots (`omp usage --history
 	// --json`), when omp is installed (omp の記録).
 	UsageSourceOmpUsage = "omp_usage"
+	// UsageSourceAntigravityUsage: what Antigravity CLI tells with `agy -p
+	// /usage --output-format json`, when agy is installed (Antigravity
+	// usage).
+	UsageSourceAntigravityUsage = "antigravity_usage"
 )
 
 // More limit window ids the private API brings: Claude's weekly window of
 // one model ("seven_day_opus", "seven_day_sonnet": UsageWindowSevenDay +
 // "_" + the model, see UsageWindowModel) and its extra usage (超過の課金, a
 // monthly spend limit whose reset time is not told: ResetsAt 0).
+// Antigravity's quota groups other than its own models bring the scoped
+// windows "five_hour_<scope>" (UsageWindowFiveHourScope) and
+// "seven_day_<scope>" (the same family as a model's week), labelled with
+// the group's name (UsageLimitWindow.Label).
 const (
 	UsageWindowExtraUsage = "extra_usage"
 )
@@ -244,33 +252,53 @@ func UsageWindowLength(id string) (minutes int64, ok bool) {
 	return m, true
 }
 
-// UsageWindowModel is the model of Claude's weekly window of one model
-// ("opus" of "seven_day_opus": lowercase letters and digits); ok is false
-// for any other id.
+// UsageWindowModel is the model (or scope) of a weekly window of one
+// model or quota group ("opus" of "seven_day_opus": lowercase letters and
+// digits); ok is false for any other id.
 func UsageWindowModel(id string) (model string, ok bool) {
-	model, found := strings.CutPrefix(id, UsageWindowSevenDay+"_")
-	if !found || model == "" {
+	return usageWindowScope(id, UsageWindowSevenDay)
+}
+
+// UsageWindowFiveHourScope is the scope of a five-hour window of one
+// quota group ("3p" of "five_hour_3p": lowercase letters and digits); ok
+// is false for any other id.
+func UsageWindowFiveHourScope(id string) (scope string, ok bool) {
+	return usageWindowScope(id, UsageWindowFiveHour)
+}
+
+func usageWindowScope(id, base string) (string, bool) {
+	scope, found := strings.CutPrefix(id, base+"_")
+	if !found || scope == "" {
 		return "", false
 	}
-	for _, c := range model {
+	for _, c := range scope {
 		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
 			return "", false
 		}
 	}
-	return model, true
+	return scope, true
+}
+
+// UsageWindowScoped reports whether id is a window of one model or quota
+// group (seven_day_<x> or five_hour_<x>).
+func UsageWindowScoped(id string) bool {
+	_, week := UsageWindowModel(id)
+	_, five := UsageWindowFiveHourScope(id)
+	return week || five
 }
 
 // UsageWindowRank orders window ids the way usage.get lists them:
-// five_hour, seven_day, the weekly windows of one model, the others (by
-// id), then extra_usage.
+// five_hour, seven_day, the windows of one model or quota group (among
+// themselves in the order they were measured), the others (by id), then
+// extra_usage.
 func UsageWindowRank(id string) int {
 	for i, w := range usageWindowLengths {
 		if w.id == id {
 			return i
 		}
 	}
-	switch _, model := UsageWindowModel(id); {
-	case model:
+	switch {
+	case UsageWindowScoped(id):
 		return len(usageWindowLengths)
 	case id == UsageWindowExtraUsage:
 		return len(usageWindowLengths) + 2
@@ -299,7 +327,8 @@ const (
 	UsageErrNetwork = "network"
 	// UsageErrBadResponse: the API's answer was not the JSON expected.
 	UsageErrBadResponse = "bad_response"
-	// UsageErrCommand: `omp usage` failed (exit status, 15 s timeout).
+	// UsageErrCommand: `omp usage` or `agy -p /usage` failed (exit status,
+	// timeout).
 	UsageErrCommand = "command_failed"
 )
 
@@ -339,6 +368,9 @@ type UsageLimits struct {
 // UsageLimitWindow is the last measurement of one limit window.
 type UsageLimitWindow struct {
 	Window string `json:"window"` // UsageWindow*
+	// Label names the quota group of a scoped window as the harness wrote
+	// it (Antigravity's "Claude and GPT models"); absent otherwise.
+	Label string `json:"label,omitempty"`
 	// UsedPercent is the share of the window's limit used (0–100); absent
 	// when Reset.
 	UsedPercent *float64 `json:"used_percent,omitempty"`

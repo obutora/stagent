@@ -110,19 +110,18 @@ func (d *Daemon) recordOmp(s *ompState, ms []usage.OmpMeasurement) {
 	}
 }
 
-// findOmp is the omp executable: PATH, then the per-user install
-// directories (a launchd or systemd daemon's PATH often lacks
-// ~/.local/bin); "" when omp is not installed.
-func findOmp(home string) string {
-	if p, err := exec.LookPath("omp"); err == nil {
+// findTool is the executable name (omp, agy): PATH, then the per-user
+// install directories (a launchd or systemd daemon's PATH often lacks
+// ~/.local/bin); "" when it is not installed.
+func findTool(home, name string) string {
+	if p, err := exec.LookPath(name); err == nil {
 		if abs, err := filepath.Abs(p); err == nil {
 			return abs
 		}
 		return p
 	}
-	name := "omp"
 	if runtime.GOOS == "windows" {
-		name = "omp.exe"
+		name += ".exe"
 	}
 	for _, dir := range paths.ToolDirs(runtime.GOOS, home, os.Getenv) {
 		p := filepath.Join(dir, name)

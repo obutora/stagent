@@ -225,7 +225,7 @@ remove them.
 
 With the agent features on, the app shows the tokens the coding agents
 spent on the host (使用量) and the limit windows of their subscriptions
-(上限の枠: Claude's and Codex's 5 hours and week). For that:
+(上限の枠: Claude's, Codex's and Antigravity's 5 hours and week). For that:
 
 - `stagent daemon` reads, every 10 s and when the app asks, what is new in
   the conversation files of claude (`$CLAUDE_CONFIG_DIR` or `~/.claude`,
@@ -270,11 +270,17 @@ spent on the host (使用量) and the limit windows of their subscriptions
   schedule (app in front, at most every 15 minutes) for the limit windows
   of the Claude and Codex logins omp holds. omp makes the calls with its
   own login; stagent reads no omp token.
+- When Antigravity CLI is installed, the daemon runs `agy -p /usage
+  --output-format json` (read-only: no agent turn, no quota spent) on the
+  private API's schedule for the quota of the account agy is logged in
+  to — its own models' 5 hours and week, and each other quota group's
+  under the group's name. agy makes the call with its own login; stagent
+  reads no agy token.
 
 Coding agents can read the usage too; of what writes, they can send only
 the relay's report, and only within the bounds told above for agents
 (ADR 0004). The wire format is in
-[PROTOCOL.md](PROTOCOL.md) ("Usage", "Limit windows", "Private API", "omp usage").
+[PROTOCOL.md](PROTOCOL.md) ("Usage", "Limit windows", "Private API", "omp usage", "Antigravity usage").
 
 ## Screen rules
 

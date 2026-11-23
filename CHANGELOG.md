@@ -3,6 +3,23 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.25.0
+
+### Added
+
+- Antigravity's limit windows. When Antigravity CLI (`agy`) is installed,
+  the daemon runs `agy -p /usage --output-format json` (a read-only
+  slash command: no agent turn, no quota spent) on the private API's
+  schedule and records its quota under the account `antigravity` /
+  `~/.gemini/antigravity-cli` with source `antigravity_usage`: its own
+  models' `five_hour` and `seven_day`, and every other quota group's
+  windows as `five_hour_<scope>` / `seven_day_<scope>` carrying the new
+  optional window key `label` (the group's name, e.g. `Claude and GPT
+  models`). A failed run becomes the windows' `error` like omp's. Limit
+  notifications name the service `Antigravity` and a labelled window by
+  its group (`Antigravity 5h (Claude and GPT models)`). stagent never
+  reads agy's token.
+
 ## 0.24.0
 
 ### Added

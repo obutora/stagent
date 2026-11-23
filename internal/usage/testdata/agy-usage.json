@@ -1,0 +1,17 @@
+{"conversation_id":"","status":"SUCCESS","response":"Gemini Models\tWeekly Limit Remaining\t91%\t2026-11-29T01:09:02Z\n","num_turns":0,"usage":{"input_tokens":0,"output_tokens":0},
+ "command":{"name":"usage","data":{"description":"Within each group, models share a weekly limit and a 5-hour limit.",
+  "groups":[
+   {"name":"Gemini Models","description":"Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen, Orchestrator (Neon), Gemini 3.8 Flash",
+    "buckets":[
+     {"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.9058462977409363,"reset_time":"2026-11-29T01:09:02Z"},
+     {"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.8573422431945801,"reset_time":"2026-11-23T10:04:31Z"}]},
+   {"name":"Claude and GPT models","description":"Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
+    "buckets":[
+     {"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":1,"reset_time":"2026-11-30T05:28:10Z"},
+     {"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"2026-11-23T10:28:10Z"},
+     {"id":"3p-monthly","name":"Monthly Limit Remaining","window":"monthly","remaining_fraction":0.5,"reset_time":"2026-12-01T00:00:00Z"}]},
+   {"name":"Gemini 4 Argon","description":"For paid Pro plans, Argon quota is separate.",
+    "buckets":[
+     {"id":"gemini-argon-wtu-5h","name":"Gemini 4 Argon Five Hour Limit","window":"5h","reset_time":"2026-11-23T10:28:10Z"},
+     {"id":"gemini-argon-wtu-weekly","name":"Gemini 4 Argon Weekly Limit","window":"weekly","remaining_fraction":0.000001,"reset_time":"2026-11-30T05:28:10Z"},
+     {"id":"--weekly","name":"Nameless","window":"weekly","remaining_fraction":0.5,"reset_time":"2026-11-30T05:28:10Z"}]}]}}}

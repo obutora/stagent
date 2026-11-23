@@ -27,9 +27,10 @@ const sameWindow = 60 * time.Second
 
 // Window is one measurement of a limit window.
 type Window struct {
-	ID          string  `json:"id"`           // wire.UsageWindow*, or "<minutes>m"
-	UsedPercent float64 `json:"used_percent"` // share of the limit used, 0–100
-	ResetsAt    int64   `json:"resets_at"`    // unix ms
+	ID          string  `json:"id"`              // wire.UsageWindow*, or "<minutes>m"
+	UsedPercent float64 `json:"used_percent"`    // share of the limit used, 0–100
+	ResetsAt    int64   `json:"resets_at"`       // unix ms
+	Label       string  `json:"label,omitempty"` // the quota group of a scoped window
 }
 
 // Limits holds the limit windows. Safe for concurrent use. The file is
@@ -86,8 +87,8 @@ type Measurement struct {
 // old. A window without a reset time (ResetsAt 0, or one kept with only an
 // error) is always replaced. A window not among m.Windows keeps its
 // value, as does the plan when m has none. A measurement of a source that
-// can fail (the private API, omp) clears the account's errors (it
-// succeeded); any other keeps them.
+// can fail (the private API, omp, Antigravity's /usage) clears the
+// account's errors (it succeeded); any other keeps them.
 // changed is whether a share, a reset time, the plan or an error changed;
 // the file is written whenever a value was taken.
 func (l *Limits) Record(h, configDir string, m Measurement) (changed bool, err error) {
@@ -117,17 +118,36 @@ func (l *Limits) Record(h, configDir string, m Measurement) (changed bool, err e
 			kept = len(a.Windows) - 1
 		}
 		p := w.UsedPercent
-		a.Windows[kept] = wire.UsageLimitWindow{Window: w.ID, UsedPercent: &p, ResetsAt: w.ResetsAt, Source: m.Source, MeasuredAt: m.At.UnixMilli(), Error: keptErr}
+		a.Windows[kept] = wire.UsageLimitWindow{Window: w.ID, Label: w.Label, UsedPercent: &p, ResetsAt: w.ResetsAt, Source: m.Source, MeasuredAt: m.At.UnixMilli(), Error: keptErr}
 		taken = true
 	}
 	if m.Plan != "" && m.Plan != a.Plan && len(a.Windows) > 0 {
 		a.Plan = m.Plan
 		changed, taken = true, true
 	}
-	if (m.Source == wire.UsageSourcePrivateAPI || m.Source == wire.UsageSourceOmpUsage) && clearErrors(a) {
+	if canFail(m.Source) && clearErrors(a) {
 		changed, taken = true, true
 	}
 	return changed, l.settleLocked(i, taken, &snap)
+}
+
+// canFail reports whether source is measured by a call that can fail and
+// whose success clears the account's errors.
+func canFail(source string) bool {
+	switch source {
+	case wire.UsageSourcePrivateAPI, wire.UsageSourceOmpUsage, wire.UsageSourceAntigravityUsage:
+		return true
+	}
+	return false
+}
+
+// Has reports whether the account (h, configDir) has windows.
+func (l *Limits) Has(h, configDir string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.ContainsFunc(l.accounts, func(a wire.UsageLimits) bool {
+		return a.Harness == h && a.ConfigDir == configDir && len(a.Windows) > 0
+	})
 }
 
 // RecordError keeps e as the last error of every window of the account
@@ -244,8 +264,9 @@ func (l *Limits) write(snap *limitsSnapshot, err *error) {
 
 // Report is the limit windows as usage.get returns them at now: accounts
 // in the registry's harness order, then by configuration directory;
-// windows five_hour, seven_day, the weekly windows of one model, the
-// others by id, then extra_usage. A window whose reset time has passed
+// windows five_hour, seven_day, the windows of one model or quota group
+// (in the order they were first measured), the others by id, then
+// extra_usage. A window whose reset time has passed
 // comes without its share, marked Reset.
 func (l *Limits) Report(now time.Time) []wire.UsageLimits {
 	l.mu.Lock()
@@ -259,8 +280,12 @@ func (l *Limits) Report(now time.Time) []wire.UsageLimits {
 			}
 			ws[i] = w
 		}
-		slices.SortFunc(ws, func(x, y wire.UsageLimitWindow) int {
-			return cmp.Or(cmp.Compare(wire.UsageWindowRank(x.Window), wire.UsageWindowRank(y.Window)), cmp.Compare(x.Window, y.Window))
+		slices.SortStableFunc(ws, func(x, y wire.UsageLimitWindow) int {
+			rx, ry := wire.UsageWindowRank(x.Window), wire.UsageWindowRank(y.Window)
+			if rx != ry || wire.UsageWindowScoped(x.Window) {
+				return cmp.Compare(rx, ry)
+			}
+			return cmp.Compare(x.Window, y.Window)
 		})
 		out = append(out, wire.UsageLimits{Harness: a.Harness, ConfigDir: a.ConfigDir, Plan: a.Plan, Windows: ws})
 	}

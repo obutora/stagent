@@ -43,7 +43,7 @@ func (d *Daemon) checkLimitAlerts() {
 func (d *Daemon) notifyLimitLocked(a usage.Alert, now time.Time) {
 	cfg := d.eff.Notify
 	n := wire.NotificationData{
-		Title:  notify.UsageLimitTitle(cfg.Lang, a.Harness, a.Window),
+		Title:  notify.UsageLimitTitle(cfg.Lang, a.Harness, a.Window, a.Label),
 		Body:   notify.UsageLimitBody(cfg.Lang, a.Threshold, time.UnixMilli(a.ResetsAt), now),
 		Level:  wire.LevelInfo,
 		Reason: wire.ReasonUsageLimit, Harness: a.Harness, Window: a.Window, ResetsAt: a.ResetsAt, ConfigDir: a.ConfigDir,

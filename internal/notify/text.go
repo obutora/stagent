@@ -48,7 +48,8 @@ const (
 	PhraseLimitReset          //
 	PhraseWindowFiveHour      //
 	PhraseWindowSevenDay      //
-	PhraseWindowSevenDayModel // %s: the model ("Opus")
+	PhraseWindowSevenDayModel // %s: the model ("Opus") or quota group
+	PhraseWindowFiveHourScope // %s: the quota group ("Claude and GPT models")
 	PhraseWindowDays          // %d: days
 	PhraseWindowHours         // %d: hours
 	PhraseWindowMinutes       // %d: minutes
@@ -96,6 +97,7 @@ var phrases = map[string][phraseCount]string{
 		PhraseWindowFiveHour:      "5h",
 		PhraseWindowSevenDay:      "Week",
 		PhraseWindowSevenDayModel: "Week (%s)",
+		PhraseWindowFiveHourScope: "5h (%s)",
 		PhraseWindowDays:          "%dd",
 		PhraseWindowHours:         "%dh",
 		PhraseWindowMinutes:       "%dm",
@@ -139,6 +141,7 @@ var phrases = map[string][phraseCount]string{
 		PhraseWindowFiveHour:      "5時間",
 		PhraseWindowSevenDay:      "週",
 		PhraseWindowSevenDayModel: "週（%s）",
+		PhraseWindowFiveHourScope: "5時間（%s）",
 		PhraseWindowDays:          "%d日",
 		PhraseWindowHours:         "%d時間",
 		PhraseWindowMinutes:       "%d分",
@@ -182,6 +185,7 @@ var phrases = map[string][phraseCount]string{
 		PhraseWindowFiveHour:      "5시간",
 		PhraseWindowSevenDay:      "주간",
 		PhraseWindowSevenDayModel: "주간(%s)",
+		PhraseWindowFiveHourScope: "5시간(%s)",
 		PhraseWindowDays:          "%d일",
 		PhraseWindowHours:         "%d시간",
 		PhraseWindowMinutes:       "%d분",
@@ -225,6 +229,7 @@ var phrases = map[string][phraseCount]string{
 		PhraseWindowFiveHour:      "5 小时",
 		PhraseWindowSevenDay:      "每周",
 		PhraseWindowSevenDayModel: "每周（%s）",
+		PhraseWindowFiveHourScope: "5 小时（%s）",
 		PhraseWindowDays:          "%d 天",
 		PhraseWindowHours:         "%d 小时",
 		PhraseWindowMinutes:       "%d 分钟",

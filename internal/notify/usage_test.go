@@ -74,22 +74,28 @@ func TestUsageLimitWantsAndPriority(t *testing.T) {
 }
 
 // Titles name the service and the window (the weekly window of one model
-// by the week and the model); bodies are fixed phrases with the reset time
-// (with the date when a day or more away).
+// by the week and the model, a labelled window by its quota group); bodies
+// are fixed phrases with the reset time (with the date when a day or more
+// away).
 func TestUsageLimitTexts(t *testing.T) {
-	for _, c := range []struct{ lang, h, w, want string }{
-		{wire.LangJa, wire.HarnessClaude, wire.UsageWindowFiveHour, "Claude 5時間"},
-		{wire.LangJa, wire.HarnessCodex, wire.UsageWindowSevenDay, "Codex 週"},
-		{wire.LangJa, wire.HarnessClaude, "seven_day_opus", "Claude 週（Opus）"},
-		{wire.LangEn, wire.HarnessClaude, "seven_day_sonnet", "Claude Week (Sonnet)"},
-		{wire.LangKo, wire.HarnessClaude, "seven_day_opus", "Claude 주간(Opus)"},
-		{wire.LangZh, wire.HarnessClaude, "seven_day_opus", "Claude 每周（Opus）"},
-		{wire.LangEn, wire.HarnessCodex, "1440m", "Codex 24h"},
-		{wire.LangEn, wire.HarnessCodex, "2880m", "Codex 2d"},
-		{wire.LangEn, wire.HarnessCodex, "90m", "Codex 90m"},
+	for _, c := range []struct{ lang, h, w, label, want string }{
+		{wire.LangJa, wire.HarnessClaude, wire.UsageWindowFiveHour, "", "Claude 5時間"},
+		{wire.LangJa, wire.HarnessCodex, wire.UsageWindowSevenDay, "", "Codex 週"},
+		{wire.LangJa, wire.HarnessClaude, "seven_day_opus", "", "Claude 週（Opus）"},
+		{wire.LangEn, wire.HarnessClaude, "seven_day_sonnet", "", "Claude Week (Sonnet)"},
+		{wire.LangKo, wire.HarnessClaude, "seven_day_opus", "", "Claude 주간(Opus)"},
+		{wire.LangZh, wire.HarnessClaude, "seven_day_opus", "", "Claude 每周（Opus）"},
+		{wire.LangEn, wire.HarnessCodex, "1440m", "", "Codex 24h"},
+		{wire.LangEn, wire.HarnessCodex, "2880m", "", "Codex 2d"},
+		{wire.LangEn, wire.HarnessCodex, "90m", "", "Codex 90m"},
+		{wire.LangEn, wire.HarnessAntigravity, wire.UsageWindowFiveHour, "", "Antigravity 5h"},
+		{wire.LangEn, wire.HarnessAntigravity, wire.UsageWindowSevenDay, "", "Antigravity Week"},
+		{wire.LangEn, wire.HarnessAntigravity, "five_hour_3p", "Claude and GPT models", "Antigravity 5h (Claude and GPT models)"},
+		{wire.LangJa, wire.HarnessAntigravity, "five_hour_3p", "Claude and GPT models", "Antigravity 5時間（Claude and GPT models）"},
+		{wire.LangJa, wire.HarnessAntigravity, "seven_day_geminiargonwtu", "Gemini 4 Argon", "Antigravity 週（Gemini 4 Argon）"},
 	} {
-		if got := UsageLimitTitle(c.lang, c.h, c.w); got != c.want {
-			t.Errorf("UsageLimitTitle(%s, %s, %s) = %q, want %q", c.lang, c.h, c.w, got, c.want)
+		if got := UsageLimitTitle(c.lang, c.h, c.w, c.label); got != c.want {
+			t.Errorf("UsageLimitTitle(%s, %s, %s, %q) = %q, want %q", c.lang, c.h, c.w, c.label, got, c.want)
 		}
 	}
 	reset := time.Date(2026, 11, 14, 14, 20, 0, 0, time.Local)
