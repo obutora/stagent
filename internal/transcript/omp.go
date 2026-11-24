@@ -105,6 +105,9 @@ type ompContent struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
 	Intent    string          `json:"intent"`
+	// Images: base64 data and its media type.
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
 }
 
 // ompContents are a message's content blocks. A user message may hold a
@@ -120,7 +123,7 @@ func (c *ompContents) UnmarshalJSON(b []byte) error {
 	return json.Unmarshal(b, (*[]ompContent)(c))
 }
 
-func parseOmp(line []byte) []wire.Message {
+func parseOmp(line []byte) []Entry {
 	if !bytes.HasPrefix(line, []byte(`{"type":"message"`)) && !bytes.Contains(line, []byte(`"type":"message"`)) {
 		return nil
 	}
@@ -132,31 +135,21 @@ func parseOmp(line []byte) []wire.Message {
 	if t == 0 {
 		t = parseTime(r.Timestamp)
 	}
-	var out []wire.Message
+	var out []Entry
 	switch r.Message.Role {
 	case "user":
 		if r.Message.Attribution != "" && r.Message.Attribution != "user" {
 			return nil
 		}
-		var texts []string
-		for _, c := range r.Message.Content {
-			switch c.Type {
-			case "text":
-				if s := strings.TrimSpace(c.Text); s != "" {
-					texts = append(texts, s)
-				}
-			case "image":
-				texts = append(texts, "[image]")
-			}
-		}
-		if len(texts) > 0 {
-			out = append(out, wire.Message{Role: RoleUser, Text: clip(strings.Join(texts, "\n\n"), maxText), Time: t})
+		texts, images := ompTextAndImages(r.Message.Content)
+		if len(texts) > 0 || len(images) > 0 {
+			out = append(out, Entry{Role: RoleUser, Text: strings.Join(texts, "\n\n"), Images: images, Time: t})
 		}
 	case "assistant":
 		var texts []string
 		flush := func() {
 			if len(texts) > 0 {
-				out = append(out, wire.Message{Role: RoleAssistant, Text: clip(strings.Join(texts, "\n\n"), maxText), Time: t})
+				out = append(out, Entry{Role: RoleAssistant, Text: strings.Join(texts, "\n\n"), Time: t})
 				texts = nil
 			}
 		}
@@ -169,8 +162,8 @@ func parseOmp(line []byte) []wire.Message {
 			case "toolCall":
 				flush()
 				if c.Name == ompAskTool {
-					if m, ok := ompAskQuestion(c, t); ok {
-						out = append(out, m)
+					if e, ok := ompAskQuestion(c, t); ok {
+						out = append(out, e)
 						continue
 					}
 				}
@@ -178,22 +171,43 @@ func parseOmp(line []byte) []wire.Message {
 				if s == "" {
 					s = oneLine(c.Intent, maxSummary)
 				}
-				out = append(out, wire.Message{Role: RoleTool, ToolName: c.Name, Text: s, Time: t})
+				out = append(out, toolCall(c.Name, c.ID, rawInput(c.Arguments), s, t))
 			}
 		}
 		flush()
 	case "toolResult":
 		if r.Message.ToolName == ompAskTool {
 			out = append(out, ompAskAnswer(r.Message, t))
+			break
 		}
+		texts, images := ompTextAndImages(r.Message.Content)
+		out = append(out, toolOutput(r.Message.ToolName, r.Message.ToolCallID, strings.Join(texts, "\n\n"), images, t)...)
 	}
 	return out
+}
+
+// ompTextAndImages are the non-blank texts and the images of content
+// blocks.
+func ompTextAndImages(content ompContents) ([]string, []Image) {
+	var texts []string
+	var images []Image
+	for _, c := range content {
+		switch c.Type {
+		case "text":
+			if s := strings.TrimSpace(c.Text); s != "" {
+				texts = append(texts, s)
+			}
+		case "image":
+			images = append(images, base64Image(c.MimeType, c.Data))
+		}
+	}
+	return texts, images
 }
 
 // ompAskTool is omp's tool for asking the user questions.
 var ompAskTool = harness.QuestionToolOf(wire.HarnessOmp)
 
-func ompAskQuestion(c ompContent, t int64) (wire.Message, bool) {
+func ompAskQuestion(c ompContent, t int64) (Entry, bool) {
 	var args struct {
 		Questions []struct {
 			ID       string `json:"id"`
@@ -203,13 +217,13 @@ func ompAskQuestion(c ompContent, t int64) (wire.Message, bool) {
 		} `json:"questions"`
 	}
 	if json.Unmarshal(c.Arguments, &args) != nil || len(args.Questions) == 0 {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	items := make([]wire.QuestionItem, len(args.Questions))
 	for i, q := range args.Questions {
 		items[i] = wire.QuestionItem{ID: q.ID, Header: q.Header, Question: q.Question, Multi: q.Multi}
 	}
-	return askQuestionRow(c.Name, c.ID, items, t), true
+	return askQuestionRow(c.Name, c.ID, rawInput(c.Arguments), items, t), true
 }
 
 // ompAskResult is the answer to one question in an ask result's details.
@@ -232,7 +246,7 @@ func (r ompAskResult) item() wire.QuestionItem {
 // ompAskAnswer reads the answer row from an ask result: details holds one
 // question's answer, or results with one per question. An error result is
 // a question closed without an answer (cancelled, skipped).
-func ompAskAnswer(m ompMessage, t int64) wire.Message {
+func ompAskAnswer(m ompMessage, t int64) Entry {
 	id := m.ToolCallID
 	if m.IsError {
 		return askDeclinedRow(id, t)

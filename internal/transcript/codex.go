@@ -102,7 +102,7 @@ func scanCodex(path string, e *entry) {
 		if !complete {
 			return true
 		}
-		for _, m := range parseCodex(line, nil) {
+		for _, m := range messages(parseCodex(line, nil)) {
 			if m.Role == RoleUser {
 				e.Prompt = clip(m.Text, 1024)
 				return false
@@ -164,28 +164,35 @@ type codexRecord struct {
 }
 
 type codexItem struct {
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Name      string          `json:"name"`
-	Arguments string          `json:"arguments"`
-	Input     string          `json:"input"`
-	CallID    string          `json:"call_id"`
-	Output    json.RawMessage `json:"output"`
-	Action    *struct {
-		Command []string `json:"command"`
-		Query   string   `json:"query"`
-	} `json:"action"`
+	Type      string           `json:"type"`
+	Role      string           `json:"role"`
+	Content   []codexContent   `json:"content"`
+	Name      string           `json:"name"`
+	Arguments string           `json:"arguments"`
+	Input     string           `json:"input"`
+	CallID    string           `json:"call_id"`
+	Output    json.RawMessage  `json:"output"`
+	Action    *codexItemAction `json:"action"`
+}
+
+type codexItemAction struct {
+	Command []string `json:"command"`
+	Query   string   `json:"query"`
+}
+
+// codexContent is a message's content item, or a function call output's:
+// input_text, output_text, input_image (image_url, a data: URL).
+type codexContent struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	ImageURL string `json:"image_url"`
 }
 
 // Context Codex injects as user messages: <environment_context>,
 // <user_instructions>, AGENTS.md, <turn_aborted>, …
 var codexInjected = regexp.MustCompile(`^(<[A-Za-z_][A-Za-z0-9_ -]*>|# AGENTS\.md instructions)`)
 
-func parseCodex(line []byte, asked askedFunc) []wire.Message {
+func parseCodex(line []byte, asked askedFunc) []Entry {
 	if !bytes.Contains(line, []byte(`"response_item"`)) {
 		return nil
 	}
@@ -201,7 +208,12 @@ func parseCodex(line []byte, asked askedFunc) []wire.Message {
 	switch it.Type {
 	case "message":
 		var texts []string
+		var images []Image
 		for _, c := range it.Content {
+			if it.Role == "user" && c.Type == "input_image" {
+				images = append(images, urlImage("", c.ImageURL))
+				continue
+			}
 			s := strings.TrimSpace(c.Text)
 			if s == "" {
 				continue
@@ -216,41 +228,80 @@ func parseCodex(line []byte, asked askedFunc) []wire.Message {
 				texts = append(texts, s)
 			}
 		}
-		if len(texts) == 0 {
+		if len(texts) == 0 && len(images) == 0 {
 			return nil
 		}
 		role := RoleUser
 		if it.Role == "assistant" {
 			role = RoleAssistant
 		}
-		return []wire.Message{{Role: role, Text: clip(strings.Join(texts, "\n\n"), maxText), Time: t}}
+		return []Entry{{Role: role, Text: strings.Join(texts, "\n\n"), Images: images, Time: t}}
 	case "function_call":
 		if it.Name == codexAskTool {
-			if m, ok := codexAskQuestion(it, t); ok {
-				return []wire.Message{m}
+			if e, ok := codexAskQuestion(it, t); ok {
+				return []Entry{e}
 			}
 		}
-		return []wire.Message{{Role: RoleTool, ToolName: it.Name, Text: Summarize(json.RawMessage(it.Arguments)), Time: t}}
+		return []Entry{toolCall(it.Name, it.CallID, it.Arguments, Summarize(json.RawMessage(it.Arguments)), t)}
 	case "function_call_output":
-		if m, ok := codexAskAnswer(it, t, asked); ok {
-			return []wire.Message{m}
+		if e, ok := codexAskAnswer(it, t, asked); ok {
+			return []Entry{e}
 		}
+		text, images := codexOutput(it.Output)
+		return toolOutput("", it.CallID, text, images, t)
 	case "custom_tool_call":
-		return []wire.Message{{Role: RoleTool, ToolName: it.Name, Text: summarizeFreeform(it.Name, it.Input), Time: t}}
+		return []Entry{toolCall(it.Name, it.CallID, it.Input, summarizeFreeform(it.Name, it.Input), t)}
+	case "custom_tool_call_output":
+		text, images := codexOutput(it.Output)
+		return toolOutput("", it.CallID, text, images, t)
 	case "local_shell_call":
-		var s string
+		var s, input string
 		if it.Action != nil {
 			s = oneLine(strings.Join(it.Action.Command, " "), maxSummary)
+			input = codexActionInput(r.Payload)
 		}
-		return []wire.Message{{Role: RoleTool, ToolName: "shell", Text: s, Time: t}}
+		return []Entry{toolCall("shell", it.CallID, input, s, t)}
 	case "web_search_call":
-		var s string
+		var s, input string
 		if it.Action != nil {
 			s = oneLine(it.Action.Query, maxSummary)
+			input = codexActionInput(r.Payload)
 		}
-		return []wire.Message{{Role: RoleTool, ToolName: "web_search", Text: s, Time: t}}
+		return []Entry{toolCall("web_search", it.CallID, input, s, t)}
 	}
 	return nil
+}
+
+// codexActionInput is the action of a local_shell_call or web_search_call
+// item as recorded: the call's input.
+func codexActionInput(payload json.RawMessage) string {
+	var p struct {
+		Action json.RawMessage `json:"action"`
+	}
+	_ = json.Unmarshal(payload, &p)
+	return rawInput(p.Action)
+}
+
+// codexOutput is a function call output's whole text and images: a string,
+// or content items (input_text, input_image).
+func codexOutput(raw json.RawMessage) (string, []Image) {
+	if s, ok := jsonString(raw); ok {
+		return s, nil
+	}
+	var items []codexContent
+	if json.Unmarshal(raw, &items) != nil {
+		return rawInput(raw), nil
+	}
+	var b strings.Builder
+	var images []Image
+	for _, c := range items {
+		if c.Type == "input_image" {
+			images = append(images, urlImage("", c.ImageURL))
+			continue
+		}
+		b.WriteString(c.Text)
+	}
+	return b.String(), images
 }
 
 // codexAskTool is Codex's tool for asking the user questions.
@@ -270,7 +321,7 @@ const codexAborted = "aborted by user"
 // answers.
 const codexUserNote = "user_note: "
 
-func codexAskQuestion(it codexItem, t int64) (wire.Message, bool) {
+func codexAskQuestion(it codexItem, t int64) (Entry, bool) {
 	var args struct {
 		Questions []struct {
 			ID       string `json:"id"`
@@ -279,13 +330,13 @@ func codexAskQuestion(it codexItem, t int64) (wire.Message, bool) {
 		} `json:"questions"`
 	}
 	if json.Unmarshal([]byte(it.Arguments), &args) != nil || len(args.Questions) == 0 {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	items := make([]wire.QuestionItem, len(args.Questions))
 	for i, q := range args.Questions {
 		items[i] = wire.QuestionItem{ID: q.ID, Header: q.Header, Question: q.Question}
 	}
-	return askQuestionRow(it.Name, it.CallID, items, t), true
+	return askQuestionRow(it.Name, it.CallID, it.Arguments, items, t), true
 }
 
 // codexAskAnswer reads the answer row from a function call's output, if it
@@ -293,14 +344,14 @@ func codexAskQuestion(it codexItem, t int64) (wire.Message, bool) {
 // {"answers":[…]}}}, the message of its cancellation, or the output of an
 // interrupted call whose id asked knows. The output names no tool, so
 // otherwise the shape alone tells.
-func codexAskAnswer(it codexItem, t int64, asked askedFunc) (wire.Message, bool) {
+func codexAskAnswer(it codexItem, t int64, asked askedFunc) (Entry, bool) {
 	out := codexOutputText(it.Output)
 	if strings.HasPrefix(out, codexAskCancelled) ||
 		strings.HasPrefix(out, codexAborted) && asked != nil && asked(it.CallID) {
 		return askDeclinedRow(it.CallID, t), true
 	}
 	if !strings.HasPrefix(out, `{"answers":`) {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	var resp struct {
 		Answers map[string]struct {
@@ -308,12 +359,12 @@ func codexAskAnswer(it codexItem, t int64, asked askedFunc) (wire.Message, bool)
 		} `json:"answers"`
 	}
 	if json.Unmarshal([]byte(out), &resp) != nil || resp.Answers == nil {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	ids := make([]string, 0, len(resp.Answers))
 	for id, a := range resp.Answers {
 		if a.Answers == nil {
-			return wire.Message{}, false
+			return Entry{}, false
 		}
 		ids = append(ids, id)
 	}

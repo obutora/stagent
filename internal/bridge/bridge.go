@@ -138,6 +138,11 @@ type Bridge struct {
 	// foreground is the app's last presence.set, restored with the watch
 	// (the daemon forgets it with the connection).
 	foreground bool
+
+	// relayRuns are the relay.prepare runs, by relay id (relay.discard
+	// cancels them).
+	relayMu   sync.Mutex
+	relayRuns map[string]*relayRun
 }
 
 // daemonConn is one connection to the daemon.
@@ -160,6 +165,7 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		holders:        map[string]*rpc.Client{},
 		known:          map[string]bool{},
 		tasks:          map[string]bool{},
+		relayRuns:      map[string]*relayRun{},
 		github:         runtime.GOOS == "windows",
 		goos:           runtime.GOOS,
 		liveDirs:       liveDirs,
@@ -316,6 +322,10 @@ func (b *Bridge) dispatch(m *wire.Msg) {
 		b.enqueue(targetWorktreePRs, m, serveWorktree(b, b.doWorktreePRs))
 	case m.Method == wire.MethodWorktreeRemove:
 		b.enqueue(targetRemove, m, serveWorktree(b, b.doWorktreeRemove))
+	case m.Method == wire.MethodRelayDiscard:
+		b.relayDiscard(m)
+	case relayQueued[m.Method]:
+		b.enqueue(targetRelay, m, b.serveRelay)
 	case wire.DaemonMethods[m.Method]:
 		b.enqueue(targetDaemon, m, b.forwardDaemon)
 	case b.github && wire.GitHubMethods[m.Method]:
@@ -351,7 +361,7 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	}
 	caps := []string{
 		wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush, wire.CapPushChat, wire.CapPersist,
-		wire.CapWorktrees,
+		wire.CapWorktrees, wire.CapRelay,
 	}
 	if runtime.GOOS == "windows" {
 		caps = append(caps, wire.CapPersistShell)

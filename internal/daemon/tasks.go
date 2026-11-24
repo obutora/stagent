@@ -319,7 +319,7 @@ func (d *Daemon) taskRegister(p wire.TaskRegisterParams) (wire.TaskRegisterResul
 	t := &wire.Task{
 		ID: task.NewID(), Repo: repo, Kind: p.Kind, Number: p.Number, Name: p.Name, Title: p.Title, URL: p.URL,
 		Branch: p.Branch, Base: p.Base, Worktree: worktree, InPlace: p.InPlace,
-		CreatedAt: now.UTC().Truncate(time.Second), SessionID: p.SessionID,
+		CreatedAt: now.UTC().Truncate(time.Second), SessionID: p.SessionID, RelayID: p.RelayID,
 	}
 	d.tasks = append(d.tasks, t)
 	d.preparingLocked(t, now)
@@ -339,7 +339,7 @@ func (d *Daemon) taskRegister(p wire.TaskRegisterParams) (wire.TaskRegisterResul
 func (d *Daemon) taskProgress(cs *connState, p wire.TaskProgressParams) error {
 	creating, removing := false, false
 	switch p.Stage {
-	case wire.TaskStageFetch, wire.TaskStageCopy, wire.TaskStageSetup, wire.TaskStageAgent:
+	case wire.TaskStageFetch, wire.TaskStageRelay, wire.TaskStageCopy, wire.TaskStageSetup, wire.TaskStageAgent:
 		creating = true
 	case wire.TaskStageStop, wire.TaskStageArchive:
 		removing = true

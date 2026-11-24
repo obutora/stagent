@@ -282,6 +282,31 @@ the relay's report, and only within the bounds told above for agents
 (ADR 0004). The wire format is in
 [PROTOCOL.md](PROTOCOL.md) ("Usage", "Limit windows", "Private API", "omp usage", "Antigravity usage").
 
+## Relays
+
+With the agent features on, the app can relay (リレー) a conversation to a
+new conversation of another agent — another harness, model or host —
+when the user asks for it; nothing starts one by itself, and coding
+agents are refused every relay method (ADR 0004). For that:
+
+- on the relay source, the bridge reads the conversation file and writes
+  the relay document (Markdown: the messages, tool calls and their output,
+  images; no thinking, nothing masked) with, when the conversation's
+  directory is a git checkout, a git bundle of the commits no remote has,
+  the uncommitted changes and the untracked files, into
+  `~/.ssh-term/agent/state/relay-out/<id>/` (owner-only, removed by
+  `relay.discard` or after 7 days). Asked to, it types a request for a
+  hand-off memo into the source agent's terminal and reads its reply.
+- the app carries that package over its own SSH connections; the hosts
+  never talk to each other and nothing is pushed to a remote.
+- on the relay target, the bridge unpacks it into
+  `~/.ssh-term/agent/state/relay/<id>/` (the document stays there), finds
+  the host's checkout of the same remote — or clones it when the user says
+  so — makes a task on the source's branch with the changes applied, and
+  starts the chosen agent pointed at the document.
+
+The wire format is in [PROTOCOL.md](PROTOCOL.md) ("Relay").
+
 ## Screen rules
 
 A session's holder watches the screen for the coding agent's approval

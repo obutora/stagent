@@ -1,7 +1,9 @@
 // Package transcript reads the conversation files coding agents write — a
-// JSONL format per harness — and normalizes them to wire.Message.
+// JSONL format per harness — as entries (Entry, tool outputs and images
+// included) and shapes them to wire.Message for the chat view.
 // Files are only ever read: backwards from the end for paging, forwards from
-// a remembered offset for tailing, never whole unless a cache entry is new.
+// a remembered offset for tailing, never whole unless a cache entry is new
+// or a relay reads the conversation (ReadEntries).
 package transcript
 
 import (
@@ -37,6 +39,12 @@ const (
 // tool call id is a question's asked in the records before this one; nil
 // when they are not at hand (no question is known then).
 func parseLine(harness string, line []byte, asked askedFunc) []wire.Message {
+	return messages(parseEntries(harness, line, asked))
+}
+
+// parseEntries reads one JSONL record of harness as zero or more entries
+// (in order), as parseLine.
+func parseEntries(harness string, line []byte, asked askedFunc) []Entry {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 || line[0] != '{' {
 		return nil
@@ -54,8 +62,8 @@ type askedFunc func(id string) bool
 
 // perRecord is the parse of a format whose records are read each on its
 // own.
-func perRecord(parse func(line []byte) []wire.Message) func([]byte, askedFunc) []wire.Message {
-	return func(line []byte, _ askedFunc) []wire.Message { return parse(line) }
+func perRecord(parse func(line []byte) []Entry) func([]byte, askedFunc) []Entry {
+	return func(line []byte, _ askedFunc) []Entry { return parse(line) }
 }
 
 // ---------------------------------------------------------------------------

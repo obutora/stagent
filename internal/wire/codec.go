@@ -35,10 +35,13 @@ func (m *Msg) IsRequest() bool { return m.ID != nil && m.Method != "" }
 func (m *Msg) IsResponse() bool { return m.ID != nil && m.Method == "" }
 
 // Error is a protocol-level failure. Code is a stable machine-readable
-// string (see the Err* constants); Message is for humans.
+// string (see the Err* constants); Message is for humans. Data, when a
+// method documents it, carries what the client needs to act on the
+// failure (relay.prepare: RelayErrorData).
 type Error struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
@@ -84,6 +87,11 @@ const (
 	// iOS simulator (its edit menu's Paste was not found); the text is on
 	// the simulator's clipboard for the user to paste.
 	ErrPasteByHand = "paste_by_hand"
+	// ErrRepoMissing: relay.start found no source checkout whose remote
+	// is the package's remote_url (and was given neither repo nor clone).
+	ErrRepoMissing = "repo_missing"
+	// ErrTooLarge: relay.prepare's package would pass RelayPackageMax.
+	ErrTooLarge = "too_large"
 )
 
 // Errorf builds an *Error.

@@ -107,6 +107,27 @@ type claudePart struct {
 	Name      string          `json:"name"`
 	Input     json.RawMessage `json:"input"`
 	ToolUseID string          `json:"tool_use_id"`
+	// Content is a tool_result's: a string, or text and image blocks.
+	Content json.RawMessage `json:"content"`
+	Source  *claudeSource   `json:"source"`
+}
+
+// claudeSource is an image block's source: base64 data, or a URL.
+type claudeSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+	URL       string `json:"url"`
+}
+
+func (s *claudeSource) image() Image {
+	if s == nil {
+		return Image{}
+	}
+	if s.Type == "url" {
+		return urlImage(s.MediaType, s.URL)
+	}
+	return base64Image(s.MediaType, s.Data)
 }
 
 // Tags whose user records are harness plumbing, not something the user said.
@@ -122,7 +143,7 @@ var (
 	claudeBashInput   = regexp.MustCompile(`(?s)^<bash-input>(.*?)</bash-input>`)
 )
 
-func parseClaude(line []byte) []wire.Message {
+func parseClaude(line []byte) []Entry {
 	// Cheap reject of the record types that never carry messages.
 	if !bytes.Contains(line, []byte(`"type":"user"`)) && !bytes.Contains(line, []byte(`"type":"assistant"`)) {
 		return nil
@@ -135,16 +156,16 @@ func parseClaude(line []byte) []wire.Message {
 	switch r.Type {
 	case "user":
 		if r.IsCompactSummary {
-			return []wire.Message{{Role: RoleSystem, Text: "Conversation compacted", Time: t}}
+			return []Entry{{Role: RoleSystem, Text: "Conversation compacted", Time: t}}
 		}
 		if r.IsMeta || (r.Origin != nil && r.Origin.Kind != "" && r.Origin.Kind != "human") {
 			return nil
 		}
-		var out []wire.Message
+		var out []Entry
 		add := func(s string) {
-			if m, ok := claudeUserText(s); ok {
-				m.Time = t
-				out = append(out, m)
+			if e, ok := claudeUserText(s); ok {
+				e.Time = t
+				out = append(out, e)
 			}
 		}
 		if s, ok := jsonString(r.Message.Content); ok {
@@ -160,11 +181,14 @@ func parseClaude(line []byte) []wire.Message {
 			case "text":
 				add(p.Text)
 			case "image":
-				add("[image]")
+				out = append(out, Entry{Role: RoleUser, Images: []Image{p.Source.image()}, Time: t})
 			case "tool_result":
-				if m, ok := claudeAskAnswer(p.ToolUseID, r.ToolUseResult, t); ok {
-					out = append(out, m)
+				if e, ok := claudeAskAnswer(p.ToolUseID, r.ToolUseResult, t); ok {
+					out = append(out, e)
+					continue
 				}
+				text, images := claudeResultContent(p.Content)
+				out = append(out, toolOutput("", p.ToolUseID, text, images, t)...)
 			}
 		}
 		return out
@@ -176,21 +200,21 @@ func parseClaude(line []byte) []wire.Message {
 		if json.Unmarshal(r.Message.Content, &parts) != nil {
 			return nil
 		}
-		var out []wire.Message
+		var out []Entry
 		for _, p := range parts {
 			switch p.Type {
 			case "text":
 				if s := strings.TrimSpace(p.Text); s != "" {
-					out = append(out, wire.Message{Role: RoleAssistant, Text: clip(s, maxText), Time: t})
+					out = append(out, Entry{Role: RoleAssistant, Text: s, Time: t})
 				}
 			case "tool_use":
 				if p.Name == claudeAskTool {
-					if m, ok := claudeAskQuestion(p, t); ok {
-						out = append(out, m)
+					if e, ok := claudeAskQuestion(p, t); ok {
+						out = append(out, e)
 						continue
 					}
 				}
-				out = append(out, wire.Message{Role: RoleTool, ToolName: p.Name, Text: Summarize(p.Input), Time: t})
+				out = append(out, toolCall(p.Name, p.ID, rawInput(p.Input), Summarize(p.Input), t))
 			}
 		}
 		return out
@@ -198,19 +222,44 @@ func parseClaude(line []byte) []wire.Message {
 	return nil
 }
 
+// claudeResultContent is a tool_result's content: a string, or text and
+// image blocks.
+func claudeResultContent(raw json.RawMessage) (string, []Image) {
+	if s, ok := jsonString(raw); ok {
+		return s, nil
+	}
+	var parts []claudePart
+	if json.Unmarshal(raw, &parts) != nil {
+		return "", nil
+	}
+	var texts []string
+	var images []Image
+	for _, p := range parts {
+		switch p.Type {
+		case "text":
+			if s := strings.TrimSpace(p.Text); s != "" {
+				texts = append(texts, s)
+			}
+		case "image":
+			images = append(images, p.Source.image())
+		}
+	}
+	return strings.Join(texts, "\n\n"), images
+}
+
 // claudeUserText classifies the text of a user record.
-func claudeUserText(s string) (wire.Message, bool) {
+func claudeUserText(s string) (Entry, bool) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	if strings.HasPrefix(trimmed, "[Request interrupted by user") {
-		return wire.Message{Role: RoleSystem, Text: "Interrupted by user"}, true
+		return Entry{Role: RoleSystem, Text: "Interrupted by user"}, true
 	}
 	if strings.HasPrefix(trimmed, "<command-name>") || strings.HasPrefix(trimmed, "<command-message>") {
 		m := claudeCommandName.FindStringSubmatch(trimmed)
 		if m == nil {
-			return wire.Message{}, false
+			return Entry{}, false
 		}
 		text := strings.TrimSpace(m[1])
 		if a := claudeCommandArgs.FindStringSubmatch(trimmed); a != nil {
@@ -218,17 +267,17 @@ func claudeUserText(s string) (wire.Message, bool) {
 				text += " " + args
 			}
 		}
-		return wire.Message{Role: RoleUser, Text: clip(text, maxText)}, true
+		return Entry{Role: RoleUser, Text: text}, true
 	}
 	if m := claudeBashInput.FindStringSubmatch(trimmed); m != nil {
-		return wire.Message{Role: RoleUser, Text: clip("!"+m[1], maxText)}, true
+		return Entry{Role: RoleUser, Text: "!" + m[1]}, true
 	}
 	for _, tag := range claudeNoiseTags {
 		if strings.HasPrefix(trimmed, tag) {
-			return wire.Message{}, false
+			return Entry{}, false
 		}
 	}
-	return wire.Message{Role: RoleUser, Text: clip(trimmed, maxText)}, true
+	return Entry{Role: RoleUser, Text: trimmed}, true
 }
 
 // claudeAskTool is Claude Code's tool for asking the user questions.
@@ -241,6 +290,15 @@ type claudeAskQuestionInput struct {
 	Options     []struct {
 		Label string `json:"label"`
 	} `json:"options"`
+}
+
+// labels are the question's option labels, as asked.
+func (q claudeAskQuestionInput) labels() []string {
+	labels := make([]string, len(q.Options))
+	for i, o := range q.Options {
+		labels[i] = o.Label
+	}
+	return labels
 }
 
 // claudeAskOutput is AskUserQuestion's output (toolUseResult): the
@@ -259,39 +317,35 @@ type claudeAskOutput struct {
 // on.
 const claudeNotesOnly = "(notes only)"
 
-func claudeAskQuestion(p claudePart, t int64) (wire.Message, bool) {
+func claudeAskQuestion(p claudePart, t int64) (Entry, bool) {
 	var in struct {
 		Questions []claudeAskQuestionInput `json:"questions"`
 	}
 	if json.Unmarshal(p.Input, &in) != nil || len(in.Questions) == 0 {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	items := make([]wire.QuestionItem, len(in.Questions))
 	for i, q := range in.Questions {
-		items[i] = wire.QuestionItem{Header: q.Header, Question: q.Question, Multi: q.MultiSelect}
+		items[i] = wire.QuestionItem{Header: q.Header, Question: q.Question, Multi: q.MultiSelect, Options: q.labels()}
 	}
-	return askQuestionRow(p.Name, p.ID, items, t), true
+	return askQuestionRow(p.Name, p.ID, rawInput(p.Input), items, t), true
 }
 
 // claudeAskAnswer reads the answer row from the toolUseResult of a
 // tool_result record, if it is AskUserQuestion's. A rejected call records
 // no output of it; the interrupt that follows closes the question.
-func claudeAskAnswer(id string, raw json.RawMessage, t int64) (wire.Message, bool) {
+func claudeAskAnswer(id string, raw json.RawMessage, t int64) (Entry, bool) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || raw[0] != '{' {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	var out claudeAskOutput
 	if json.Unmarshal(raw, &out) != nil || len(out.Questions) == 0 || out.Answers == nil {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	items := make([]wire.QuestionItem, 0, len(out.Questions)+1)
 	for _, q := range out.Questions {
-		labels := make([]string, len(q.Options))
-		for i, o := range q.Options {
-			labels[i] = o.Label
-		}
-		answers := claudeAnswerList(out.Answers[q.Question], q.MultiSelect, labels)
+		answers := claudeAnswerList(out.Answers[q.Question], q.MultiSelect, q.labels())
 		answers = typedAnswers(answers, out.Annotations[q.Question].Notes)
 		items = append(items, wire.QuestionItem{Header: q.Header, Question: q.Question, Multi: q.MultiSelect, Answers: answers})
 	}

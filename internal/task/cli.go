@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
@@ -24,13 +25,15 @@ const (
 	ExitNotFound = 127
 )
 
-const usage = `usage: stagent task run [--switch-branch] [--setup] <id> -- <command…>
+const usage = `usage: stagent task run [--switch-branch] [--setup] [--relay <relay id>] <id> -- <command…>
        stagent task remove [--force] [--skip-archive] [--missing] [--result <file>] [--folder <dir>] <id>
        stagent task remove-worktree [--force] [--result <file>] [--folder <dir>] <repo> <worktree> [<branch>]
 
 Internal: the bridge's task.create runs it as a task's first session.
 It prepares task <id> (fetch, branch, worktree, copy, setup), reporting each
 stage to the daemon (task.progress), then runs <command…> in its place.
+With --relay (relay.start) the branch is made from the relay's commits and
+a relay stage after worktree applies its changes and untracked files.
 
 The bridge's task.remove runs remove in a session of the source checkout,
 after stopping the task's sessions: archive (unless --skip-archive), unlink
@@ -72,6 +75,7 @@ func runMain(args []string) int {
 	fs.Usage = func() { fmt.Fprint(fs.Output(), usage) }
 	switchBranch := fs.Bool("switch-branch", false, "in_place: switch the checkout to the task's branch")
 	setup := fs.Bool("setup", false, "in_place: run orca.yaml's scripts.setup")
+	relayID := fs.String("relay", "", "a relay's task: take the relay's commits, changes and untracked files")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
@@ -88,6 +92,17 @@ func runMain(args []string) int {
 	}
 	defer d.Close()
 	progress := d.progress
+	var relay *RelayPrep
+	if *relayID != "" {
+		if !wire.ValidRelayID(*relayID) {
+			progress(wire.TaskStageFetch, "invalid relay id")
+			return fail("invalid relay id %q", *relayID)
+		}
+		if relay, err = LoadRelayPrep(filepath.Join(d.layout.RelayIn, *relayID)); err != nil {
+			progress(wire.TaskStageFetch, err.Error())
+			return fail("%v", err)
+		}
+	}
 
 	// ^C reaches git, gh, the setup script (and on Windows the agent) on
 	// the terminal; this process stays to report what it ended.
@@ -101,6 +116,7 @@ func runMain(args []string) int {
 		Stdin:           os.Stdin, Out: os.Stdout,
 		Stage:          func(stage string) { progress(stage, "") },
 		SetupApprovals: d.layout.SetupApprovals,
+		Relay:          relay,
 		AskSetup:       d.awaitSetup,
 	})
 	if err != nil {
@@ -113,6 +129,12 @@ func runMain(args []string) int {
 		return fail("%v", err)
 	}
 	fmt.Fprintf(os.Stdout, "\n[stagent] %s\n", wire.TaskStageAgent)
+	if relay != nil {
+		// The agent starts where the source's did in its worktree.
+		if err := os.Chdir(relay.AgentDir(t.Worktree)); err != nil {
+			fmt.Fprintf(os.Stderr, "[stagent] %v\n", err)
+		}
+	}
 	path, err := exec.LookPath(command[0])
 	if err != nil {
 		progress(wire.TaskStageAgent, err.Error())

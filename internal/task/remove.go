@@ -28,7 +28,7 @@ import (
 // in worktree. A git status over its time limit (limitCheck) is an error
 // wrapping a *LimitError.
 func Changes(ctx context.Context, env []string, worktree string, links []string) ([]string, error) {
-	ctx, cancel := withLimit(ctx, env, limitCheck)
+	ctx, cancel := WithLimit(ctx, env, limitCheck)
 	defer cancel()
 	out, err := Git(ctx, NoLocks(env), worktree, "status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=none")
 	if err != nil {
@@ -491,7 +491,7 @@ func (r *prep) mergedPR(ctx context.Context, head string) error {
 		which = strconv.Itoa(t.Number)
 	}
 	fmt.Fprintf(r.Out, "$ gh pr view %s --json state,headRefOid\n", which)
-	ctx, cancel := withLimit(ctx, r.Env, limitNetwork)
+	ctx, cancel := WithLimit(ctx, r.Env, limitNetwork)
 	defer cancel()
 	out, err := GH(ctx, r.Env, t.Repo, "pr", "view", which, "--json", "state,headRefOid")
 	if err != nil {

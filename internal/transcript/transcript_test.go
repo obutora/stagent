@@ -35,6 +35,8 @@ var fixtureWant = map[string][]msg{
 		{"assistant", "", "text 1"}, // thinking blocks dropped
 		{"tool", "Bash", "command 1"},
 		{"tool", "Bash", "command 2"},
+		{"tool", "Read", "/home/user/proj/logo.png"}, // its image result not a row
+		{"tool", "Edit", "/home/user/proj/main.go"},
 		{"tool", "Agent", "description 3"},
 		{"tool", "Agent", "description 4"},
 		{"user", "", "content 9"}, // isMeta prompt skipped before this

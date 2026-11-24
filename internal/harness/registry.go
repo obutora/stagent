@@ -50,6 +50,11 @@ type Harness struct {
 	// in the terminal UI: what the app's resumeCommand runs and what
 	// stopped.resume starts (ResumeArgv).
 	Resume func(id string) []string
+	// ModelArgs are the arguments after Command that pick a model, and
+	// PromptArgs those that give the terminal UI its first prompt without
+	// a one-shot run: what relay.start runs (PROTOCOL.md "Relay").
+	ModelArgs  func(model string) []string
+	PromptArgs func(text string) []string
 }
 
 // Batch describes the arguments that make a harness run without its
@@ -93,6 +98,8 @@ var All = []Harness{
 		HookHeldForPrompt: true,
 		QuestionTool:      "AskUserQuestion",
 		Resume:            func(id string) []string { return []string{"--resume", id} },
+		ModelArgs:         valueArgs("--model"),
+		PromptArgs:        positionalArgs,
 	},
 	{
 		ID:      wire.HarnessCodex,
@@ -111,6 +118,8 @@ var All = []Harness{
 		},
 		QuestionTool: "request_user_input",
 		Resume:       func(id string) []string { return []string{"resume", id} },
+		ModelArgs:    valueArgs("--model"),
+		PromptArgs:   positionalArgs,
 	},
 	{
 		ID:       wire.HarnessOmp,
@@ -122,6 +131,8 @@ var All = []Harness{
 		},
 		QuestionTool: "ask",
 		Resume:       func(id string) []string { return []string{"--resume", id} },
+		ModelArgs:    func(model string) []string { return []string{"--model=" + model} },
+		PromptArgs:   positionalArgs,
 	},
 	{
 		ID:      wire.HarnessPi,
@@ -141,7 +152,9 @@ var All = []Harness{
 		TranscriptRoot: func(home string, getenv func(string) string) string {
 			return filepath.Join(PiAgentDir(home, getenv), "sessions")
 		},
-		Resume: func(id string) []string { return []string{"--session", id} },
+		Resume:     func(id string) []string { return []string{"--session", id} },
+		ModelArgs:  valueArgs("--model"),
+		PromptArgs: positionalArgs,
 	},
 	{
 		ID:      wire.HarnessCopilot,
@@ -161,7 +174,9 @@ var All = []Harness{
 		TranscriptRoot: func(home string, getenv func(string) string) string {
 			return filepath.Join(CopilotHome(home, getenv), "session-state")
 		},
-		Resume: func(id string) []string { return []string{"--resume=" + id} },
+		Resume:     func(id string) []string { return []string{"--resume=" + id} },
+		ModelArgs:  valueArgs("--model"),
+		PromptArgs: valueArgs("-i"),
 	},
 	{
 		ID:      wire.HarnessQwen,
@@ -201,6 +216,8 @@ var All = []Harness{
 		},
 		QuestionTool: "ask_user_question",
 		Resume:       func(id string) []string { return []string{"--resume", id} },
+		ModelArgs:    valueArgs("--model"),
+		PromptArgs:   valueArgs("-i"),
 	},
 	{
 		ID:      wire.HarnessOpenCode,
@@ -235,6 +252,9 @@ var All = []Harness{
 		// the conversation in a server of its own, whose plugin events are
 		// that terminal's.
 		Resume: func(id string) []string { return []string{"--standalone", "--session", id} },
+		// The model is provider/model.
+		ModelArgs:  valueArgs("--model"),
+		PromptArgs: valueArgs("--prompt"),
 	},
 	{
 		ID:      wire.HarnessGrok,
@@ -265,6 +285,8 @@ var All = []Harness{
 		},
 		QuestionTool: "ask_user_question",
 		Resume:       func(id string) []string { return []string{"--resume", id} },
+		ModelArgs:    valueArgs("--model"),
+		PromptArgs:   positionalArgs,
 	},
 	{
 		ID:      wire.HarnessAntigravity,
@@ -290,8 +312,18 @@ var All = []Harness{
 		},
 		QuestionTool: "ask_question",
 		Resume:       func(id string) []string { return []string{"--conversation", id} },
+		ModelArgs:    valueArgs("--model"),
+		PromptArgs:   valueArgs("-i"),
 	},
 }
+
+// valueArgs gives an option and its value as two arguments.
+func valueArgs(flag string) func(string) []string {
+	return func(v string) []string { return []string{flag, v} }
+}
+
+// positionalArgs gives the value as one positional argument.
+func positionalArgs(v string) []string { return []string{v} }
 
 // CopilotHome is Copilot CLI's configuration directory (hooks, sessions):
 // $COPILOT_HOME, else ~/.copilot.

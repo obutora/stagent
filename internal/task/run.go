@@ -42,6 +42,10 @@ type Prep struct {
 	// scripts.setup is neither the source checkout's nor approved for it
 	// (ADR 0023): true runs it, false skips it. nil: it is skipped.
 	AskSetup func(ctx context.Context, script string) (bool, error)
+	// Relay (a relay's task, never in_place): its fetch and branch stages
+	// take the relay's commits and a relay stage after worktree applies
+	// its uncommitted changes and untracked files.
+	Relay *RelayPrep
 }
 
 // StageError is the stage that failed and why.
@@ -116,8 +120,19 @@ func (r *prep) readBaseSetup(ctx context.Context) {
 }
 
 // stages lists what preparing the task runs. An in_place task has no
-// worktree and copy stages and runs setup only when asked.
+// worktree and copy stages and runs setup only when asked; a relay's task
+// fetches and branches from the relay and has a relay stage.
 func (r *prep) stages() []stage {
+	if r.Relay != nil {
+		return []stage{
+			{wire.TaskStageFetch, r.relayFetch},
+			{wire.TaskStageBranch, r.relayBranch},
+			{wire.TaskStageWorktree, r.worktree},
+			{wire.TaskStageRelay, r.relayApply},
+			{wire.TaskStageCopy, r.copy},
+			{wire.TaskStageSetup, r.setup},
+		}
+	}
 	s := []stage{
 		{wire.TaskStageFetch, r.fetch},
 		{wire.TaskStageBranch, r.branch},
@@ -189,7 +204,7 @@ func (r *prep) run(ctx context.Context, dir, name string, args ...string) error 
 
 // runLimited is run within the time limit (see limitNetwork).
 func (r *prep) runLimited(ctx context.Context, limit time.Duration, dir, name string, args ...string) error {
-	ctx, cancel := withLimit(ctx, r.Env, limit)
+	ctx, cancel := WithLimit(ctx, r.Env, limit)
 	defer cancel()
 	return r.run(ctx, dir, name, args...)
 }

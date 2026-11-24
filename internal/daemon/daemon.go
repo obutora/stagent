@@ -241,6 +241,9 @@ type Daemon struct {
 	resumed    map[string]string
 	agentsSave *time.Timer
 
+	// relays: the relay trace (relays.go), oldest recorded first.
+	relays []relayLink
+
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
 	wg           sync.WaitGroup
@@ -366,6 +369,10 @@ func New(opts Options) (*Daemon, error) {
 	if err != nil {
 		opts.Logf("daemon: schedules: %v (starting without schedules)", err)
 	}
+	relays, err := loadRelays(l.Relays)
+	if err != nil {
+		opts.Logf("daemon: relays: %v (starting without the relay trace)", err)
+	}
 	roots := opts.Roots
 	if roots == nil {
 		roots = transcript.DefaultRoots(l.Home, os.Getenv)
@@ -412,6 +419,8 @@ func New(opts Options) (*Daemon, error) {
 		agents:  map[string]*agentRec{},
 		claims:  map[string]stoppedClaim{},
 		resumed: map[string]string{},
+
+		relays: relays,
 	}
 	// Errors of a private API turned off while the daemon was down.
 	for _, h := range privateAPIHarnesses {
@@ -638,7 +647,8 @@ func (d *Daemon) serveConn(nc net.Conn) {
 // agentRefusal is the error for the methods a connection from a coding
 // agent's process tree may not call (ADR 0004): those that change settings
 // or stop the daemon, those that change tasks, schedules or stopped agents
-// (or start one: stopped.claim), and session.end, which ends a session.
+// (or start one: stopped.claim), session.end, which ends a session, and
+// relay.record and relay.forget, which change the relay trace.
 // Hooks, holders and readers (task.list, schedule.list included) are
 // served.
 func (d *Daemon) agentRefusal(cs *connState) *wire.Error {
@@ -658,7 +668,8 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		wire.MethodScheduleUpdate, wire.MethodScheduleRemove, wire.MethodSchedulePause, wire.MethodScheduleResume,
 		wire.MethodScheduleRunNow,
 		wire.MethodStoppedRemove, wire.MethodStoppedClaim, wire.MethodStoppedUnclaim,
-		wire.MethodSessionEnd:
+		wire.MethodSessionEnd,
+		wire.MethodRelayRecord, wire.MethodRelayForget:
 		if werr := d.agentRefusal(cs); werr != nil {
 			return nil, werr
 		}
@@ -900,6 +911,20 @@ func (d *Daemon) handle(ctx context.Context, cs *connState, m *wire.Msg) (any, e
 		}
 		d.stoppedUnclaim(p)
 		return struct{}{}, nil
+
+	// bridge → daemon (relay trace)
+	case wire.MethodRelayRecord:
+		var p wire.RelayRecordParams
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return struct{}{}, d.relayRecord(p)
+	case wire.MethodRelayForget:
+		var p wire.RelayRef
+		if err := rpc.Decode(m, &p); err != nil {
+			return nil, err
+		}
+		return struct{}{}, d.relayForget(p.RelayID)
 
 	// bridge → daemon (a session whose holder does not answer)
 	case wire.MethodSessionEnd:

@@ -123,18 +123,38 @@ func (b *Bridge) doTaskCreate(p wire.TaskCreateParams) (*wire.TaskCreateResult, 
 		return nil, err
 	}
 
-	sessionID := wire.NewSessionID()
-	var reg wire.TaskRegisterResult
-	if err := dc.c.Call(ctx, wire.MethodTaskRegister, wire.TaskRegisterParams{
+	return b.startPrepared(ctx, dc, wire.TaskRegisterParams{
 		Repo: repo, Kind: p.Kind, Number: p.Number, Name: p.Name, Title: p.Title, URL: p.URL,
 		Branch: branch, Base: base, Worktree: place, InPlace: p.InPlace,
-		SessionID: sessionID,
-	}, &reg); err != nil {
+	}, func(t *wire.Task) []string {
+		var flags []string
+		if t.InPlace && p.SwitchBranch {
+			flags = append(flags, "--switch-branch")
+		}
+		if t.InPlace && p.Setup {
+			flags = append(flags, "--setup")
+		}
+		return flags
+	}, command, cols, rows, env)
+}
+
+// startPrepared registers the task with the daemon (task.register, its
+// SessionID made here) and, unless the daemon says it exists, starts its
+// prepared session: a holder running `stagent task run <flags…> <id> --
+// <command…>` in the task's place — the worktree directory, made empty
+// here first, or the source checkout when in_place — so the session's cwd
+// is the task's place from the start (ADR 0006). flags are the task's run
+// flags, decided once it is registered.
+func (b *Bridge) startPrepared(ctx context.Context, dc *daemonConn, reg wire.TaskRegisterParams, flags func(*wire.Task) []string, command []string, cols, rows int, env []string) (*wire.TaskCreateResult, error) {
+	sessionID := wire.NewSessionID()
+	reg.SessionID = sessionID
+	var res wire.TaskRegisterResult
+	if err := dc.c.Call(ctx, wire.MethodTaskRegister, reg, &res); err != nil {
 		return nil, err
 	}
-	t := reg.Task
-	if reg.Existed {
-		return &wire.TaskCreateResult{Task: t, Session: reg.Session, Existed: true}, nil
+	t := res.Task
+	if res.Existed {
+		return &wire.TaskCreateResult{Task: t, Session: res.Session, Existed: true}, nil
 	}
 	// The task is preparing now: a failure from here on fails it rather
 	// than leaving it to be found interrupted.
@@ -153,13 +173,7 @@ func (b *Bridge) doTaskCreate(p wire.TaskCreateParams) (*wire.TaskCreateResult, 
 	if err != nil {
 		return nil, failed(wire.TaskStageFetch, err)
 	}
-	run := []string{exe, "task", "run"}
-	if t.InPlace && p.SwitchBranch {
-		run = append(run, "--switch-branch")
-	}
-	if t.InPlace && p.Setup {
-		run = append(run, "--setup")
-	}
+	run := append([]string{exe, "task", "run"}, flags(&t)...)
 	run = append(append(run, t.ID, "--"), command...)
 	s, err := b.startSession(sessionID, run, cwd, cols, rows, env, t.ID)
 	if err != nil {

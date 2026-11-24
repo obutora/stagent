@@ -13,23 +13,24 @@ import (
 // row nor anything else after it is still waiting for the user).
 
 // askQuestionRow is the row of a question: a tool row whose text is the
-// questions, one per line, for apps that do not read Ask.
-func askQuestionRow(tool, id string, items []wire.QuestionItem, t int64) wire.Message {
+// questions, one per line, for apps that do not read Ask; input is the
+// call's whole input.
+func askQuestionRow(tool, id, input string, items []wire.QuestionItem, t int64) Entry {
 	qs := make([]string, 0, len(items))
 	for _, it := range items {
 		if s := strings.TrimSpace(it.Question); s != "" {
 			qs = append(qs, s)
 		}
 	}
-	return wire.Message{
-		Role: RoleTool, ToolName: tool, Text: clip(strings.Join(qs, "\n"), maxText), Time: t,
+	return Entry{
+		Role: RoleTool, ToolName: tool, CallID: id, Input: input, Text: strings.Join(qs, "\n"), Time: t,
 		Ask: &wire.Ask{ID: id, Kind: wire.AskQuestion, Questions: items},
 	}
 }
 
 // askAnswerRow is the row of the answers: a user row listing them, one
 // question per line (labelled when there are several).
-func askAnswerRow(id string, items []wire.QuestionItem, t int64) wire.Message {
+func askAnswerRow(id string, items []wire.QuestionItem, t int64) Entry {
 	lines := make([]string, 0, len(items))
 	for _, it := range items {
 		a := strings.Join(it.Answers, ", ")
@@ -43,15 +44,15 @@ func askAnswerRow(id string, items []wire.QuestionItem, t int64) wire.Message {
 		}
 		lines = append(lines, a)
 	}
-	return wire.Message{
-		Role: RoleUser, Text: clip(strings.Join(lines, "\n"), maxText), Time: t,
+	return Entry{
+		Role: RoleUser, Text: strings.Join(lines, "\n"), Time: t,
 		Ask: &wire.Ask{ID: id, Kind: wire.AskAnswer, Questions: items},
 	}
 }
 
 // askDeclinedRow is the row of a question closed without an answer.
-func askDeclinedRow(id string, t int64) wire.Message {
-	return wire.Message{
+func askDeclinedRow(id string, t int64) Entry {
+	return Entry{
 		Role: RoleSystem, Text: "Question dismissed", Time: t,
 		Ask: &wire.Ask{ID: id, Kind: wire.AskAnswer, Declined: true},
 	}

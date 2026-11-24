@@ -176,8 +176,8 @@ func (q *questionLookup) asked(id string) bool {
 		if !bytes.Contains(line, key) {
 			continue
 		}
-		for _, m := range parseLine(q.harness, line, nil) {
-			if m.Ask != nil && m.Ask.Kind == wire.AskQuestion && m.Ask.ID == id {
+		for _, e := range parseEntries(q.harness, line, nil) {
+			if e.Ask != nil && e.Ask.Kind == wire.AskQuestion && e.Ask.ID == id {
 				return true
 			}
 		}

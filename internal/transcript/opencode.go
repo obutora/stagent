@@ -94,7 +94,7 @@ func scanOpenCode(path string, e *entry) {
 			return true
 		}
 		if e.Prompt == "" && bytes.Contains(line, []byte(`"type":"user"`)) {
-			for _, m := range parseOpenCode(line) {
+			for _, m := range messages(parseOpenCode(line)) {
 				if m.Role == RoleUser {
 					e.Prompt = clip(m.Text, 1024)
 				}
@@ -115,10 +115,40 @@ type openCodePart struct {
 	State struct {
 		Status   string          `json:"status"`
 		Input    json.RawMessage `json:"input"`
+		Content  json.RawMessage `json:"content"` // []openCodeFile
+		Output   json.RawMessage `json:"output"`  // a string
+		Error    json.RawMessage `json:"error"`   // {message}, or a string
 		Metadata struct {
 			Answers [][]string `json:"answers"`
 		} `json:"metadata"`
 	} `json:"state"`
+}
+
+// openCodeFile is a block of a tool result's content (text, or a file:
+// an image as a data: or file: URL), or a file attached to a prompt.
+type openCodeFile struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	Mime      string `json:"mime"`
+	MediaType string `json:"mediaType"`
+	URL       string `json:"url"`
+	Data      string `json:"data"`
+	Path      string `json:"path"`
+}
+
+// image is the block's image, if it is one.
+func (f openCodeFile) image() (Image, bool) {
+	mt := firstNonEmpty(f.Mime, f.MediaType)
+	if !imageMediaType(mt) && f.Type != "image" {
+		return Image{}, false
+	}
+	switch {
+	case f.Data != "":
+		return base64Image(mt, f.Data), true
+	case f.URL != "":
+		return urlImage(mt, f.URL), true
+	}
+	return Image{MediaType: strings.ToLower(mt), Path: f.Path}, true
 }
 
 type openCodeMessage struct {
@@ -128,18 +158,20 @@ type openCodeMessage struct {
 		Created   int64 `json:"created"`
 		Completed int64 `json:"completed"`
 	} `json:"time"`
-	Text    string         `json:"text"`
-	Content []openCodePart `json:"content"`
+	Text    string          `json:"text"`
+	Files   json.RawMessage `json:"files"` // []openCodeFile
+	Content []openCodePart  `json:"content"`
 	Error   *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
 
-// parseOpenCode reads the user's prompts, the assistant's texts (not its
-// reasoning) and tool calls, its questions and their answers, and the
-// error that cut a reply short. Session records, the ends of turns,
-// OpenCode's own notes and messages of other types are skipped.
-func parseOpenCode(line []byte) []wire.Message {
+// parseOpenCode reads the user's prompts and the images attached to them,
+// the assistant's texts (not its reasoning), tool calls and their results,
+// its questions and their answers, and the error that cut a reply short.
+// Session records, the ends of turns, OpenCode's own notes and messages of
+// other types are skipped.
+func parseOpenCode(line []byte) []Entry {
 	var m openCodeMessage
 	if json.Unmarshal(line, &m) != nil {
 		return nil
@@ -147,33 +179,79 @@ func parseOpenCode(line []byte) []wire.Message {
 	t := m.Time.Created
 	switch m.Type {
 	case "user":
-		if s := strings.TrimSpace(m.Text); s != "" {
-			return []wire.Message{{Role: RoleUser, Text: clip(s, maxText), Time: t}}
+		var images []Image
+		for _, f := range openCodeFiles(m.Files) {
+			if img, ok := f.image(); ok {
+				images = append(images, img)
+			}
+		}
+		if s := strings.TrimSpace(m.Text); s != "" || len(images) > 0 {
+			return []Entry{{Role: RoleUser, Text: s, Images: images, Time: t}}
 		}
 	case "assistant":
-		var out []wire.Message
+		var out []Entry
 		for _, p := range m.Content {
 			switch p.Type {
 			case "text":
 				if s := strings.TrimSpace(p.Text); s != "" {
-					out = append(out, wire.Message{Role: RoleAssistant, Text: clip(s, maxText), Time: t})
+					out = append(out, Entry{Role: RoleAssistant, Text: s, Time: t})
 				}
 			case "tool":
 				if p.Name == openCodeQuestionTool {
 					out = append(out, openCodeQuestion(p, t)...)
 					continue
 				}
-				out = append(out, wire.Message{Role: RoleTool, ToolName: p.Name, Text: Summarize(p.State.Input), Time: t})
+				out = append(out, toolCall(p.Name, p.ID, rawInput(p.State.Input), Summarize(p.State.Input), t))
+				out = append(out, openCodeOutput(p, t)...)
 			}
 		}
 		if m.Error != nil && len(m.Content) == 0 || m.Error != nil && hasDeclinedTool(m.Content) {
 			if s := strings.TrimSpace(m.Error.Message); s != "" {
-				out = append(out, wire.Message{Role: RoleSystem, Text: clip(s, maxText), Time: m.Time.Completed})
+				out = append(out, Entry{Role: RoleSystem, Text: s, Time: m.Time.Completed})
 			}
 		}
 		return out
 	}
 	return nil
+}
+
+// openCodeOutput is the output of a tool call that ended: its content's
+// text and images, else its output, else its error.
+func openCodeOutput(p openCodePart, t int64) []Entry {
+	var texts []string
+	var images []Image
+	for _, c := range openCodeFiles(p.State.Content) {
+		if img, ok := c.image(); ok {
+			images = append(images, img)
+		} else if strings.TrimSpace(c.Text) != "" {
+			texts = append(texts, c.Text)
+		}
+	}
+	text := strings.Join(texts, "\n")
+	if text == "" {
+		text, _ = jsonString(p.State.Output)
+	}
+	if text == "" {
+		var e struct {
+			Message string `json:"message"`
+		}
+		if s, ok := jsonString(p.State.Error); ok {
+			text = s
+		} else if json.Unmarshal(p.State.Error, &e) == nil {
+			text = e.Message
+		}
+	}
+	return toolOutput(p.Name, p.ID, text, images, t)
+}
+
+// openCodeFiles reads a list of content blocks or files; nil when it is
+// none.
+func openCodeFiles(raw json.RawMessage) []openCodeFile {
+	var fs []openCodeFile
+	if json.Unmarshal(raw, &fs) != nil {
+		return nil
+	}
+	return fs
 }
 
 // hasDeclinedTool: a tool call of content failed (turned down, or
@@ -195,7 +273,7 @@ var openCodeQuestionTool = harness.QuestionToolOf(wire.HarnessOpenCode)
 // row, then its answer row once it ended: the answers its result records
 // (metadata.answers, one list per question), or the question closed
 // unanswered when it failed (dismissed) or recorded none.
-func openCodeQuestion(p openCodePart, t int64) []wire.Message {
+func openCodeQuestion(p openCodePart, t int64) []Entry {
 	var in struct {
 		Questions []struct {
 			Question string `json:"question"`
@@ -207,7 +285,7 @@ func openCodeQuestion(p openCodePart, t int64) []wire.Message {
 		} `json:"questions"`
 	}
 	if json.Unmarshal(p.State.Input, &in) != nil || len(in.Questions) == 0 {
-		return []wire.Message{{Role: RoleTool, ToolName: p.Name, Text: Summarize(p.State.Input), Time: t}}
+		return []Entry{toolCall(p.Name, p.ID, rawInput(p.State.Input), Summarize(p.State.Input), t)}
 	}
 	items := make([]wire.QuestionItem, len(in.Questions))
 	for i, q := range in.Questions {
@@ -217,7 +295,7 @@ func openCodeQuestion(p openCodePart, t int64) []wire.Message {
 		}
 		items[i] = wire.QuestionItem{Header: q.Header, Question: q.Question, Multi: q.Multiple, Options: labels}
 	}
-	out := []wire.Message{askQuestionRow(p.Name, p.ID, items, t)}
+	out := []Entry{askQuestionRow(p.Name, p.ID, rawInput(p.State.Input), items, t)}
 	switch p.State.Status {
 	case "completed":
 		var answers []wire.QuestionItem

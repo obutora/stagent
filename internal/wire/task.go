@@ -76,6 +76,9 @@ const (
 	TaskStageAgent    = "agent"
 	TaskStageStop     = "stop"
 	TaskStageArchive  = "archive"
+	// TaskStageRelay (a relay target's task, after worktree): the
+	// package's uncommitted changes and untracked files applied.
+	TaskStageRelay = "relay"
 )
 
 // TaskErrInterrupted is Task.Error of a task whose prepared session went
@@ -111,6 +114,9 @@ type Task struct {
 	// is neither the source checkout's nor approved, and preparation waits
 	// for task.setup to run or skip it (ADR 0023).
 	SetupPending *TaskSetup `json:"setup_pending,omitempty"`
+	// RelayID is the relay that made the task (relay.start; omitted:
+	// none). relay.abort removes such a task while it is not ready.
+	RelayID string `json:"relay_id,omitempty"`
 }
 
 // TaskSetup is a scripts.setup waiting for the user: its text and its
@@ -182,6 +188,8 @@ type TaskRegisterParams struct {
 	Worktree  string `json:"worktree"`
 	InPlace   bool   `json:"in_place,omitempty"`
 	SessionID string `json:"session_id"`
+	// RelayID: the task is a relay's (relay.start), as Task.RelayID.
+	RelayID string `json:"relay_id,omitempty"`
 }
 
 // TaskRegisterResult: without Existed the caller starts the prepared

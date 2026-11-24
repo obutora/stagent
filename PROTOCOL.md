@@ -16,13 +16,17 @@ Envelope (JSON-RPC 2.0 shape without the `jsonrpc` member):
 | kind | members |
 |---|---|
 | request | `id` (int), `method`, `params?` |
-| response | `id`, `result` **or** `error: {code, message}` |
+| response | `id`, `result` **or** `error: {code, message, data?}` |
 | notification | `method`, `params?` (no `id`) |
+
+An error's `data` (since 0.26.0) is present only where a method documents
+it (`relay.prepare`, see "Relay"); clients ignore it elsewhere.
 
 Error codes: `bad_request`, `unknown_method`, `not_found`, `unsupported`,
 `internal`, `unavailable`, `version_mismatch`, `session_ended`,
 `not_size_owner`, `not_configured`, `menu_open`, `foreign_owner`,
-`agent_refused`, `not_clean`, `busy`, `refused`, `in_use`, `paste_by_hand`.
+`agent_refused`, `not_clean`, `busy`, `refused`, `in_use`, `paste_by_hand`,
+`repo_missing`, `too_large`.
 
 `not_clean`: `task.remove` found uncommitted changes and no `force`.
 `refused`: `task.remove` or `worktree.remove` found a refusal reason
@@ -36,6 +40,9 @@ schedule's previous run still running, and `schedule.remove` with
 `in_place` task uses that source checkout (see "Tasks"). `paste_by_hand`:
 `host_screen.input` could not paste a text into an iOS simulator; it is
 on the simulator's clipboard for the user to paste (see "Host screen").
+`repo_missing`: `relay.start` found no checkout of the package's
+repository on the target host and was given neither `repo` nor `clone`;
+`too_large`: a relay's package would pass 512 MiB (see "Relay").
 
 `foreign_owner`: a request that needs the daemon or a session's holder
 (any daemon or session method, `session.spawn`) found the stagent location
@@ -61,9 +68,10 @@ when the connection is made. The message says why. Only Linux and macOS
 check, and only without `STAGENT_HOME`. `stagent bridge`, started by
 sshd, has no agent among its parents, so the app does not see this error
 unless the bridge itself runs under an agent; such a bridge answers
-`session.spawn` with it before starting a holder (which would refuse the
-bridge and keep running out of its reach). It serves the read-only
-`github.*` methods and `host_screen.*` all the same.
+`session.spawn` and every `relay.*` method with it before starting
+anything (a holder would refuse the bridge and keep running out of its
+reach). It serves the read-only `github.*` methods and `host_screen.*`
+all the same.
 
 Requests on one connection are processed in order (input keystrokes keep
 their order). Notifications may arrive at any time between responses.
@@ -125,11 +133,14 @@ created its stdin pipe — the app — ends.
   `schedules` only on Linux and macOS, where the daemon runs
   schedules (定期実行), and `stopped_agents` only on Linux and macOS,
   where the daemon keeps stopped agents (止まった agent).
-  `push_chat` is the one exception that does not depend on the OS: an
+  `push_chat` is an exception that does not depend on the OS: an
   older stagent stores `notify.chat` like any unknown config key and
   silently never sends to it, so the app configures chat destinations
-  only on hosts that announce it. Whether a key is present is checked only
-  for `host_id`.
+  only on hosts that announce it. `relay` is the other one: a relay
+  involves a second host, which the app may not have opened (and so not
+  updated) since it got a new pin, so the relay sheet offers as source and
+  target only hosts whose last `hello` announced it. Whether a key is
+  present is checked only for `host_id`.
 
 ## Methods
 
@@ -149,6 +160,13 @@ created its stdin pipe — the app — ends.
 | `worktree.watch` | `{add?, remove?}` | `{watch_folders[]}` — see "Worktrees" |
 | `worktree.remove` | `{path, force?, stop_sessions?, dry_run?}` | `{changes[]?, changes_truncated?, unpushed?, sessions[]?, kept_branch?, bytes?, entries[{name, bytes, dir}]?, removed_parent?}` — see "Worktrees" |
 | `stopped.resume` | `{id, cols, rows, env?{}}` | `{session, existed}` — continues a stopped agent in a new kept shell (since 0.21.0; see "Stopped agents") |
+| `relay.prepare` | `{session_id? \| harness+conversation_id?, target, source_agent, source_host, memo?, memo_timeout_ms?, instruction?, lang?}` | `{relay_id, size?, sha256?, source, parts, memo}` — builds a relay's package on the relay source (since 0.26.0; see "Relay") |
+| `relay.read` | `{relay_id, offset, max_bytes?}` | `{data, eof?}` — one chunk of the package (see "Relay") |
+| `relay.receive` | `{relay_id, size, sha256}` | `{received}` — the relay target gets ready to take a package (see "Relay") |
+| `relay.write` | `{relay_id, offset, data}` | `{received}` — one chunk of the package (see "Relay") |
+| `relay.start` | `{relay_id, harness, model?, repo?, clone?, name?, branch?, cwd?, target_host, cols, rows, env?{}}` | `{task?, session, document, cloned?}` — unpacks, prepares the place to work and starts the agent (see "Relay") |
+| `relay.abort` | `{relay_id}` | `{}` — undoes a failed `relay.start` (see "Relay") |
+| `relay.discard` | `{relay_id}` | `{}` — removes what a relay left on the host but its document (see "Relay") |
 
 `host_id` (32 lowercase hex chars) is 128 random bits stagent creates the
 first time it runs (`stagent install`, the bridge's `hello` or the daemon)
@@ -227,9 +245,9 @@ the bridge starts them in the GUI login session so that the agent can use
 the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
-`push_chat`, `persist`, `worktrees`, on Windows `persist_shell` and
-`github`, on macOS `host_screen_ios`, and on Linux and macOS `schedules`
-and `stopped_agents`.
+`push_chat`, `persist`, `worktrees`, `relay`, on Windows `persist_shell`
+and `github`, on macOS `host_screen_ios`, and on Linux and macOS
+`schedules` and `stopped_agents`.
 `push_chat` announces the chat destination (`notify.chat`) and
 `notify.test`'s `channels`: an older stagent stores `notify.chat` like
 any unknown key without sending to it, so an app configures chat
@@ -253,7 +271,11 @@ answers them `unknown_method`. `stopped_agents` (Linux and macOS, since
 0.21.0) announces the stopped agents: `watch`'s `stopped`,
 `stopped.updated`, `stopped.remove` and `stopped.resume` (see "Stopped
 agents"); on any other OS `watch`'s `stopped` is always empty and the
-methods answer `unsupported`.
+methods answer `unsupported`. `relay` (every OS, since 0.26.0) announces
+the `relay.*` methods, `relay.progress`, `Session.relay`,
+`Conversation.relay` and `Task.relay_id` (see "Relay"); a stagent before
+it answers the methods `unknown_method`, and an app offers relays only
+between hosts that both announce it.
 
 #### Creating a task (`task.create`, `stagent task run`)
 
@@ -409,6 +431,9 @@ and their output show:
   after all (`exec` failing, e.g. a script's missing interpreter), that is
   reported as `task.progress {id, stage: agent, error, session_id}` from
   the prepared session: the task is `failed` with stage `agent`.
+
+A relay's task (`relay.start`, `stagent task run --relay`) has a `relay`
+stage after `worktree` (see "Relay").
 
 An `in_place` task has no `worktree` and `copy` stages. A failing stage
 prints the error, reports it (`task.progress {id, stage, error}`: the
@@ -964,6 +989,560 @@ process group (zsh's `-c` would otherwise drop the rest). The answer is
 `{session, existed: false}`; the stopped agent leaves the list
 (`stopped.updated`) once the new session registers. A failure to start
 releases the claim (`stopped.unclaim`).
+
+#### Relay (`relay.*`)
+
+(Since 0.26.0, #1930, capability `relay`, every OS.) A relay (リレー) hands
+a conversation's content and its working tree to a new conversation of
+another agent — another harness, model or host, any of them — which goes
+on from there (ssh-term ADR 0004 and 0005). The conversation it came from
+is the relay source (リレー元), the new one the relay target (リレー先);
+the source conversation stays as it is. Only the user starts a relay,
+from the app; no agent and nothing automatic does.
+
+The source host's stagent builds a package: the relay document
+(リレーの文書, a harness-neutral Markdown file of the conversation; never
+`wire.Message`, which drops tool output), its images, the source agent's
+hand-off memo when asked for, and the working tree — a git bundle of the
+commits no remote has, the uncommitted changes and the untracked files.
+The client reads the package from the source's bridge in chunks and writes
+it to the target's bridge; hosts never talk to each other, nothing is
+pushed to a remote and SFTP is not used. The target's stagent unpacks it,
+prepares the place to work (a new task, see "Tasks"), starts the agent
+with a short fixed instruction pointing at the document, and keeps the
+document. A relay within one host carries no bytes at all.
+
+The client offers a host as a relay source or target only when its
+`hello` announces `relay`; a stagent before 0.26.0 answers every `relay.*`
+method `unknown_method`. The harnesses it offers on the target are those
+`stagent doctor --json` reports there with `found` (see "Installer CLI");
+the model is free text (the app's candidates come from its price table).
+
+| method | host | params | result |
+|---|---|---|---|
+| `relay.prepare` | source | `{session_id? \| harness+conversation_id?, target: "same_host"\|"other_host", source_agent: "keep"\|"end", source_host: {host_id?, label}, memo?, memo_timeout_ms?, instruction?, lang?}` | `{relay_id, size?, sha256?, source, parts, memo}`, with `relay.progress` while it runs |
+| `relay.read` | source | `{relay_id, offset, max_bytes?}` | `{data, eof?}` |
+| `relay.receive` | target | `{relay_id, size, sha256}` | `{received}` |
+| `relay.write` | target | `{relay_id, offset, data}` | `{received}` |
+| `relay.start` | target | `{relay_id, harness, model?, repo?, clone?: {dir?}, name?, branch?, cwd?, target_host: {host_id?, label}, cols, rows, env?{}}` | `{task?, session, document, cloned?}`, with `relay.progress` while it runs |
+| `relay.abort` | target | `{relay_id}` | `{}` |
+| `relay.discard` | either | `{relay_id}` | `{}` |
+| `relay.record` | either (daemon) | `{relay_id, role: "source"\|"target", local: {harness, conversation_id?, session_id?}, peer: {host: {host_id?, label}, harness, conversation_id?, session_id?}}` | `{}` |
+
+All of them are refused with `agent_refused` to a coding agent's process
+tree before anything happens (ADR 0004): they read other sessions'
+conversations, type into a session (the memo) and make tasks. The bridge
+serves them itself, on a queue of its own (`relay`), except
+`relay.discard`, served at once, and `relay.record`, forwarded to the
+daemon. `relay_id` is 32 lowercase hex chars, made by `relay.prepare` and
+the same on both hosts (`bad_request` for any other form).
+
+##### Order of calls
+
+S is the source host's bridge, T the target host's; for a relay within
+one host they are the same connection.
+
+To another host:
+
+```
+S  relay.prepare {session_id, target: other_host, source_agent, source_host, memo?, instruction?, lang}
+S  → relay.progress transcript, memo, bundle, diff, untracked, pack
+S  ← {relay_id, size, sha256, source, parts, memo}
+T  relay.receive {relay_id, size, sha256}            ← {received: r}
+   repeat until eof:
+S    relay.read {relay_id, offset: r, max_bytes}     ← {data, eof}
+T    relay.write {relay_id, offset: r, data}         ← {received: r'}
+T  relay.start {relay_id, harness, model?, target_host, cols, rows}
+T  → relay.progress unpack, repo, task
+T  ← {task, session, document}
+T  task.updated (T's watch) … until the task is ready (its agent started) or failed
+S  relay.record {relay_id, role: source, local: source conversation, peer: target session}
+S  session.signal {id: source session, signal: hangup}      (source_agent end only)
+S  relay.discard {relay_id};  T  relay.discard {relay_id}
+   later, T session.updated carries the target's conversation_id:
+S  relay.record {relay_id, role: source, …, peer.conversation_id}
+```
+
+Within one host:
+
+```
+S  relay.prepare {session_id, target: same_host, source_agent, source_host, memo?, instruction?, lang}
+S  ← {relay_id, source, parts, memo}                  (no size, no sha256)
+S  relay.start {relay_id, harness, model?, target_host, cols, rows}
+S  ← {task?, session, document}                       (no task when source_agent is end)
+S  task.updated … until ready                          (with a task)
+S  session.signal {id: source session, signal: hangup}      (source_agent end only)
+S  relay.discard {relay_id}
+```
+
+`relay.start` records both ends of the trace itself within one host.
+
+When the target has no checkout of the repository:
+
+```
+T  relay.start {relay_id, harness, …}   ← error repo_missing "repo: no checkout of <remote_url> on this host"
+   the client asks the user whether to clone source.remote_url there
+T  relay.start {relay_id, harness, …, clone: {}}
+T  → relay.progress repo, clone, task
+T  ← {task, session, document, cloned}
+```
+
+When something fails:
+
+```
+S  relay.prepare … ← error "<stage>: <message>", data {relay_id}
+   the client shows the stage and the message, sends S relay.discard {relay_id}; "もう一度" prepares again
+
+   the connection to S or T drops while carrying the package:
+T  relay.receive {relay_id, size, sha256} ← {received: r}; reading and writing go on from r
+
+T  relay.start … ← error "<stage>: <message>"
+   or T task.updated {relay_id, state: failed, stage, error}
+T  relay.abort {relay_id}        the task, its worktree, branch and session and the document go
+   the client shows the stage and the message; "もう一度" sends T relay.start again
+   (the received package is kept until relay.discard; when it is gone,
+   relay.start answers not_found "unpack: …" and the client carries it again)
+   giving up: S relay.discard, T relay.discard
+```
+
+The client ends the source agent (`source_agent: end`) only once the
+target is up: the target's task is `ready` (its agent was started), or,
+without a task, `relay.start` answered. It ends it the way it ends any
+session, `session.signal {id, signal: hangup}` to the source's bridge; a
+relay has no method of its own for it. When the source agent is working,
+the client asks the user first. Ending it never touches the target.
+
+Errors of `relay.prepare` and `relay.start` (and a `relay.receive`,
+`relay.write` past the package) carry the stage they failed at: the
+message is `<stage>: <host's error>`, `<stage>` one of `transcript`,
+`memo`, `bundle`, `diff`, `untracked`, `pack` (source), `receive`,
+`unpack`, `repo`, `clone`, `task`, `spawn` (target). Parameter errors found
+before any stage starts have no prefix. A target task's own stages are
+`Task.stage` with `Task.error` (`fetch`, `branch`, `worktree`, `relay`,
+`copy`, `setup`, `agent`; see below). The client shows the stage's name
+and the message as they are.
+
+`relay.progress {relay_id, stage, done?, total?}` goes out on the
+connection that sent `relay.prepare` or `relay.start` whenever one of its
+stages begins, and while `pack`, `unpack` and `untracked` run (bytes) and
+`memo` waits (ms waited of the limit), at most every 500 ms.
+
+##### Building the package (`relay.prepare`)
+
+The conversation is that of the session `session_id` (one the daemon
+lists, live or ended, with a `conversation_id` and an agent harness;
+`not_found` for an unknown session, `bad_request` without them), else
+`harness`'s `conversation_id` (found as for `transcript.get`;
+`not_found`). `target` and `source_agent` must be one of their values,
+`source_host.label` 1–100 characters, `instruction` 64 KiB at most and
+`memo_timeout_ms` 0 (the default, 300,000) to 900,000 (`bad_request`
+otherwise). `lang` is the document's language: `ja` or `en`, anything else
+(or none) `en`. The stages, in order:
+
+1. `transcript`: the conversation's transcript is read from its start up
+   to its size now — the conversation as it stood when the user pressed
+   relay, a turn in progress included. The session's `state` (and its
+   question and pending approvals) is taken at the same moment. The
+   document (see below) is written from what was read once the memo and
+   the working tree's parts are known, before `pack`.
+2. `memo` (with `memo` only): see "Hand-off memo".
+3. `bundle` (`other_host` only): `git bundle create <file> <branch or
+   HEAD> --not --remotes` in the worktree `cwd` is in. Nothing unpushed
+   (git refuses an empty bundle): no bundle.
+4. `diff`: `git diff --binary --cached` (staged) and `git diff --binary`
+   (unstaged), each a patch, absent when empty (`--no-ext-diff
+   --no-color --ignore-submodules=all`; `-c core.quotepath=off`).
+5. `untracked`: every file `git ls-files --others --exclude-standard -z`
+   lists in that worktree (the whole worktree, not only under `cwd`; the
+   gitignored ones come to the target as files to copy do, see "Files to
+   copy"): regular files with their executable bit, symbolic links as
+   links. Sockets, FIFOs and untracked nested git checkouts are skipped and
+   the document names them.
+6. `pack` (`other_host` only): everything is written to one gzip tar file,
+   the package.
+
+A `cwd` in no git checkout has no `bundle`, `diff` and `untracked`; nor
+does a relay within one host with `source_agent: end`, which goes on in
+the source's own place. Within one host the commits are already in the
+repository the target works from, so there is no `bundle` and no `pack`:
+the parts stay files.
+
+The package may not pass 512 MiB (images and the bundle included):
+`too_large` "<stage>: …", naming the bundle's size and the five largest
+untracked files, so the user can commit, ignore or remove them. Any git
+failure fails its stage with git's message. stagent runs git with the
+login shell's environment, as for `session.spawn`, under the time limits
+of "Creating a task" (180 s for `git bundle create`, 30 s for each of the
+others, scaled by `STAGENT_GIT_TIMEOUT_SCALE`).
+
+The result: `relay_id`; `size` and `sha256` (hex) of the package file
+(`other_host` only); `source`, the manifest's `RelaySource`: `{host,
+harness, conversation_id, session_id?, title?, state?, cwd, repo?,
+cwd_rel?, remote?, remote_url?, branch?, head?, base?, task_id?, target,
+source_agent, prepared_at}` — `repo` the source checkout (元のチェックアウト:
+the repository's main working tree, the first of `git worktree list`),
+`cwd_rel` `cwd` relative to the root of its worktree (`/` separated, empty
+at the root), `remote` the remote `remote_url` is (the branch's upstream
+remote, else `origin`, else the first; absent without one), `branch`
+absent on a detached HEAD, `head` HEAD's commit, `base` the newest commit
+of HEAD's history a remote-tracking ref has (`head` when nothing is
+unpushed, absent when no remote has any of it); `parts` `{document_bytes,
+messages, images, image_bytes, bundle_commits, bundle_bytes, patch_bytes,
+untracked_files, untracked_bytes}`; `memo` `{status?:
+"included"|"timeout"|"skipped", reason?: "not_live"|"busy"}` (no `status`
+when no memo was asked for).
+
+An error of `relay.prepare` once its relay id was made (every error but
+the parameter errors found before it, an `agent_refused` and a daemon
+that cannot be reached) carries that id as the error's `data`, `{relay_id}`
+(since 0.26.0), for the client's `relay.discard`.
+
+`relay.discard` of a relay whose `relay.prepare` still runs cancels it;
+that `relay.prepare` answers `not_found` "<stage>: discarded".
+
+##### Hand-off memo
+
+With `memo: true` stagent asks the source agent for a hand-off memo
+(引き継ぎのメモ) after reading the conversation. It asks only when the
+conversation's session is live (else `skipped`, `not_live`) and at rest:
+`state` `idle`, or `waiting_input` without a `question` (else `skipped`,
+`busy`: working, an approval or a question waits). It sends the session
+`session.input {paste: <request>, submit: true}` (`menu_open` is `busy`
+too), the request being a fixed text in `lang`:
+
+- `ja`: `この会話の作業を、これから別の agent が引き継ぎます。引き継ぎのメモを、この返事の本文として書いてください。目的、終わったこと、残っていること、気をつけること、次の一手を入れてください。ファイルは作らず、何も変えないでください。`
+- `en`: `Another agent is about to take over the work of this conversation. Write a hand-off memo as the text of this reply: the goal, what is done, what is left, what to watch out for, and the next step. Do not create or change any file.`
+
+and waits until the session has gone `working` and come back to rest
+(as above), at most `memo_timeout_ms` (default 300,000, at most
+900,000); a reply too quick for `working` to be seen counts once the
+session is at rest with the reply's rows in the transcript. The memo is the text of every assistant row the transcript
+gained after the request's row, joined by blank lines: `status:
+included`, written to `memo.md` and to the document's memo section. Past
+the limit nothing is included (`status: timeout`; the document says a
+memo was asked for and did not come in time) and the agent is left to
+finish its reply. The memo is the agent's reply, not a file, so that
+agents whose sandbox lets them write only inside their working tree can
+give one too. The request and the reply stay in the source conversation;
+being after the point the conversation was read, they are not in the
+document's full text.
+
+##### The relay document
+
+`relay.md`, UTF-8 Markdown, in `lang` (the Japanese headings are shown;
+`en` has `Relay document`, `First instruction`, `Summary`, `First
+request`, `Last turns`, `Touched files`, `Working tree`, `Hand-off memo`,
+`Conversation`, `Not answered`):
+
+1. `# リレーの文書`, then one paragraph telling the reading agent that it
+   continues a conversation another agent had (harness and host named),
+   that the working tree has been brought here (or that it works in the
+   source's own place), and that the summary comes first and the whole
+   conversation after it.
+2. `## 最初の指示`: `instruction`, else the default — `ja`
+   `リレーの文書を読んで続けて`, `en` `Read the relay document and
+   continue.` The user's instruction lives here, never on the agent's
+   command line.
+3. `## まとめ`: the source — harness, host `label`, conversation id,
+   title, prepared time (RFC 3339 with the host's offset) and, when its
+   state was `working`, that it was working then and its last turn may be
+   cut off; then:
+   - `### 最初の依頼`: the conversation's first user message, verbatim.
+   - `### 最後のやり取り`: the last 3 turns (a turn: a user message and
+     everything up to the next one), user and assistant text verbatim,
+     each tool call as one line (its name and a one-line summary of its
+     input).
+   - `### 触ったファイル`: the paths the conversation's file-changing
+     tool calls named (Edit, Write, MultiEdit, NotebookEdit, apply_patch
+     and each harness's like), in the order first touched, relative to
+     the worktree's root when inside it.
+   - `### 作業ツリーの状態`: `cwd`, `repo`, `cwd_rel`, `remote_url`,
+     `branch`, `head`, `base`, the bundle's commits (`git log --oneline
+     base..head`, 50 at most), `git status --porcelain=v1` (200 lines at
+     most), what was carried (patches, untracked files) and what was not
+     (skipped untracked entries, submodules' state, Git LFS objects).
+4. `## 引き継ぎのメモ` (a memo asked for): the memo, or that it did not
+   come in time. Its Markdown headings go two levels down (`#` → `###`,
+   at most `######`; setext ones made ATX) so that they stay below the
+   section; fenced and indented code is left as it is. `memo.md` keeps
+   the memo as written.
+5. `## 会話の全文`: every message of the conversation in order, each
+   under `### <n> · <user|assistant|tool|system> · <time>` (`tool` rows
+   with the tool's name): user and assistant text verbatim and whole;
+   a tool call's input and its output each in a fenced block (a fence
+   longer than any run of backticks inside), each cut to 8 KiB — its first
+   6 KiB and its last 2 KiB, at UTF-8 boundaries, with `[… <n> bytes cut
+   …]` between. Thinking (reasoning) is left out, and so are sub-agents'
+   transcripts and what the harness records that is no message (the same
+   rows `transcript.get` leaves out). Images become files beside the
+   document, `images/<nnnn>.<png|jpg|gif|webp>` in order, linked
+   relatively (`![image 3](images/0003.png)`); one over 20 MiB, or one
+   the transcript only names by a path stagent cannot read, is named, not
+   carried.
+6. `## 答えていない承認・質問` (only when there are any): the approvals
+   pending at that moment (`tool_name`, `summary`) and the question the
+   agent waited on (`Session.question`, or a question row with no answer
+   at the transcript's end), with its options.
+
+Nothing that looks like a secret is masked (ADR 0004 of ssh-term: masking
+would leave leaks while looking safe); the document is readable by its
+owner only.
+
+##### Package and files
+
+The package (`other_host`) is a gzip tar; its members, every one a
+regular file or (under `tree/untracked/`) a symbolic link:
+
+| member | |
+|---|---|
+| `manifest.json` | `{version: 1, relay_id, source, parts, memo}` |
+| `relay.md` | the document |
+| `images/<nnnn>.<ext>` | its images |
+| `memo.md` | the memo (`memo.status: included`) |
+| `tree/repo.bundle` | the bundle (anything unpushed) |
+| `tree/staged.patch`, `tree/unstaged.patch` | the patches (when not empty) |
+| `tree/untracked/<path>` | the untracked files, `/` separated |
+
+Files on the hosts, under `<root>/state` (`<root>` is `~/.ssh-term/agent`,
+`STAGENT_HOME`'s when set):
+
+| host | path | what | kept until |
+|---|---|---|---|
+| source | `relay-out/<relay_id>/` | the package (`package.tar.gz`), or within one host its parts as files | `relay.discard`, or 7 days after `relay.prepare` |
+| target | `relay/<relay_id>/package.tar.gz` | the received package | `relay.discard`, or 7 days after its last `relay.write` |
+| target | `relay/<relay_id>/tree/` | the unpacked working tree parts | `relay.discard`, or 7 days after `relay.start` |
+| target | `relay/<relay_id>/relay.md`, `images/`, `memo.md` | the document | never removed by stagent (`relay.abort` of a relay that failed; `uninstall --level purge`) |
+
+Within one host the target's `relay/<relay_id>/` gets the document (a copy
+of the parts in `relay-out/<relay_id>/`) and takes the working tree parts
+from `relay-out/<relay_id>/`. The bridge removes what has passed its time
+whenever it serves a relay method. Directories are made with mode 0700
+and files with 0600 on Linux and macOS, whatever the umask; on Windows
+they get the ACL they inherit from `<home>\.ssh-term\agent\state` (the
+user, SYSTEM and Administrators) and stagent sets none, as for
+`config.json`.
+
+##### Reading and writing the package
+
+`relay.read {relay_id, offset, max_bytes?}` answers `data`, the package's
+bytes from `offset` (`max_bytes` default 1 MiB, at most 4 MiB, base64 on
+the wire), and `eof: true` with the last ones. `not_found` for a relay
+with no package here (never prepared, discarded, a same-host one),
+`bad_request` for an `offset` past its size.
+
+`relay.receive {relay_id, size, sha256}` makes `relay/<relay_id>/` for a
+package of `size` bytes (at most 512 MiB, `too_large` "receive: …"
+otherwise) and answers `received`, how many of its bytes are already
+here: 0 for a new one; for one already being received with the same
+`size` and `sha256`, what was written, so a dropped connection goes on
+from there. One with another `size` or `sha256` starts again from 0; one
+already started (`relay.start`) is `busy`.
+`relay.write {relay_id, offset, data}` appends `data` (at most 4 MiB) and
+answers `received`; `offset` must be `received` so far and the bytes may
+not pass `size` (`bad_request` "receive: …", stating `received`), and
+`not_found` without a `relay.receive`. The SHA-256 is checked by
+`relay.start`.
+
+##### Starting the target (`relay.start`)
+
+`relay.start` runs on the `relay` queue (its session starts through the
+spawn queue, as `task.create`'s) and answers once the agent's session is
+started; a task's preparation goes on in that session, followed through
+`task.updated` as for `task.create`. Parameters: `harness` an agent
+harness of the registry (not `other`), `model` (see below),
+`target_host.label` 1–100 characters (`bad_request` otherwise). A relay
+already started — its task or, without a task, its session still there —
+is `busy` (`relay.abort` first). Stages:
+
+1. `unpack`: the package's SHA-256 and size are checked (`relay.receive`d
+   fully, else `bad_request` "unpack: <n> of the package's <size> bytes
+   received"; `bad_request` "unpack: sha256 mismatch") and it is unpacked into
+   `relay/<relay_id>/`: a member outside the table above, an absolute
+   path or one with a `..` component, or a `manifest.json` `version`
+   other than 1 fails it. Within one host the parts are taken from
+   `relay-out/<relay_id>/` (`not_found` "unpack: …" when gone).
+2. `repo` / `clone`: the place to work, below.
+3. `task` (or `spawn`): the task is registered and its prepared session
+   started (or, with no task, the agent's session).
+
+The place to work:
+
+| relay | source in a git checkout | the agent works in |
+|---|---|---|
+| within one host, `source_agent: end` | either | the source's `cwd`, tied to its `task_id`; no task, nothing applied |
+| within one host, `source_agent: keep` | yes | a new task of the source's `repo`, on a new branch at `head`, with the changes and untracked files applied |
+| within one host, `source_agent: keep` | no | the source's `cwd` (no worktree can be made; the document says the source agent may still be at work there) |
+| to another host | yes | a new task of the target's checkout of the repository, as within one host |
+| to another host | no | `cwd` (home when empty); no task |
+
+The target's checkout (another host): `repo` when given (made canonical;
+`bad_request` "repo: …" when it is no git checkout; its remotes are not
+checked). Else the source checkouts the host knows — those of its tasks,
+`config.json`'s `worktree_repos` and the checkouts in the watch folders,
+as `worktree.list` finds them — whose remote (any of `git remote -v`'s
+fetch URLs) is `remote_url`, compared normalized: scheme, user and a
+trailing `.git` or `/` dropped, the host lower-cased, scp-like
+`host:path` read as `host/path`, so `git@github.com:o/r.git`,
+`ssh://git@github.com/o/r` and `https://github.com/o/r` are the same. The
+checkout of the newest task wins, then path order. None: `repo_missing`
+"repo: no checkout of <remote_url> on this host", with nothing made. The
+client asks the user and sends `relay.start` again with `clone`. A package
+with no `remote_url` (no remote at the source) cannot go to another host
+into a git checkout: `repo_missing` too, unless `repo` is given.
+
+`clone: {dir?}` clones `remote_url` first (`git clone <remote_url>
+<dir>`, with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never` so a
+credential prompt nobody sees fails rather than hangs; 600 s, scaled by
+`STAGENT_GIT_TIMEOUT_SCALE`). `dir` must be absolute and not exist or be
+empty (`bad_request`); without it the clone goes to the first watch folder
+(else the home directory) as the URL's last path segment without `.git`,
+`-2`, `-3`… added while that exists. A failure is `clone: <git's
+message>` and removes what it made. The clone is added to
+`worktree_repos`, answered as `cloned`, and stays a source checkout of the
+host: `relay.abort` keeps it, so trying again does not clone again.
+
+The new task is a named task (see "Creating a task") with `relay_id` set
+and the base its checkout's default branch:
+
+- Branch: `branch` when given (it must not exist as a local branch,
+  `bad_request`). Else the source's `branch` when the checkout has no local
+  branch of that name (another host, usually), else `<branch>-relay`,
+  `<branch>-relay-2`, … the first free; on a detached HEAD
+  `relay-<first 8 of relay_id>`.
+- Name: `name` when given (`bad_request` when invalid or taken, as
+  `task.preview`'s `name_problem` tells), else the branch with each `/`
+  made `-`, cut to 64 characters and made valid, with `-2`, `-3`… added
+  while it is taken.
+- Place: as a named task's, `<worktree_folder>/<checkout name>/<name>`; a
+  relay's task does not need `worktree_folder`: without it the place is
+  `<parent of repo>/<checkout name>-<name>`.
+
+Its prepared session runs `<stagent> task run --relay <relay_id> <task
+id> -- <agent argv>`, whose stages are those of "Creating a task" with
+one more:
+
+- `fetch` (another host): `git fetch <remote>` of the remote whose URL
+  matched (the commits the bundle builds on); failing is only a line.
+- `branch`: from the bundle (`git bundle verify`, then `git fetch
+  <bundle> <its ref>:refs/stagent-relay/<relay_id>`, a ref removed once
+  the branch is made) or, without one, from the commits the checkout has:
+  `git branch --no-track <branch> <head>`. A `head` or a commit the
+  bundle builds on that the checkout still lacks fails it, naming them.
+- `worktree`: as for any named task.
+- `relay` (new): in the worktree, `git apply --index --binary` of the
+  staged patch and `git apply --binary` of the unstaged one (each tried
+  again once with `--3way`), then the untracked files written; a file
+  already there fails it, naming it. A symbolic link that cannot be made
+  (Windows without the privilege) is written as a file holding its
+  target. On a source that cannot make links the untracked links are
+  skipped and the document names them.
+- `copy`, `setup` (the setup approval included), `agent`: as for any
+  named task. The agent starts in `cwd_rel` of the worktree (its root
+  when that is gone).
+
+A failed stage fails the task as usual (`Task.stage`, `Task.error`).
+
+The agent's argv is `[<command>, <model args>…, <instruction args>…]`:
+
+| harness | command | model args | instruction args |
+|---|---|---|---|
+| `claude` | `claude` | `--model <model>` | `<text>` |
+| `codex` | `codex` | `--model <model>` | `<text>` |
+| `omp` | `omp` | `--model=<model>` | `<text>` |
+| `pi` | `pi` | `--model <model>` | `<text>` |
+| `copilot` | `copilot` | `--model <model>` | `-i <text>` |
+| `qwen` | `qwen` | `--model <model>` | `-i <text>` |
+| `opencode` | `opencode` | `--model <model>` (`provider/model`) | `--prompt <text>` |
+| `grok` | `grok` | `--model <model>` | `<text>` |
+| `antigravity` | `agy` | `--model <model>` | `-i <text>` |
+
+Every harness takes a model; no model, no model args (the harness's
+default). `model` is 1–200 characters of `A-Z a-z 0-9 . _ : / @ + [ ] -`
+not starting with `-` (`bad_request` otherwise), which keeps it one
+argument on every OS, `cmd.exe`'s `"` and `%` included. The instruction
+args take the place of the app's first prompt (`promptArgs`) and run the
+terminal UI, never a one-shot run. `<text>` is fixed, ASCII and short —
+the user's instruction is in the document, out of reach of argument
+length limits and Windows' quoting:
+
+`Read the relay document at <document> and continue the work.`
+
+On Windows, when `<document>` holds a `%` (the user's profile path),
+`<text>` is `Read the relay document named by the environment variable
+STAGENT_RELAY_DOCUMENT and continue the work.` instead. The session's
+environment has `STAGENT_RELAY_DOCUMENT` (the document's absolute path)
+and `STAGENT_RELAY_ID` besides `env` and the login shell's (as for
+`session.spawn`). With no task the session is a detached session running
+the argv itself (`spawn`), in its place.
+
+The result: `task` (absent with no task), `session` (the task's prepared
+session, or the agent's), `document` (the absolute path of `relay.md`)
+and `cloned`.
+
+##### Undoing a failed start (`relay.abort`)
+
+`relay.abort {relay_id}` undoes what `relay.start` made for the relay on
+this host: its sessions are hung up, its task removed as `task.remove`
+with `force`, `stop_sessions` and `skip_archive` would, the branch the
+relay made deleted (merged or not: the source still has all of it),
+`relay/<relay_id>/` removed but for `package.tar.gz`, and the trace this
+daemon recorded for it forgotten (the bridge's `relay.forget {relay_id}`
+to the daemon: bridge only, never forwarded from the app, refused to a
+coding agent's process tree). A clone stays. Once the relay's agent
+runs — its task is `ready`, or, with no task, its session is live — it
+is `refused`: that is a relay that worked, and its task is removed as
+any task. A relay with nothing started answers `{}`, as does an unknown
+one. On the source host there is nothing to undo; `relay.discard` is all.
+
+`relay.discard {relay_id}` removes what the relay left on this host but
+a started relay's document: `relay-out/<relay_id>/` and, on the target,
+`package.tar.gz` and `tree/` — the whole `relay/<relay_id>/` of a relay
+never started. Idempotent.
+
+##### Trace (`relay.record`, `relay`)
+
+Each host's daemon keeps the trace (跡) of the relays its conversations
+took part in, one step each way, in `state/relays.json` (`{links:
+[{relay_id, role, at, local: {harness, conversation_id?, session_id?},
+peer: {host: {host_id?, label}, harness, conversation_id?,
+session_id?}}]}`, mode 0600, written by the daemon only, the newest 1,000
+kept). `role` is what the local conversation is: `source` (it was relayed
+to `peer`) or `target` (it was relayed from `peer`).
+
+`relay.record {relay_id, role, local, peer}` adds one; recording the same
+`relay_id` and `role` again fills in what was empty. A conversation keeps
+one link per role: a newer `source` link of the same conversation (relayed
+again) replaces the older. `local` is found by `session_id` and by
+`harness` + `conversation_id`; when a session recorded by its id gets its
+`conversation_id` (from its hooks), the daemon fills it in itself — in
+the links whose `local` it is and, for a relay within one host (the
+target end recorded here with that session), in the `peer` of the
+relay's `source` link too. Each
+live session it touches goes out as `session.updated`. `bad_request`
+for a bad `relay_id` or `role`, an empty `harness` or `peer.host.label`.
+
+Who records: `relay.start` records the target end on the target's daemon
+(`local`: its session, `peer`: the manifest's source with its `host`).
+For another host the client records the source end on the source's
+daemon once the target is up (`local`: the source conversation, `peer`:
+`target_host`, the harness and the target session), and again when the
+target session's `conversation_id` shows (`session.updated` from the
+target): the target harness picks it, so only the client can tell the
+source. Within one host `relay.start` records both ends, and the daemon
+fills in the target's `conversation_id` on both once the target session
+gets it (no second `relay.record`). On another host the target end's is
+filled in by its daemon the same way; the source host's still comes from
+the client's `relay.record`.
+
+`Session.relay` and `Conversation.relay` (`conversations.list`) carry the
+trace of their conversation, `{source?, target?}`, each a `RelayLink`
+`{relay_id, at, host: {host_id?, label}, harness, conversation_id?,
+session_id?}` naming the conversation at the other end: `source` the one
+it was relayed from (shown as `リレー元: claude · mac の会話`), `target`
+the one it was last relayed to. The client opens it by `host_id` (the
+saved connection it last used for that host) and `harness` +
+`conversation_id` (`transcript.get`), or `session_id` while that
+conversation id is still unknown.
 
 #### GitHub screen (Windows only)
 
@@ -1694,6 +2273,7 @@ max 1 MiB.
 | `schedule.output` | `{id, run_id, session_id?, before?, max_bytes?}` | `{data, start, end, first, gone?}` — a page of a try's output (`session_id`; omitted: the newest try) from the disk, as `session.scrollback`; `gone: true` once it is no longer kept |
 | `usage.get` | `{tz?, from?, to?, refresh_limits?, daily?}` | `{scanning, scanned_at?, counted[], days[], sessions[], limits[], conversations[], daily[]?}` — the tokens the agents spent on this host, by calendar day of `tz` (since 0.19.0, #1557; see "Usage"), and the limit windows measured (`limits`, since 0.19.0, #1559; see "Limit windows"). `refresh_limits: true` (since 0.19.0, #1563): the usage screen was opened, call the private API if allowed (see "Private API") |
 | `stopped.remove` | `{id}` | `{}` — the stopped agent taken off the list (nothing when it is not listed; since 0.21.0, see "Stopped agents"); refused to a coding agent's process tree |
+| `relay.record` | `{relay_id, role, local, peer}` | `{}` — records one end of a relay's trace (since 0.26.0, see "Relay"); refused to a coding agent's process tree |
 
 Nothing in the protocol answers an approval: the program's own screen does
 (the PC, Claude's Remote Control, or a client typing the option's key with
@@ -2571,9 +3151,9 @@ account:
   (`seven_day_<x>`, `five_hour_<x>`, x lowercase letters and digits; in
   the order they were first measured), then any other by id (ignore ids
   you do not know). A Codex window of another length is `<minutes>m`
-  (e.g. `1440m`). For antigravity (since 0.25.0) the account is
+  (e.g. `1440m`). For antigravity (since 0.25.0, #1899) the account is
   Antigravity CLI's home, `~/.gemini/antigravity-cli`.
-- `label` (optional, since 0.25.0): the name of the quota group a scoped
+- `label` (optional, since 0.25.0, #1899): the name of the quota group a scoped
   window counts, as the harness wrote it (Antigravity's `Claude and GPT
   models`); absent on every other window (Claude's `seven_day_<model>`
   has none).
@@ -2590,7 +3170,7 @@ account:
   harness's undocumented usage API (since 0.19.0, #1563; see "Private
   API"); `omp_usage` — what omp (oh-my-pi) tells (since 0.19.1; see "omp
   usage"); `antigravity_usage` — what Antigravity CLI's `/usage` tells
-  (since 0.25.0; see "Antigravity usage"). Items may gain keys: ignore
+  (since 0.25.0, #1899; see "Antigravity usage"). Items may gain keys: ignore
   what you do not know.
 - `error` (optional, since 0.19.0, #1563): the last failure of the
   private API for the window's account, `{code, message, at, retry_at?}`
@@ -2788,7 +3368,7 @@ Not run when `STAGENT_HOME` is set.
 
 #### Antigravity usage
 
-(Since 0.25.0.) When Antigravity CLI is installed — `agy` found on the
+(Since 0.25.0, #1899.) When Antigravity CLI is installed — `agy` found on the
 daemon's `PATH`, else in the per-user tool directories (`~/.local/bin`,
 …) — the daemon runs `agy -p /usage --output-format json`, a read-only
 slash command in print mode (no agent turn, no quota spent, no
@@ -3093,6 +3673,7 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 | `usage.changed` | `{scanning, scanned_at?}` — new usage was counted, the first scan finished, or a limit window changed (since 0.19.0, #1559); at most once per 30 s (since 0.19.0, #1557; see "Usage", "Limit windows") |
 | `host_screen.frame` | `{seq, data, width, height}` (see "Host screen") |
 | `host_screen.state` | `{state: "live"\|"gone", title?, url?}` (see "Host screen") |
+| `relay.progress` | `{relay_id, stage, done?, total?}` — a stage of `relay.prepare` or `relay.start` began or moved on, on the connection that sent it (since 0.26.0; see "Relay") |
 
 ## Objects
 
@@ -3103,7 +3684,10 @@ waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
 process), title?, conversation_id?, transcript_path?, last_message?,
 question?, cols, rows, started_at, last_activity_at, last_local_input_at?,
 last_input_at?, focused?, presence_file?, exit_code?, task_id?, schedule_id?,
-run_id?`.
+run_id?, relay?`.
+
+`relay` (since 0.26.0) is the relay trace of the session's conversation,
+`{source?, target?}` of `RelayLink` (see "Relay"); omitted when none.
 
 `question` (since 0.20.0, #1548, #1549) is the choice question the agent
 waits on: `{tool, questions: [QuestionItem]}` — `tool` the harness's
@@ -3121,7 +3705,9 @@ question, multi?, options?[], answers?[]}` — `id` the agent's id for it
 (omp, Codex), `header` its short header, `question` its text (empty only
 in a Codex answer row, which names its questions by `id`), `multi` that
 several options may be chosen, `options` the option labels as asked
-(`Session.question` only), `answers` the options chosen and the text
+(`Session.question`, and `Message.ask` question rows where the transcript
+records them — Claude Code's since 0.26.0, Qwen Code's, OpenCode's, Grok
+Build's, Antigravity CLI's), `answers` the options chosen and the text
 typed (`Message.ask` answer rows only).
 
 `mode` is fixed for the life of a session except for one transition
@@ -3337,13 +3923,14 @@ shows again.
 `Task`: `id, repo, kind (issue|pr|name), number, name?, title, url,
 branch, base, worktree, in_place, created_at, state (preparing|ready|
 failed|missing|removing), stage?, error?, session_id?,
-setup_pending?`. A named task
+setup_pending?, relay_id?`. A named task
 (`kind: name`) has `name`, `number` 0, empty `title` and `url`, and is
 never `in_place`; an Issue or PR has no `name`. `repo` is the source
 checkout's canonical path; `worktree` is where the task is worked on
 (`repo` itself when `in_place`). `created_at` is RFC 3339 (UTC, whole
 seconds). `stage`
-is, while preparing, `fetch|branch|worktree|copy|setup|agent` (the stage
+is, while preparing, `fetch|branch|worktree|relay|copy|setup|agent` (`relay`
+only for a relay's task; the stage
 it failed at, once `failed`) and, while removing,
 `stop|archive|worktree|branch` (the stage that failed, once a removal
 failed and the task is back to `ready` or `failed`). `error` is one line; details stay in the
@@ -3351,6 +3938,8 @@ terminal's output. `session_id` is the session that prepares the task;
 sessions are tied to tasks by `Session.task_id`, not by it.
 `setup_pending` (`{script, hash}`, since 0.19.0) is the `scripts.setup` a
 `preparing` task waits on for the app to run or skip (`task.setup`).
+`relay_id` (since 0.26.0) names the relay that made the task
+(`relay.start`, see "Relay").
 
 `UnwrappedLaunch`: `conversation_id, harness (claude|codex|omp|pi|copilot|qwen|opencode|grok|antigravity), cwd, reason
 (old_terminal|bypassed|ide|ssh|no_terminal), first_seen_at,
@@ -3404,7 +3993,11 @@ is still waiting for the user. Claude Code records no answer for a
 rejected call; the `Interrupted by user` row after it closes the question.
 
 `Conversation`: `harness, id, cwd, title, updated_at, path,
-live_session_id?`.
+live_session_id?, relay?` — `relay` as `Session`'s (since 0.26.0).
+
+`RelayLink` (since 0.26.0): `relay_id, at, host {host_id?, label},
+harness, conversation_id?, session_id?` — the conversation at the other
+end of a relay (see "Relay"); `at` is when it was recorded (unix ms).
 
 `Config`: see `wire.Config` — `notify {ntfy {enabled, server, topic,
 token?}, webhook {enabled, url, headers?}, chat {enabled, url},

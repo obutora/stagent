@@ -45,7 +45,7 @@ func scanPi(path string, e *entry) {
 				e.Title = clip(strings.TrimSpace(r.Name), 1024)
 			}
 		case e.Prompt == "":
-			for _, m := range parseOmp(line) {
+			for _, m := range messages(parseOmp(line)) {
 				if m.Role == RoleUser {
 					e.Prompt = clip(m.Text, 1024)
 				}

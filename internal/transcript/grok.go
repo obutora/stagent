@@ -100,7 +100,7 @@ func scanGrok(path string, e *entry) {
 			}
 		}
 		if e.Prompt == "" && bytes.Contains(line, []byte(`"user_message_chunk"`)) {
-			for _, m := range parseGrok(line, nil) {
+			for _, m := range messages(parseGrok(line, nil)) {
 				if m.Role == RoleUser {
 					e.Prompt = clip(m.Text, 1024)
 				}
@@ -165,18 +165,14 @@ type grokRecord struct {
 			Title         string          `json:"title"`
 			Status        string          `json:"status"`
 			RawInput      json.RawMessage `json:"rawInput"`
-			RawOutput     struct {
-				Type         string `json:"type"`
-				UserAnswered *struct {
-					Answers []struct {
-						Question string   `json:"question"`
-						Picked   []string `json:"picked"`
-					} `json:"answers"`
-				} `json:"UserAnswered"`
-			} `json:"rawOutput"`
+			RawOutput     json.RawMessage `json:"rawOutput"`
+			Locations     []struct {
+				Path string `json:"path"`
+			} `json:"locations"`
 			Meta struct {
 				Tool struct {
 					Name string `json:"name"`
+					Kind string `json:"kind"`
 				} `json:"x.ai/tool"`
 			} `json:"_meta"`
 		} `json:"update"`
@@ -186,12 +182,48 @@ type grokRecord struct {
 	} `json:"params"`
 }
 
+// grokOutput is the part of a tool call's rawOutput read: its type (an
+// AskUserQuestion's answers) and the text the model was given.
+type grokOutput struct {
+	Type         string `json:"type"`
+	UserAnswered *struct {
+		Answers []struct {
+			Question string   `json:"question"`
+			Picked   []string `json:"picked"`
+		} `json:"answers"`
+	} `json:"UserAnswered"`
+	OutputForPrompt string `json:"output_for_prompt"`
+	EditsApplied    *struct {
+		ToolOutputForPrompt string `json:"tool_output_for_prompt"`
+	} `json:"EditsApplied"`
+}
+
+// grokBlock is an ACP content block: text, or an image (base64 data, or
+// a URI).
+type grokBlock struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
+	URI      string `json:"uri"`
+}
+
+func (b grokBlock) image() Image {
+	if b.Data != "" {
+		return base64Image(b.MimeType, b.Data)
+	}
+	return urlImage(b.MimeType, b.URI)
+}
+
+// grokFileKinds are the kinds of Grok Build's tools that change files.
+var grokFileKinds = map[string]bool{"edit": true, "write": true, "delete": true, "move": true}
+
 // parseGrok reads the user's prompts, the model's texts (not its
-// thinking) and tool calls, and the answers to its questions
+// thinking) and tool calls, their outputs and the answers to its questions
 // (ask_user_question, a question row and its answer row). The other
 // updates of a tool call and every other record are skipped. The model's
 // text comes as one record per streamed chunk, each its own row.
-func parseGrok(line []byte, asked askedFunc) []wire.Message {
+func parseGrok(line []byte, asked askedFunc) []Entry {
 	if !bytes.Contains(line, []byte(`"session/update"`)) {
 		return nil
 	}
@@ -206,45 +238,83 @@ func parseGrok(line []byte, asked askedFunc) []wire.Message {
 	}
 	switch u.SessionUpdate {
 	case "user_message_chunk", "agent_message_chunk":
-		var c struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(u.Content, &c) != nil || c.Type != "text" {
-			return nil
-		}
-		s := strings.TrimSpace(c.Text)
-		if s == "" {
+		var c grokBlock
+		if json.Unmarshal(u.Content, &c) != nil {
 			return nil
 		}
 		role := RoleAssistant
 		if u.SessionUpdate == "user_message_chunk" {
 			role = RoleUser
 		}
-		return []wire.Message{{Role: role, Text: clip(s, maxText), Time: t}}
+		switch c.Type {
+		case "text":
+			if s := strings.TrimSpace(c.Text); s != "" {
+				return []Entry{{Role: role, Text: s, Time: t}}
+			}
+		case "image":
+			return []Entry{{Role: role, Images: []Image{c.image()}, Time: t}}
+		}
 	case "tool_call":
 		name := firstNonEmpty(u.Meta.Tool.Name, u.Title)
 		if name == grokQuestionTool {
-			if m, ok := grokAskQuestion(u.ToolCallID, u.RawInput, t); ok {
-				return []wire.Message{m}
+			if e, ok := grokAskQuestion(u.ToolCallID, u.RawInput, t); ok {
+				return []Entry{e}
 			}
 		}
-		return []wire.Message{{Role: RoleTool, ToolName: name, Text: Summarize(u.RawInput), Time: t}}
+		e := toolCall(name, u.ToolCallID, rawInput(u.RawInput), Summarize(u.RawInput), t)
+		if len(e.Touched) == 0 && grokFileKinds[u.Meta.Tool.Kind] {
+			if p := inputPath(e.Input); p != "" {
+				e.Touched = []string{p}
+			}
+			for _, l := range u.Locations {
+				if l.Path != "" && !containsString(e.Touched, l.Path) {
+					e.Touched = append(e.Touched, l.Path)
+				}
+			}
+		}
+		return []Entry{e}
 	case "tool_call_update":
-		question := u.RawOutput.Type == "AskUserQuestion" || asked != nil && asked(u.ToolCallID)
-		if !question || u.Status != "completed" && u.Status != "failed" {
+		if u.Status != "completed" && u.Status != "failed" {
 			return nil
 		}
-		var items []wire.QuestionItem
-		if a := u.RawOutput.UserAnswered; a != nil && u.Status == "completed" {
-			for _, it := range a.Answers {
-				items = append(items, wire.QuestionItem{Question: it.Question, Answers: typedAnswers(nil, it.Picked...)})
+		var out grokOutput
+		_ = json.Unmarshal(u.RawOutput, &out)
+		if out.Type == "AskUserQuestion" || asked != nil && asked(u.ToolCallID) {
+			var items []wire.QuestionItem
+			if a := out.UserAnswered; a != nil && u.Status == "completed" {
+				for _, it := range a.Answers {
+					items = append(items, wire.QuestionItem{Question: it.Question, Answers: typedAnswers(nil, it.Picked...)})
+				}
+			}
+			if len(items) == 0 {
+				return []Entry{askDeclinedRow(u.ToolCallID, t)}
+			}
+			return []Entry{askAnswerRow(u.ToolCallID, items, t)}
+		}
+		text := out.OutputForPrompt
+		if text == "" && out.EditsApplied != nil {
+			text = out.EditsApplied.ToolOutputForPrompt
+		}
+		var blocks []struct {
+			Type    string    `json:"type"`
+			Content grokBlock `json:"content"`
+			Path    string    `json:"path"`
+		}
+		_ = json.Unmarshal(u.Content, &blocks)
+		var texts []string
+		var images []Image
+		for _, b := range blocks {
+			switch {
+			case b.Type == "content" && b.Content.Type == "image":
+				images = append(images, b.Content.image())
+			case b.Type == "content" && strings.TrimSpace(b.Content.Text) != "":
+				texts = append(texts, b.Content.Text)
 			}
 		}
-		if len(items) == 0 {
-			return []wire.Message{askDeclinedRow(u.ToolCallID, t)}
+		if strings.TrimSpace(text) == "" {
+			text = strings.Join(texts, "\n")
 		}
-		return []wire.Message{askAnswerRow(u.ToolCallID, items, t)}
+		return toolOutput("", u.ToolCallID, text, images, t)
 	}
 	return nil
 }
@@ -252,7 +322,7 @@ func parseGrok(line []byte, asked askedFunc) []wire.Message {
 // grokAskQuestion reads the question row of an ask_user_question call:
 // {questions: [{question, header?, options: [{label, description}],
 // multi_select | multiSelect}]}.
-func grokAskQuestion(id string, args json.RawMessage, t int64) (wire.Message, bool) {
+func grokAskQuestion(id string, args json.RawMessage, t int64) (Entry, bool) {
 	var in struct {
 		Questions []struct {
 			Question    string `json:"question"`
@@ -265,7 +335,7 @@ func grokAskQuestion(id string, args json.RawMessage, t int64) (wire.Message, bo
 		} `json:"questions"`
 	}
 	if json.Unmarshal(args, &in) != nil || len(in.Questions) == 0 {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	items := make([]wire.QuestionItem, len(in.Questions))
 	for i, q := range in.Questions {
@@ -275,5 +345,5 @@ func grokAskQuestion(id string, args json.RawMessage, t int64) (wire.Message, bo
 		}
 		items[i] = wire.QuestionItem{Header: q.Header, Question: q.Question, Multi: q.MultiSelect || q.MultiSnake, Options: labels}
 	}
-	return askQuestionRow(grokQuestionTool, id, items, t), true
+	return askQuestionRow(grokQuestionTool, id, rawInput(args), items, t), true
 }

@@ -265,10 +265,13 @@ func (d *Daemon) dropStoppedLocked(id, session string) bool {
 }
 
 // sessionChangedLocked pushes session.updated for s after a change, keeping
-// the record of its agent up to date first.
+// the record of its agent and its relay trace up to date first.
 func (d *Daemon) sessionChangedLocked(s *session) {
 	d.noteAgentLocked(s)
+	others := d.fillRelaysLocked(s)
+	d.relayOfSessionLocked(s)
 	d.broadcastLocked(wire.NotifySessionUpdated, s.s)
+	d.relaysTouchedLocked(others)
 }
 
 // noteAgentLocked records the agent of s, or marks its record ended when

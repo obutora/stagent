@@ -182,8 +182,8 @@ func TestRegistryEntriesComplete(t *testing.T) {
 			t.Errorf("entry %+v: id empty, other or duplicated", h)
 		}
 		seen[h.ID] = true
-		if h.Command == "" || h.TranscriptRoot == nil || h.Resume == nil {
-			t.Errorf("%s: command, transcript root and resume are required", h.ID)
+		if h.Command == "" || h.TranscriptRoot == nil || h.Resume == nil || h.ModelArgs == nil || h.PromptArgs == nil {
+			t.Errorf("%s: command, transcript root, resume, model and prompt args are required", h.ID)
 		}
 		if Name(h.Command) != h.ID {
 			t.Errorf("%s: its command %q is judged %q", h.ID, h.Command, Name(h.Command))

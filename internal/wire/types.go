@@ -112,6 +112,9 @@ type Session struct {
 	// the host's agents, and it belongs to no task.
 	ScheduleID string `json:"schedule_id,omitempty"`
 	RunID      string `json:"run_id,omitempty"`
+	// Relay is the relay trace of the session's conversation (omitted:
+	// none; CapRelay).
+	Relay *RelayLinks `json:"relay,omitempty"`
 }
 
 // Question is a choice question an agent asked through its question tool
@@ -131,7 +134,8 @@ type QuestionItem struct {
 	Header   string `json:"header,omitempty"`
 	Question string `json:"question"`        // empty on a Codex answer (by id only)
 	Multi    bool   `json:"multi,omitempty"` // several options may be chosen
-	// Options are the option labels, as asked (Question only).
+	// Options are the option labels, as asked (Question, and an Ask's
+	// question row where the transcript records them).
 	Options []string `json:"options,omitempty"`
 	// Answers: the options chosen and the text typed, in order (an Ask's
 	// answer row only).
@@ -395,6 +399,8 @@ type Conversation struct {
 	UpdatedAt     int64  `json:"updated_at"` // unix ms (file mtime)
 	Path          string `json:"path"`
 	LiveSessionID string `json:"live_session_id,omitempty"`
+	// Relay is the conversation's relay trace (omitted: none; CapRelay).
+	Relay *RelayLinks `json:"relay,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

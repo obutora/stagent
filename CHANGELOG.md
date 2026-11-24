@@ -3,6 +3,42 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.26.0
+
+### Added
+
+- Relays (リレー, #1930, capability `relay`): a conversation's content and
+  its working tree go on in a new conversation of another agent — another
+  harness, model or host. `relay.prepare` on the relay source reads the
+  conversation (any of the nine harnesses, up to where it stood) into a
+  harness-neutral Markdown document, the relay document: the first
+  request, the last turns, the files touched and the working tree's state
+  up front, then every message with tool calls and their output (each cut
+  to 8 KiB), images as files, and the approvals and question left
+  unanswered; thinking is left out. It can ask a live, idle source agent
+  for a hand-off memo first. With the document go a git bundle of the
+  commits no remote has, the staged and unstaged changes and the untracked
+  files, packed into one gzip tar (512 MiB at most, `too_large` naming the
+  bundle and the largest files otherwise) that the app carries from the
+  source's bridge to the target's in chunks (`relay.read`,
+  `relay.receive`, `relay.write`, resumable); within one host nothing is
+  carried. `relay.start` on the target checks and unpacks it, finds the
+  host's checkout of the same remote (`repo_missing` when there is none;
+  `clone` clones it) and makes a named task on the source's branch whose
+  new `relay` stage applies the changes and untracked files
+  (`stagent task run --relay`), then starts the chosen harness with the
+  model and a fixed instruction pointing at the document, in the source's
+  directory of the worktree. `relay.abort` undoes a start that failed,
+  `relay.discard` removes the package (the document stays), and
+  `relay.progress` tells each stage; a failed `relay.prepare` names its
+  relay in the error's new `data` (`{relay_id}`). Each daemon keeps the trace of its
+  relays in `state/relays.json` (`relay.record`), shown as `relay` on
+  sessions and conversations. Every relay method is refused to a coding
+  agent's process tree.
+- Claude Code's question rows (`Message.ask`, AskUserQuestion) carry
+  their `options`, read from the tool call's input, as Qwen Code's,
+  OpenCode's, Grok Build's and Antigravity CLI's do.
+
 ## 0.25.0
 
 ### Added

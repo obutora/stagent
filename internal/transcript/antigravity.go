@@ -158,7 +158,7 @@ func firstAntigravityPrompt(path string, offset int64, scanned *int64) antigravi
 		if !complete {
 			return true
 		}
-		for _, m := range parseAntigravity(line) {
+		for _, m := range messages(parseAntigravity(line)) {
 			if m.Role == RoleUser {
 				p = antigravityPrompt{m.Time, m.Text}
 				return false
@@ -307,14 +307,31 @@ type antigravityRecord struct {
 		Name string          `json:"name"`
 		Args json.RawMessage `json:"args"`
 	} `json:"tool_calls"`
+	// Media are the images of a step, as files (a tool result's: an image
+	// read).
+	Media []struct {
+		MimeType string `json:"mime_type"`
+		URI      string `json:"uri"`
+	} `json:"media"`
+}
+
+func (r antigravityRecord) images() []Image {
+	var out []Image
+	for _, m := range r.Media {
+		if imageMediaType(m.MimeType) {
+			out = append(out, urlImage(m.MimeType, m.URI))
+		}
+	}
+	return out
 }
 
 // parseAntigravity reads the user's prompts, the model's texts (not its
 // thinking) and tool calls, its questions and their answers (ask_question,
-// a question row and its answer row), the tool calls that failed or were
-// turned down (the first line of their error) and model errors. The
-// results of other tool calls and Antigravity CLI's notes are skipped.
-func parseAntigravity(line []byte) []wire.Message {
+// a question row and its answer row), the results of the other tool calls
+// (the step after the call's: a call's id is its result's step), the tool
+// calls that failed or were turned down (the first line of their error)
+// and model errors. Antigravity CLI's notes are skipped.
+func parseAntigravity(line []byte) []Entry {
 	var r antigravityRecord
 	if json.Unmarshal(line, &r) != nil {
 		return nil
@@ -322,38 +339,44 @@ func parseAntigravity(line []byte) []wire.Message {
 	t := parseTime(r.CreatedAt)
 	switch r.Type {
 	case "USER_INPUT":
-		if s := antigravityUserText(r.Content); s != "" {
-			return []wire.Message{{Role: RoleUser, Text: clip(s, maxText), Time: t}}
+		images := r.images()
+		if s := antigravityUserText(r.Content); s != "" || len(images) > 0 {
+			return []Entry{{Role: RoleUser, Text: s, Images: images, Time: t}}
 		}
 	case "PLANNER_RESPONSE":
-		var out []wire.Message
+		var out []Entry
 		if s := strings.TrimSpace(r.Content); s != "" {
-			out = append(out, wire.Message{Role: RoleAssistant, Text: clip(s, maxText), Time: t})
+			out = append(out, Entry{Role: RoleAssistant, Text: s, Time: t})
 		}
 		for i, c := range r.ToolCalls {
+			id := antigravityCallID(r.StepIndex + 1 + i)
 			if c.Name == antigravityQuestionTool {
-				if m, ok := antigravityAskQuestion(antigravityCallID(r.StepIndex+1+i), c.Args, t); ok {
-					out = append(out, m)
+				if e, ok := antigravityAskQuestion(id, c.Args, t); ok {
+					out = append(out, e)
 					continue
 				}
 			}
-			out = append(out, wire.Message{Role: RoleTool, ToolName: c.Name, Text: Summarize(c.Args), Time: t})
+			out = append(out, toolCall(c.Name, id, rawInput(c.Args), Summarize(c.Args), t))
 		}
 		return out
 	case "GENERIC":
+		id, text := antigravityCallID(r.StepIndex), antigravityOutput(r.Content)
 		switch r.Status {
 		case "ERROR":
-			if s := firstLine(firstNonEmpty(r.Error, antigravityOutput(r.Content))); s != "" {
-				return []wire.Message{{Role: RoleSystem, Text: clip(s, maxText), Time: t}}
+			out := toolOutput("", id, firstNonEmpty(text, r.Error), r.images(), t)
+			if s := firstLine(firstNonEmpty(r.Error, text)); s != "" {
+				out = append(out, Entry{Role: RoleSystem, Text: s, Time: t})
 			}
+			return out
 		case "DONE":
-			if m, ok := antigravityAskAnswer(antigravityCallID(r.StepIndex), antigravityOutput(r.Content), t); ok {
-				return []wire.Message{m}
+			if e, ok := antigravityAskAnswer(id, text, t); ok {
+				return []Entry{e}
 			}
 		}
+		return toolOutput("", id, text, r.images(), t)
 	case "ERROR_MESSAGE":
 		if s := firstLine(firstNonEmpty(r.Error, r.Content)); s != "" {
-			return []wire.Message{{Role: RoleSystem, Text: clip(s, maxText), Time: t}}
+			return []Entry{{Role: RoleSystem, Text: s, Time: t}}
 		}
 	}
 	return nil
@@ -408,7 +431,7 @@ func firstLine(s string) string {
 
 // antigravityAskQuestion reads the question row of an ask_question call:
 // {questions: [{question, options: [<label>], is_multi_select}]}.
-func antigravityAskQuestion(id string, args json.RawMessage, t int64) (wire.Message, bool) {
+func antigravityAskQuestion(id string, args json.RawMessage, t int64) (Entry, bool) {
 	var in struct {
 		Questions []struct {
 			Question    string   `json:"question"`
@@ -417,13 +440,13 @@ func antigravityAskQuestion(id string, args json.RawMessage, t int64) (wire.Mess
 		} `json:"questions"`
 	}
 	if json.Unmarshal(args, &in) != nil || len(in.Questions) == 0 {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	items := make([]wire.QuestionItem, len(in.Questions))
 	for i, q := range in.Questions {
 		items[i] = wire.QuestionItem{Question: q.Question, Multi: q.MultiSelect, Options: q.Options}
 	}
-	return askQuestionRow(antigravityQuestionTool, id, items, t), true
+	return askQuestionRow(antigravityQuestionTool, id, rawInput(args), items, t), true
 }
 
 var antigravityAnswerLine = regexp.MustCompile(`^A([0-9]+): ?(.*)$`)
@@ -438,9 +461,9 @@ const antigravitySkipped = "User Skipped"
 // answer of several lines). The result names no tool, so the shape alone
 // tells. A question skipped has no answer; all of them skipped close the
 // question unanswered.
-func antigravityAskAnswer(id, out string, t int64) (wire.Message, bool) {
+func antigravityAskAnswer(id, out string, t int64) (Entry, bool) {
 	if !strings.HasPrefix(out, "A1:") {
-		return wire.Message{}, false
+		return Entry{}, false
 	}
 	var answers []string
 	for _, l := range strings.Split(out, "\n") {

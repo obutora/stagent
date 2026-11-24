@@ -30,6 +30,18 @@ const (
 	limitCheck = 30 * time.Second
 )
 
+// The time limits of a relay's git commands (PROTOCOL.md "Relay"), scaled
+// the same way.
+const (
+	// LimitRelayBundle: git bundle create.
+	LimitRelayBundle = 180 * time.Second
+	// LimitRelayGit: each other git command of relay.prepare and
+	// relay.start.
+	LimitRelayGit = limitCheck
+	// LimitRelayClone: git clone of relay.start's clone.
+	LimitRelayClone = 600 * time.Second
+)
+
 // EnvGitTimeoutScale multiplies those limits by a positive number (5: five
 // times as long) for a repository too large for them (LFS). Set in the
 // login shell's environment, it reaches the bridge and the task's
@@ -45,9 +57,9 @@ func (e *LimitError) Error() string {
 	return fmt.Sprintf("timed out after %s (%s lengthens the limit)", e.Limit, EnvGitTimeoutScale)
 }
 
-// withLimit limits ctx to d scaled by env's EnvGitTimeoutScale (env nil:
+// WithLimit limits ctx to d scaled by env's EnvGitTimeoutScale (env nil:
 // this process's). When the limit ends it, context.Cause is a *LimitError.
-func withLimit(ctx context.Context, env []string, d time.Duration) (context.Context, context.CancelFunc) {
+func WithLimit(ctx context.Context, env []string, d time.Duration) (context.Context, context.CancelFunc) {
 	if env == nil {
 		env = os.Environ()
 	}

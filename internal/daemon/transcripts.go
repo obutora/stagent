@@ -30,10 +30,11 @@ func (d *Daemon) conversations(p wire.ConversationsListParams) (wire.Conversatio
 			live[[2]string{s.s.Harness, s.s.ConversationID}] = s.s.ID
 		}
 	}
-	d.mu.Unlock()
 	for i := range list {
 		list[i].LiveSessionID = live[[2]string{list[i].Harness, list[i].ID}]
+		list[i].Relay = d.relayOfConversationLocked(list[i].Harness, list[i].ID)
 	}
+	d.mu.Unlock()
 	if list == nil {
 		list = []wire.Conversation{}
 	}

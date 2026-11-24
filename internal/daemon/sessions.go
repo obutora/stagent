@@ -510,6 +510,10 @@ func (d *Daemon) sessionList() []wire.Session {
 func (d *Daemon) sessionListLocked() []wire.Session {
 	out := make([]wire.Session, 0, len(d.sessions))
 	for _, s := range d.sessions {
+		d.fillRelaysLocked(s)
+	}
+	for _, s := range d.sessions {
+		d.relayOfSessionLocked(s)
 		out = append(out, s.s)
 	}
 	sort.Slice(out, func(i, j int) bool {

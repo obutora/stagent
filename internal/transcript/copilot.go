@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/obutora/stagent/internal/wire"
 )
 
 // Copilot CLI: <copilot home>/session-state/<session id>/events.jsonl, an
@@ -66,7 +64,7 @@ func scanCopilot(path string, e *entry) {
 				}
 			}
 		case e.Prompt == "":
-			for _, m := range parseCopilot(line) {
+			for _, m := range messages(parseCopilot(line)) {
 				if m.Role == RoleUser {
 					e.Prompt = clip(m.Text, 1024)
 				}
@@ -152,21 +150,53 @@ type copilotRecord struct {
 		Source          string `json:"source"`
 		ParentToolCall  string `json:"parentToolCallId"`
 		AutopilotResume bool   `json:"isAutopilotContinuation"`
-		ToolRequests    []struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-			ToolTitle string          `json:"toolTitle"`
+		Attachments     []struct {
+			Type     string `json:"type"`
+			Path     string `json:"path"`
+			Data     string `json:"data"`
+			MimeType string `json:"mimeType"`
+		} `json:"attachments"`
+		ToolRequests []struct {
+			ToolCallID string          `json:"toolCallId"`
+			Name       string          `json:"name"`
+			Arguments  json.RawMessage `json:"arguments"`
+			ToolTitle  string          `json:"toolTitle"`
 		} `json:"toolRequests"`
+		// tool.execution_complete
+		ToolCallID string `json:"toolCallId"`
+		Result     *struct {
+			Content         string           `json:"content"`
+			DetailedContent string           `json:"detailedContent"`
+			Contents        []copilotContent `json:"contents"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	} `json:"data"`
 }
 
-// parseCopilot reads the user's prompts and the main agent's messages and
-// tool calls. A sub-agent's messages (agentId, or parentToolCallId in
-// older records), prompts Copilot CLI sends itself (a skill's hidden
-// instructions `skill-…`, another agent's `agent-…`, autopilot's
-// continuations) and every other record type are skipped.
-func parseCopilot(line []byte) []wire.Message {
-	if !bytes.Contains(line, []byte(`"user.message"`)) && !bytes.Contains(line, []byte(`"assistant.message"`)) {
+// copilotContent is a block of a tool result's contents: text, terminal
+// output, an image (base64 data).
+type copilotContent struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
+}
+
+// copilotImageExt are the extensions of the image files a prompt may
+// attach.
+var copilotImageExt = map[string]string{".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+
+// parseCopilot reads the user's prompts (and the images attached to them)
+// and the main agent's messages, tool calls and their results. A
+// sub-agent's events (agentId, or parentToolCallId in older records),
+// prompts Copilot CLI sends itself (a skill's hidden instructions
+// `skill-…`, another agent's `agent-…`, autopilot's continuations) and
+// every other record type are skipped.
+func parseCopilot(line []byte) []Entry {
+	if !bytes.Contains(line, []byte(`"user.message"`)) && !bytes.Contains(line, []byte(`"assistant.message"`)) &&
+		!bytes.Contains(line, []byte(`"tool.execution_complete"`)) {
 		return nil
 	}
 	var r copilotRecord
@@ -179,22 +209,53 @@ func parseCopilot(line []byte) []wire.Message {
 		if r.Data.AutopilotResume || strings.HasPrefix(r.Data.Source, "skill-") || strings.HasPrefix(r.Data.Source, "agent-") {
 			return nil
 		}
-		if s := strings.TrimSpace(r.Data.Content); s != "" {
-			return []wire.Message{{Role: RoleUser, Text: clip(s, maxText), Time: t}}
+		var images []Image
+		for _, a := range r.Data.Attachments {
+			switch {
+			case a.Data != "" && imageMediaType(a.MimeType):
+				images = append(images, base64Image(a.MimeType, a.Data))
+			case a.Type == "file" && copilotImageExt[strings.ToLower(filepath.Ext(a.Path))] != "":
+				images = append(images, Image{MediaType: copilotImageExt[strings.ToLower(filepath.Ext(a.Path))], Path: a.Path})
+			}
+		}
+		if s := strings.TrimSpace(r.Data.Content); s != "" || len(images) > 0 {
+			return []Entry{{Role: RoleUser, Text: s, Images: images, Time: t}}
 		}
 	case "assistant.message":
-		var out []wire.Message
+		var out []Entry
 		if s := strings.TrimSpace(r.Data.Content); s != "" {
-			out = append(out, wire.Message{Role: RoleAssistant, Text: clip(s, maxText), Time: t})
+			out = append(out, Entry{Role: RoleAssistant, Text: s, Time: t})
 		}
 		for _, tr := range r.Data.ToolRequests {
 			s := Summarize(tr.Arguments)
 			if s == "" {
 				s = oneLine(tr.ToolTitle, maxSummary)
 			}
-			out = append(out, wire.Message{Role: RoleTool, ToolName: tr.Name, Text: s, Time: t})
+			out = append(out, toolCall(tr.Name, tr.ToolCallID, rawInput(tr.Arguments), s, t))
 		}
 		return out
+	case "tool.execution_complete":
+		var text string
+		var images []Image
+		if res := r.Data.Result; res != nil {
+			text = firstNonEmpty(res.Content, res.DetailedContent)
+			var texts []string
+			for _, c := range res.Contents {
+				switch {
+				case c.Type == "image" || c.Data != "" && imageMediaType(c.MimeType):
+					images = append(images, base64Image(c.MimeType, c.Data))
+				case text == "" && strings.TrimSpace(c.Text) != "":
+					texts = append(texts, c.Text)
+				}
+			}
+			if text == "" {
+				text = strings.Join(texts, "\n")
+			}
+		}
+		if text == "" && r.Data.Error != nil {
+			text = r.Data.Error.Message
+		}
+		return toolOutput("", r.Data.ToolCallID, text, images, t)
 	}
 	return nil
 }

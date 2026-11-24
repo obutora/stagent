@@ -65,7 +65,7 @@ var askFixtureWant = map[string]struct {
 }{
 	"claude-ask": {wire.HarnessClaude, []wire.Message{
 		question("AskUserQuestion", "toolu_01XWZsjyAfwQh2SEHLta6WaC", "question 1",
-			wire.QuestionItem{Header: "header 1", Question: "question 1"}),
+			wire.QuestionItem{Header: "header 1", Question: "question 1", Options: []string{"label 1", "label 2", "label 3"}}),
 		// The tool_result's text is not shown; toolUseResult's answers are.
 		answer("toolu_01XWZsjyAfwQh2SEHLta6WaC", "label 2",
 			wire.QuestionItem{Header: "header 1", Question: "question 1", Answers: []string{"label 2"}}),
@@ -73,16 +73,16 @@ var askFixtureWant = map[string]struct {
 	"claude-ask-multi": {wire.HarnessClaude, []wire.Message{
 		user("AskUserQuestion ツールを1回だけ使って、2問を同時に聞いてください。1問目: header「色」、問い「好きな色はどれですか？」、単一選択、選択肢 赤/青/緑。2問目: header「果物」、問い「好きな果物をすべて選んでください」、multiSelect: true、選択肢 りんご/みかん/ぶどう。答えを受け取ったら、その答えを一文で復唱するだけで、ほかのツールは使わないでください。"),
 		question("AskUserQuestion", "toolu_012Fk7zjxqrZZg7YdMe3WRLG", "好きな色はどれですか？\n好きな果物をすべて選んでください",
-			wire.QuestionItem{Header: "色", Question: "好きな色はどれですか？"},
-			wire.QuestionItem{Header: "果物", Question: "好きな果物をすべて選んでください", Multi: true}),
+			wire.QuestionItem{Header: "色", Question: "好きな色はどれですか？", Options: []string{"赤", "青", "緑"}},
+			wire.QuestionItem{Header: "果物", Question: "好きな果物をすべて選んでください", Multi: true, Options: []string{"りんご", "みかん", "ぶどう"}}),
 		answer("toolu_012Fk7zjxqrZZg7YdMe3WRLG", "色: 青\n果物: りんご, ぶどう",
 			wire.QuestionItem{Header: "色", Question: "好きな色はどれですか？", Answers: []string{"青"}},
 			wire.QuestionItem{Header: "果物", Question: "好きな果物をすべて選んでください", Multi: true, Answers: []string{"りんご", "ぶどう"}}),
 		assistant("好きな色は青で、好きな果物はりんごとぶどうですね。"),
 		user("もう一度 AskUserQuestion ツールを1回だけ使って、さっきと同じ2問（色は単一選択、果物は multiSelect: true）を聞いてください。答えを受け取ったら、その答えを一文で復唱するだけで、ほかのツールは使わないでください。"),
 		question("AskUserQuestion", "toolu_0137SMh64WtHVWrVokzhNGVw", "好きな色はどれですか？\n好きな果物をすべて選んでください",
-			wire.QuestionItem{Header: "色", Question: "好きな色はどれですか？"},
-			wire.QuestionItem{Header: "果物", Question: "好きな果物をすべて選んでください", Multi: true}),
+			wire.QuestionItem{Header: "色", Question: "好きな色はどれですか？", Options: []string{"赤", "青", "緑"}},
+			wire.QuestionItem{Header: "果物", Question: "好きな果物をすべて選んでください", Multi: true, Options: []string{"りんご", "みかん", "ぶどう"}}),
 		// Typed text ("Type something") is the answer of a single-select
 		// and the last element of a multi-select's.
 		answer("toolu_0137SMh64WtHVWrVokzhNGVw", "色: 紫がいい\n果物: みかん, メロンも",
@@ -91,7 +91,7 @@ var askFixtureWant = map[string]struct {
 		assistant("好きな色は紫で、好きな果物はみかんとメロンですね。"),
 		user("もう一度 AskUserQuestion ツールを1回だけ使って、1問だけ聞いてください: header「サイズ」、問い「サイズはどれにしますか？」、単一選択、選択肢 S/M/L。答えがなくても、その旨を一文で返すだけにしてください。"),
 		question("AskUserQuestion", "toolu_01Dm2cUnTM4wEd7Tq1kRhWoV", "サイズはどれにしますか？",
-			wire.QuestionItem{Header: "サイズ", Question: "サイズはどれにしますか？"}),
+			wire.QuestionItem{Header: "サイズ", Question: "サイズはどれにしますか？", Options: []string{"S", "M", "L"}}),
 		// Esc: the rejected call's result is no answer; the interrupt
 		// closes the question.
 		{Role: RoleSystem, Text: "Interrupted by user"},
@@ -101,8 +101,8 @@ var askFixtureWant = map[string]struct {
 		user("AskUserQuestion ツールを1回だけ使って、2問を同時に聞いてください。1問目: header「色」、問い「好きな色はどれですか？」、単一選択、選択肢 赤/青/緑。2問目: header「果物」、問い「好きな果物をすべて選んでください」、multiSelect: true、選択肢 りんご/みかん/ぶどう。答えを受け取ったら、その答えを一文で復唱するだけで、ほかのツールは使わないでください。"),
 		// The last row: waiting for the user.
 		question("AskUserQuestion", "toolu_012Fk7zjxqrZZg7YdMe3WRLG", "好きな色はどれですか？\n好きな果物をすべて選んでください",
-			wire.QuestionItem{Header: "色", Question: "好きな色はどれですか？"},
-			wire.QuestionItem{Header: "果物", Question: "好きな果物をすべて選んでください", Multi: true}),
+			wire.QuestionItem{Header: "色", Question: "好きな色はどれですか？", Options: []string{"赤", "青", "緑"}},
+			wire.QuestionItem{Header: "果物", Question: "好きな果物をすべて選んでください", Multi: true, Options: []string{"りんご", "みかん", "ぶどう"}}),
 	}},
 	"omp-ask": {wire.HarnessOmp, []wire.Message{
 		user("ask ツールを1回だけ使って、2問を同時に聞いてください。1問目: id「color」、header「色」、問い「好きな色はどれですか？」、単一選択、選択肢 赤/青/緑。2問目: id「fruit」、header「果物」、問い「好きな果物をすべて選んでください」、複数選択(multi: true)、選択肢 りんご/みかん/ぶどう。答えを受け取ったら、その答えを一文で復唱するだけで、ほかのツールは使わないでください。"),
