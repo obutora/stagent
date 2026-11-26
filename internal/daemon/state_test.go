@@ -118,6 +118,48 @@ func TestQuestionFollowsHookState(t *testing.T) {
 	}
 }
 
+// state_since is when the session entered its state; a redraw after idle
+// (a short working from output, with no input and no hook) gives the idle's
+// time back.
+func TestStateSince(t *testing.T) {
+	const redraw = 5000
+	type move struct {
+		to, source string
+		input, at  int64
+	}
+	cases := []struct {
+		name  string
+		moves []move
+		want  int64
+	}{
+		{"a turn starts", []move{{working, srcHook, 0, 2000}}, 2000},
+		{"working from output", []move{{working, srcAct, 0, 2000}}, 2000},
+		{"the turn ends", []move{{working, srcHook, 0, 2000}, {idle, srcHook, 0, 9000}}, 9000},
+		{"approval to question keeps waiting", []move{{needsAp, srcHook, 0, 2000}, {waiting, srcHook, 0, 4000}}, 2000},
+		{"only the source changes", []move{{working, srcAct, 0, 2000}, {working, srcHook, 0, 2500}}, 2000},
+		{"answered", []move{{needsAp, srcHook, 0, 2000}, {working, srcAct, 3000, 5000}}, 5000},
+		{"redraw after idle", []move{{working, srcAct, 0, 2000}, {idle, srcAct, 0, 5500}}, 1000},
+		{"long output after idle is work", []move{{working, srcAct, 0, 2000}, {idle, srcAct, 0, 2000 + redraw}}, 2000 + redraw},
+		{"input makes it work", []move{{working, srcAct, 1500, 2000}, {idle, srcAct, 1500, 4000}}, 4000},
+		{"a hook makes it work", []move{{working, srcAct, 0, 2000}, {working, srcHook, 0, 2500}, {idle, srcHook, 0, 4000}}, 4000},
+		{"redraw ending elsewhere", []move{{working, srcAct, 0, 2000}, {needsAp, srcHook, 0, 3000}}, 3000},
+		{"a redraw is undone once", []move{{working, srcAct, 0, 2000}, {idle, srcAct, 0, 3000}, {working, srcAct, 0, 4000}, {idle, srcAct, 0, 5000}}, 1000},
+		{"exit", []move{{exited, srcProc, 0, 7000}}, 7000},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			from, s := idle, stateSince{At: 1000}
+			for _, m := range c.moves {
+				s = s.change(from, m.to, m.source, m.input, m.at, redraw)
+				from = m.to
+			}
+			if s.At != c.want {
+				t.Fatalf("state_since = %d, want %d", s.At, c.want)
+			}
+		})
+	}
+}
+
 func TestClassifyHook(t *testing.T) {
 	payload := func(s string) hookPayload { return parseHookPayload(json.RawMessage(s)) }
 	cases := []struct {

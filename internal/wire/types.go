@@ -67,10 +67,13 @@ type Session struct {
 	Attached       bool     `json:"attached"` // a session.attach client is attached (not passthrough's own terminal)
 	State          string   `json:"state"`
 	StateSource    string   `json:"state_source"`
-	Title          string   `json:"title,omitempty"` // OSC 0/2 window title
-	ConversationID string   `json:"conversation_id,omitempty"`
-	TranscriptPath string   `json:"transcript_path,omitempty"`
-	LastMessage    string   `json:"last_message,omitempty"` // short, single line
+	// StateSince is when the session entered its state (unix ms, host
+	// clock), set by the daemon; omitted by daemons before it.
+	StateSince     int64  `json:"state_since,omitempty"`
+	Title          string `json:"title,omitempty"` // OSC 0/2 window title
+	ConversationID string `json:"conversation_id,omitempty"`
+	TranscriptPath string `json:"transcript_path,omitempty"`
+	LastMessage    string `json:"last_message,omitempty"` // short, single line
 	// Question is the choice question the agent waits on (omitted: none),
 	// set with state waiting_input by the agent's question hook (claude's
 	// AskUserQuestion, Codex's request_user_input, omp's ask) and dropped with that state: answered, the turn

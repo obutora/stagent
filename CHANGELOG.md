@@ -3,6 +3,18 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.27.0
+
+### Added
+
+- `Session.state_since` (unix ms, host clock): when the session entered
+  its state, so an app can show how long an agent has worked, waited for
+  the user or been done (#1958). `last_activity_at` cannot: a working
+  agent's spinner keeps it at now. A move between `needs_approval` and
+  `waiting_input` keeps it, and a short redraw after idle (output with no
+  input and no hook, back to idle within `idle_after_ms` + 2 s) gives the
+  idle's time back.
+
 ## 0.26.0
 
 ### Added

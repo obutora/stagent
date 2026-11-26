@@ -156,6 +156,45 @@ func (t stateTrack) merged() (state, source string) {
 	return wire.StateIdle, wire.SourceActivity
 }
 
+// redrawGraceMs: how much longer than idle_after_ms a working from output
+// activity may last after idle and still be taken for a redraw (stateSince).
+const redrawGraceMs = 2000
+
+// stateSince keeps Session.state_since: when the session entered its
+// state. A move between the two states that wait for the user keeps it
+// (the user is kept waiting all along). A working from output activity
+// that followed idle may be the harness redrawing (the resize when the
+// session is opened again): when it goes back to idle within idle_after_ms
+// + redrawGraceMs, with no input written to the program and no hook saying
+// the agent works, the idle's time comes back.
+type stateSince struct {
+	At int64 // Session.state_since (unix ms)
+	// RedrawAt is when a working that may be a redraw began (0: none);
+	// IdleAt the time of the idle before it.
+	RedrawAt, IdleAt int64
+}
+
+// change applies a change of the merged state from `from` to `to`
+// (source the new state's source; the state may stay and only the
+// source change). inputAt is Session.last_input_at, redrawMs the longest
+// a redraw lasts.
+func (t stateSince) change(from, to, source string, inputAt, now, redrawMs int64) stateSince {
+	switch {
+	case from == to, waitsForUser(from) && waitsForUser(to):
+		if source == wire.SourceHook {
+			t.RedrawAt, t.IdleAt = 0, 0
+		}
+	case from == wire.StateIdle && to == wire.StateWorking && source == wire.SourceActivity:
+		t = stateSince{At: now, RedrawAt: now, IdleAt: t.At}
+	case from == wire.StateWorking && to == wire.StateIdle && t.RedrawAt != 0 &&
+		now-t.RedrawAt < redrawMs && inputAt <= t.IdleAt:
+		t = stateSince{At: t.IdleAt}
+	default:
+		t = stateSince{At: now}
+	}
+	return t
+}
+
 // ---------------------------------------------------------------------------
 // Hook events
 

@@ -16,6 +16,7 @@ import (
 type session struct {
 	s      wire.Session
 	track  stateTrack
+	since  stateSince // Session.state_since
 	holder *connState // current holder connection, nil while disconnected
 	ended  bool
 
@@ -166,7 +167,7 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 		}
 		state, source := s.s.State, s.s.StateSource
 		s.s = ws
-		s.s.State, s.s.StateSource = state, source
+		s.s.State, s.s.StateSource, s.s.StateSince = state, source, s.since.At
 		s.taskWant, s.cwd = ws.TaskID, cwd
 		s.s.TaskID = d.taskOfLocked(s)
 		s.track = s.track.holderInput(ws.LastInputAt).holderReport(ws.State, ws.StateSource, now)
@@ -195,6 +196,8 @@ func (d *Daemon) holderRegister(cs *connState, ws wire.Session) (wire.HolderRegi
 	}
 	s.track = stateTrack{}.holderInput(ws.LastInputAt).holderReport(ws.State, ws.StateSource, now)
 	s.s.State, s.s.StateSource = s.track.merged()
+	s.since = stateSince{At: d.opts.Now().UnixMilli()}
+	s.s.StateSince = s.since.At
 	s.logged = s.s.State
 	d.sessions[ws.ID] = s
 	d.adoptAgentLocked(s)
@@ -427,7 +430,9 @@ func (d *Daemon) recomputeLocked(s *session, cancelApprovals bool) bool {
 	if state == s.s.State && source == s.s.StateSource {
 		return false
 	}
-	s.s.State, s.s.StateSource = state, source
+	s.since = s.since.change(s.s.State, state, source, s.s.LastInputAt, d.opts.Now().UnixMilli(),
+		int64(d.eff.IdleAfterMs)+redrawGraceMs)
+	s.s.State, s.s.StateSource, s.s.StateSince = state, source, s.since.At
 	if cancelApprovals && (state == wire.StateWorking || state == wire.StateExited) {
 		d.cancelApprovalsLocked(s.s.ID)
 	}

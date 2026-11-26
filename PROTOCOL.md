@@ -3681,10 +3681,23 @@ not the URL), `stagent doctor`, the logs or `state/chat-messages.json`.
 (claude|codex|omp|pi|copilot|qwen|opencode|grok|antigravity|other), command[], cwd, pid,
 holder_pid, mode (passthrough|detached), attached, state (working|idle|
 waiting_input|needs_approval|exited), state_source (hook|terminal|activity|
-process), title?, conversation_id?, transcript_path?, last_message?,
+process), state_since?, title?, conversation_id?, transcript_path?, last_message?,
 question?, cols, rows, started_at, last_activity_at, last_local_input_at?,
 last_input_at?, focused?, presence_file?, exit_code?, task_id?, schedule_id?,
 run_id?, relay?`.
+
+`state_since` (unix ms, host clock, since 0.27.0) is when the session entered
+its `state`, for an app to show how long an agent has worked, waited for
+the user or been done; `last_activity_at` cannot, as a working agent keeps
+drawing its spinner. A move between `needs_approval` and `waiting_input`
+keeps it: the user is kept waiting all along. A `working` from output
+activity (`state_source` `activity`) that follows `idle` and goes back to
+`idle` within `idle_after_ms` + 2 s, with no input written to the program
+(`last_input_at`) and no hook saying the agent works, is taken for the
+harness redrawing (the resize when an app opens the session again), and
+the idle's `state_since` comes back. A session the daemon learns of when
+its holder registers (a new one, or a running one after the daemon
+restarted) starts at that time. Omitted by older daemons.
 
 `relay` (since 0.26.0) is the relay trace of the session's conversation,
 `{source?, target?}` of `RelayLink` (see "Relay"); omitted when none.
