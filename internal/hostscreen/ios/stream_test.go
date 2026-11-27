@@ -34,6 +34,10 @@ const envFakeCompanion = "STAGENT_TEST_FAKE_COMPANION"
 // "close" to, one line each, as video streams begin and end.
 const envFakeVideo = "STAGENT_TEST_FAKE_VIDEO"
 
+// envFakeVideoStart names the file the fake companion writes each video
+// stream's compression quality and scale factor to, "q/s" a line.
+const envFakeVideoStart = "STAGENT_TEST_FAKE_VIDEO_START"
+
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(envFakeCompanion); mode != "" {
 		fakeCompanion(mode, os.Args[1:])
@@ -138,6 +142,12 @@ func (f *fakeService) VideoStream(vs grpc.BidiStreamingServer[idbpb.VideoStreamR
 	}
 	videoLog("open")
 	defer videoLog("close")
+	if path := os.Getenv(envFakeVideoStart); path != "" {
+		if out, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600); err == nil {
+			out.WriteString(strconv.FormatFloat(req.GetStart().CompressionQuality, 'g', -1, 64) + "/" + strconv.FormatFloat(req.GetStart().ScaleFactor, 'g', -1, 64) + "\n")
+			out.Close()
+		}
+	}
 	frame := func(b []byte) *idbpb.VideoStreamResponse {
 		return &idbpb.VideoStreamResponse{Output: &idbpb.VideoStreamResponse_Payload{Payload: &idbpb.Payload{Source: &idbpb.Payload_Data{Data: b}}}}
 	}
@@ -169,10 +179,18 @@ func videoLog(what string) {
 	}
 }
 
-// events records what a stream sends.
+// events records what a stream sends; a frame as a frame.
 type events struct{ c chan any }
 
-func (e events) Frame(f hostscreen.Frame)     { e.c <- f }
+// frame is a hostscreen.Frame that compares with ==: its JPEG in base64.
+type frame struct {
+	Data          string
+	Width, Height int
+}
+
+func (e events) Frame(f hostscreen.Frame) {
+	e.c <- frame{base64.StdEncoding.EncodeToString(f.JPEG), f.Width, f.Height}
+}
 func (e events) State(s wire.HostScreenState) { e.c <- s }
 func (e events) next(t *testing.T, d time.Duration) any {
 	t.Helper()
@@ -204,7 +222,7 @@ func openFake(t *testing.T, mode string, env ...string) (*stream, events) {
 	if got := ev.next(t, 5*time.Second); got != (wire.HostScreenState{State: wire.HostScreenLive, Title: "iPhone 17"}) {
 		t.Fatalf("first event %#v, want live with the simulator's name", got)
 	}
-	want := hostscreen.Frame{Data: base64.StdEncoding.EncodeToString(portrait), Width: 402, Height: 874}
+	want := frame{base64.StdEncoding.EncodeToString(portrait), 402, 874}
 	if got := ev.next(t, 5*time.Second); got != want {
 		t.Fatalf("first frame %#v, want the payload in points", got)
 	}
@@ -256,7 +274,7 @@ func TestPauseClosesTheVideoStreamButKeepsTheCompanion(t *testing.T) {
 	default:
 	}
 	s.Resume()
-	want := hostscreen.Frame{Data: base64.StdEncoding.EncodeToString(portrait), Width: 402, Height: 874}
+	want := frame{base64.StdEncoding.EncodeToString(portrait), 402, 874}
 	if got := ev.next(t, time.Second); got != want {
 		t.Fatalf("after Resume %#v, want the newest frame", got)
 	}
@@ -314,4 +332,46 @@ func TestOpenFailsWhenTheCompanionExits(t *testing.T) {
 	if left, _ := os.ReadDir(tmp); len(left) != 0 {
 		t.Fatalf("Open left %v", left)
 	}
+}
+
+// A quality asked reopens the MJPEG stream at it, in proportion to the
+// normal 0.5 and 0.5; its first frame is the screen at that quality. A
+// settle reopens it at normal; while paused, Resume opens it at the
+// quality asked last.
+func TestQualityReopensTheVideoStreamAtIt(t *testing.T) {
+	starts := filepath.Join(t.TempDir(), "starts")
+	s, ev := openFake(t, "still", envFakeVideoStart+"="+starts)
+	want := frame{base64.StdEncoding.EncodeToString(portrait), 402, 874}
+	s.SetQuality(hostscreen.Quality{JPEG: 35, Scale: 0.5}, false)
+	videoLines(t, starts, "0.5/0.5", "0.25/0.25")
+	if got := ev.next(t, 5*time.Second); got != want {
+		t.Fatalf("after the quality %#v, want the new video stream's frame", got)
+	}
+	s.SetQuality(hostscreen.Normal, true)
+	videoLines(t, starts, "0.5/0.5", "0.25/0.25", "0.5/0.5")
+	if got := ev.next(t, 5*time.Second); got != want {
+		t.Fatalf("after the settle %#v, want the new video stream's frame", got)
+	}
+
+	s.Pause()
+	s.SetQuality(hostscreen.Quality{JPEG: 35, Scale: 0.5}, false)
+	if got := ev.next(t, 300*time.Millisecond); got != nil {
+		t.Fatalf("paused stream sent %#v", got)
+	}
+	videoLines(t, starts, "0.5/0.5", "0.25/0.25", "0.5/0.5")
+	s.Resume()
+	videoLines(t, starts, "0.5/0.5", "0.25/0.25", "0.5/0.5", "0.25/0.25")
+}
+
+// Apple's encoder barely shrinks a frame for a lower quality (q 0.36 and
+// 0.5: the same bytes): every quality below normal also halves the scale,
+// which a full-scale quality would not.
+func TestQualityBelowNormalAlsoHalvesTheScale(t *testing.T) {
+	starts := filepath.Join(t.TempDir(), "starts")
+	s, ev := openFake(t, "still", envFakeVideoStart+"="+starts)
+	s.SetQuality(hostscreen.Quality{JPEG: 35, Scale: 1}, false)
+	videoLines(t, starts, "0.5/0.5", "0.25/0.25")
+	ev.next(t, 5*time.Second)
+	s.SetQuality(hostscreen.Normal, true)
+	videoLines(t, starts, "0.5/0.5", "0.25/0.25", "0.5/0.5")
 }

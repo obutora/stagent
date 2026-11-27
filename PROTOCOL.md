@@ -148,7 +148,7 @@ created its stdin pipe — the app — ends.
 
 | method | params | result |
 |---|---|---|
-| `hello` | `{protocol, client}` | `{protocol, version, os, arch, home, capabilities[], host_id?, blocked?}` |
+| `hello` | `{protocol, client, capabilities?[]}` — `capabilities`: what the app takes (since 0.28.0: `host_screen_binary`, `host_screen_tiles`) | `{protocol, version, os, arch, home, capabilities[], host_id?, blocked?}` |
 | `ping` | – | `{}` |
 | `session.spawn` | `{command[]?, shell?, cwd?, cols, rows, env?{}, task_id?}` | `{session}` — a detached session; app owns its size |
 | `task.create` | `{repo, kind, number?, name?, title?, url?, base?, branch?, command[]?, cols, rows, env?{}, in_place?, switch_branch?, setup?}` | `{task, session?, existed}` — see "Creating a task"; empty or absent `command` = a terminal (the login shell; `cmd.exe` on Windows) |
@@ -245,9 +245,10 @@ the bridge starts them in the GUI login session so that the agent can use
 the login keychain — see "Starting in the GUI login session".
 
 Capabilities: `screen_mode`, `spawn`, `hooks`, `transcript`, `push`,
-`push_chat`, `persist`, `worktrees`, `relay`, on Windows `persist_shell`
-and `github`, on macOS `host_screen_ios`, and on Linux and macOS
-`schedules` and `stopped_agents`.
+`push_chat`, `persist`, `worktrees`, `relay`, `host_screen_binary`,
+`host_screen_tiles`, on Windows `persist_shell` and `github`, on macOS
+`host_screen_ios`, and on Linux and macOS `schedules` and
+`stopped_agents`.
 `push_chat` announces the chat destination (`notify.chat`) and
 `notify.test`'s `channels`: an older stagent stores `notify.chat` like
 any unknown key without sending to it, so an app configures chat
@@ -275,7 +276,15 @@ methods answer `unsupported`. `relay` (every OS, since 0.26.0) announces
 the `relay.*` methods, `relay.progress`, `Session.relay`,
 `Conversation.relay` and `Task.relay_id` (see "Relay"); a stagent before
 it answers the methods `unknown_method`, and an app offers relays only
-between hosts that both announce it.
+between hosts that both announce it. `host_screen_binary` (every OS,
+since 0.28.0) announces the host screen's binary frame channel
+(`host_screen.channel`, `stagent host-screen-channel`, see "Host
+screen"); unlike the others the app announces it too, in `hello`'s
+`capabilities`, and the bridge serves `host_screen.channel` only then.
+`host_screen_tiles` (every OS, since 0.28.0) announces `tiles` records on
+that channel and `host_screen.keyframe` (see "Tiles" under "Host
+screen"); the app announces it too, and stagent sends tiles only to an
+app that did.
 
 #### Creating a task (`task.create`, `stagent task run`)
 
@@ -1657,6 +1666,8 @@ without a capability, except the `ios` kind (capability
 | `host_screen.resume` | – | `{}` (since 0.12.0) |
 | `host_screen.stop` | – | `{}` |
 | `host_screen.input` | `Input` | `{}`; an iOS simulator's `text`: `{via, app?}` (since 0.13.0) |
+| `host_screen.channel` | – | `{token}` (since 0.28.0, `host_screen_binary` both ways; see "Binary frame channel") |
+| `host_screen.keyframe` | – | `{}`; the next frame goes whole (since 0.28.0, `host_screen_tiles` both ways; see "Tiles") |
 
 | notification | params |
 |---|---|
@@ -1748,8 +1759,9 @@ after the browsers found, in the order given; repeats are listed once.
 **Showing a page.** `start` connects to the page target's WebSocket on
 `127.0.0.1:<port>` and answers `{}`; then come `host_screen.state
 {state: "live", title, url}`, one frame of `Page.captureScreenshot` and
-the frames of `Page.startScreencast` (JPEG, quality 70; Chrome sends one
-when the page is redrawn). Title and URL changes (a navigation, a new
+the frames of `Page.startScreencast` (JPEG, quality 70 — lower while
+the user operates the page, see "Quality while operating"; Chrome sends
+one when the page is redrawn). Title and URL changes (a navigation, a new
 title) are sent as another `state: "live"`. When the page target closes
 (or its WebSocket drops) `state: "gone"` is sent and the stream ends; no
 frame follows. stagent sends only page-level requests and never changes
@@ -1794,7 +1806,8 @@ has a token, reads the display's size (`getStatus`, `hw.lcd.width` and
 "live", title: <avd>}` and the frames of `streamScreenshot`: RGB888 at
 half the display's resolution (width and height both half the longer
 side, so either orientation fits), encoded by stagent to JPEG, quality
-70. The emulator sends an image about 20 times a second whether the
+70 (lower while the user operates it, see "Quality while operating").
+The emulator sends an image about 20 times a second whether the
 display changed or not: an image with the same size, rotation and pixels
 as the last one encoded is dropped before encoding, so a still display
 sends no frame (#634). `width` and `height` are the display's px as the
@@ -1802,7 +1815,10 @@ image shows it: they swap when the emulator turns. An image of the
 display turned off sends no frame. When the emulator stops (its
 screenshot stream ends and `getStatus` no longer answers) `state:
 "gone"` is sent (see "Coming back"). There is no `adb screencap`
-fallback.
+fallback. A frame is encoded when it is sent, not when captured (of the
+images captured meanwhile only the newest is sent); over the binary
+channel, to an app that takes them, only the tiles changed since the
+frame before may go (see "Tiles").
 
 One stream per bridge connection: `start` while streaming stops the
 current stream first (the tab's "pick another"); `stop` ends it (without
@@ -1819,7 +1835,8 @@ up on the login shell's `PATH`, then the usual tool directories such as
 directory that only the user can enter (no TCP port), waits until it
 describes the simulator and opens its `video_stream` (MJPEG at scale
 0.5 — half the simulator's pixels —, quality 0.5 and `fps` 0: frames
-sent when the screen is redrawn; ADR 0008 "通信量と電池"); it answers
+sent when the screen is redrawn; ADR 0008 "通信量と電池"; lower while
+the user operates it, see "Quality while operating"); it answers
 `{}`, then come `host_screen.state {state: "live", title}` (`title`: the
 simulator's name) and the frames. Every payload is one JPEG, sent as
 is; `width` × `height` is the simulator's screen in points (its
@@ -1887,6 +1904,83 @@ paused stream and `resume` of a stream not paused do nothing and answer
 `{}`; the next `start` begins unpaused, so a tab not seen sends `pause`
 after `start`'s answer. A stagent before 0.12.0 answers
 `unknown_method` (and sends at most as many frames as the acks allow).
+
+**Quality while operating** (since 0.28.0, #1974; ADR 0029). From the start of a
+`host_screen.input` that reaches the target (one refused before, as
+`bad_request` or by a target that takes no input, does not count) until
+the screen rests after the last one, the frames are made smaller; then
+one frame of the normal quality is captured afresh, though the target
+may not have changed, and the frames stay normal: the still screen is
+never left at the lower quality. The screen rests once 300 ms pass with
+neither an input nor a frame from the target (the stream sends one only
+when the picture changes): a screen still after the input settles 300 ms
+after it; one the input set moving (a scroll's momentum: about 3.5 s on
+an iOS page) 300 ms after its last frame, but never later than 5 s after
+the last input (a video the input started is not degraded longer). The
+counts begin when stagent finished the input: a `drag` (sent when the
+finger lifts) ends after its `duration_ms` on the target; every `scroll`
+step, `tap`, `text`, `key` or `navigate` starts them over. The frame
+captured at the settle is sent under the flow control above like any
+other (up to 100 ms later at 10 frames a second, later while two frames
+wait for an ack); while paused nothing is captured, and `resume`'s full
+frame is of the normal quality.
+
+How much smaller follows the link's bandwidth, estimated from the acks.
+A frame's size is its bytes on the wire (its record on the binary frame
+channel, else `data`'s length in `host_screen.frame`), its ack time the
+time from when it was sent to its ack: at least the round trip plus the
+size over the bandwidth, so the ack time alone would tell the round trip
+more than the bandwidth. Each acked frame at least a quarter bigger than
+the frame acked quickest among the last 16 gives the bandwidth as the
+difference of their sizes over the difference of their ack times (the
+round trip cancels; a frame that waited behind another gives less).
+Until frames of different sizes were acked, the estimate is a lower
+bound: a frame's size over the time from when it was sent — or from the
+previous ack, when it was sent before that and waited behind that frame
+— to its ack. Either way bytes and times are averaged apart (each moving
+a quarter of the way to a new sample's) and divided, so acks that arrive
+together still count the time the first waited. The first input of an
+operation (the frames at the normal quality) picks the level from the
+estimate, and the level stays until the settle, whatever the estimate
+does meanwhile (each change costs a full frame at another size):
+
+| estimate | while operating |
+|---|---|
+| 2 MB/s or more | JPEG quality 50, full resolution |
+| 1 MB/s – 2 MB/s, or no ack yet | JPEG quality 40, full resolution |
+| under 1 MB/s | JPEG quality 30, half the resolution each way |
+
+1 MB/s (8 Mbit/s) is above #1974's example of a phone's link, 5 Mbit/s
+(625 KB/s): there the operating frames are meant to go at half the
+resolution. Past the previous operation's level the estimate must be a
+quarter above a boundary to go up (1.25 MB/s, 2.5 MB/s), a fifth below
+it to go down (800 KB/s, 1.6 MB/s), so that an estimate wavering around
+a boundary keeps the level from one operation to the next.
+
+- Browser: `Page.stopScreencast`, then `Page.startScreencast` at the
+  quality (Chrome refuses a second start while one runs); half the
+  resolution as `maxWidth`/`maxHeight` half of the last
+  `Page.captureScreenshot`'s image. The normal frame: the screencast
+  started again at quality 70, then `Page.captureScreenshot` at quality
+  70 (a frame Chrome encoded before the restart may still come just
+  before it).
+- Android emulator: the images are encoded at the quality, half the
+  resolution by averaging each 2×2 px of the half-resolution image (the
+  `streamScreenshot` stays as it is). The normal frame: the last image
+  again, at quality 70 (a full frame, see "Tiles").
+- iOS simulator: the video stream is opened again (the companion takes a
+  quality only as a stream starts) with `compressionQuality` 0.5 ×
+  quality / 70 and scale 0.25 — half the resolution at every quality
+  below the normal one, because Apple's encoder moves in coarse steps:
+  0.36 (quality 50) gives the frames of 0.5 and 0.29 (quality 40) only
+  about 9% smaller ones, while the half resolution makes them about a
+  quarter. A new stream's first frame, about 40 ms later, is the screen
+  as it is, so the normal frame is a stream opened again at 0.5 and 0.5.
+
+`width` and `height` stay the target's size, as always; only the JPEG's
+pixels may be fewer (the app scales the picture to the frame, as it
+already does for the emulator's half resolution). Nothing changes on the
+wire: no method, key or capability; an older app gets the same frames.
 
 **Input.** `host_screen.input` operates the target being shown. Points are
 fractions of the frame (`0` at its left and top edge, `1` at its right
@@ -2067,6 +2161,111 @@ stream failing again after reopening, or `simctl pbcopy` failing →
 with Paste at the cursor; the text is left on its clipboard) →
 `paste_by_hand` (since 0.13.0); an input after one that ended
 `unavailable`, before the next frame → `unavailable` (see Order).
+
+**Binary frame channel** (since 0.28.0, #1974; ADR 0029). `host_screen.frame` carries
+each JPEG in base64 inside a JSON line: a third more bytes than the
+picture. When stagent's `hello` announces `host_screen_binary` and the
+app announced it in its own `hello` (`capabilities`), the app may take
+the frames raw over a second exec channel of the tab's SSH connection:
+
+1. `host_screen.channel` (answered at once, no queue) answers `{token}`:
+   48 lowercase hex chars, the first 16 naming this bridge's channel
+   listener, the rest a 128-bit secret. Each call makes a new token that
+   replaces the one before; a token opens one channel, and only within
+   10 s of the answer that handed it out. To an app that did
+   not announce `host_screen_binary` → `unsupported`; the listener cannot
+   start → `unavailable`.
+2. The app runs `stagent host-screen-channel` (the exec command line as
+   in "Starting the bridge", argument `host-screen-channel`) on the same
+   SSH connection and writes the token and `\n` to its stdin (never on
+   its command line, which other users can read in `ps`).
+3. That process dials the bridge's listener — a same-user Unix socket
+   `<run dir>/b-<id>.sock` (mode 0600, the peer's uid checked both ways),
+   on Windows the named pipe `\\.\pipe\stagent-…-b-<id>` whose DACL
+   grants the user only — and hands it the token. A token other than the
+   last one handed out (another session's, a guess, one already used),
+   one presented more than 10 s after it was handed out, or no token line within 5 s of
+   connecting, closes the connection unused. Otherwise the bridge
+   attaches it: from the next frame on, frames go there instead of
+   `host_screen.frame`, and the process copies them to its stdout until
+   the bridge closes the connection, its stdin ends (the app closed the
+   channel) or its stdout fails. A newer channel replaces an older one.
+
+Its stdout is a sequence of records, all integers big-endian:
+
+```
+u32  N    length of what follows (2 ≤ N ≤ 16 MiB)
+u16  H    length of the JSON header (H ≤ N − 2)
+H    bytes  JSON header, UTF-8, an object with "kind"
+N−2−H bytes payload
+```
+
+| `kind` | header | payload |
+|---|---|---|
+| `full` | `{kind, seq, width, height, image_width?, image_height?}` — as `host_screen.frame`'s; `image_width` × `image_height`: the picture's px, given when tiles may follow it (since 0.28.0) | one JPEG, the whole picture |
+| `tiles` | `{kind, seq, prev, width, height, image_width, image_height, tiles?: [{x, y, w, h, len}]}` (since 0.28.0, `host_screen_tiles` both ways; see "Tiles") | the tiles' JPEGs one after the other, `len` bytes each |
+
+`seq` is the same counter as `host_screen.frame`'s, and a record is acked
+the same way, `host_screen.ack {seq}` on the bridge; flow control,
+`pause`, `resume` and stalling are unchanged. The app skips a record of a
+kind it does not know; stagent sends a new kind only to an app that
+announced it (a capability of its own). A malformed record ends the
+channel for the app, which closes it.
+
+Falling back: frames are `host_screen.frame` until the channel is
+attached, and again once it goes (closed by either side, or a write to
+it fails: that frame goes as `host_screen.frame` instead). The frames it
+carried are then no longer waited for — their acks, should they come,
+change nothing — and a stream stalled on them resumes with a full frame,
+so the picture never stops. The app shows frames of either path; while
+they move from one to the other, a frame overtaken by a newer `seq` on
+the other path is acked but not shown. An app without
+`host_screen_binary`, or a stagent without it, keeps `host_screen.frame`
+only; so does an app whose second exec fails to open (it does not retry
+on that connection).
+
+**Tiles** (since 0.28.0, #1974; ADR 0029). An Android emulator's pictures are pixels
+before stagent encodes them, so it can tell what changed. To an app that
+announced `host_screen_tiles` (stagent announces it too), over the binary
+channel only, stagent compares each picture with the one it sent last in
+cells of 64 px and may send only the changed cells as a `tiles` record:
+
+- `prev` is the `seq` of the frame sent just before it (`full` or
+  `tiles`), which the tiles go on; `width`, `height` as for a full frame;
+  `image_width` × `image_height` is the picture's size in px, the same
+  as `prev`'s.
+- `tiles` lists rectangles in the picture's px, in the payload's order:
+  whole cells side by side in a row, and such runs one above the other
+  over the same columns, joined into one rectangle; cut at the picture's
+  right and bottom edges. Each is a JPEG of `w` × `h` px, `len` bytes, of
+  the frame's quality. A picture of the same pixels has none (the key
+  is absent; the payload is empty). The cells not listed are as in
+  `prev`.
+- It is acked like any frame, applied or not.
+
+A frame goes whole (`full`, with `image_width`/`image_height`) instead:
+the first frame of a stream, and the first after `resume`, after a stall
+ends, after the target came back from `gone`, after a channel was
+attached (a new one, or again after one went), after a frame that went
+as `host_screen.frame`, and after `host_screen.keyframe`; when the
+picture's size or turn changed (the emulator turned; a quality of half
+the resolution, see "Quality while operating"); when the frame's JPEG
+quality is above the lowest any tile got since the last full frame (so
+the normal frame once the screen rests after an input is a full one at
+the normal quality); 10 s or more after the last full frame; and when the tiles
+would cost about as much as the whole picture: more than 90% of the
+cells changed, or more than 16 rectangles. Browsers and iOS simulators
+send JPEGs only (no tiles: comparing would mean decoding every JPEG on
+the host).
+
+The app draws a `tiles` record only on the picture it has drawn from
+frame `prev`, of the same `width`, `height` and image size; otherwise (a
+frame missed or not drawn, a new size) it drops it and the ones after,
+and asks once with `host_screen.keyframe` (answered at once, no queue):
+the next frame goes whole, and when none is captured, the picture sent
+last is sent again, whole. The app also asks for one when a tile does
+not decode. An older stagent answers `host_screen.keyframe`
+`unknown_method` and never sends tiles.
 
 ### Session (forwarded to the session's holder)
 

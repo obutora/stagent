@@ -14,6 +14,12 @@ const (
 	MethodHostScreenResume = "host_screen.resume"
 	MethodHostScreenStop   = "host_screen.stop"
 	MethodHostScreenInput  = "host_screen.input"
+	// MethodHostScreenChannel hands out the token of a binary frame
+	// channel (CapHostScreenBinary): HostScreenChannelResult.
+	MethodHostScreenChannel = "host_screen.channel"
+	// MethodHostScreenKeyframe asks for the next frame whole (a "full"
+	// record): the app could not apply a "tiles" record (CapHostScreenTiles).
+	MethodHostScreenKeyframe = "host_screen.keyframe"
 
 	NotifyHostScreenFrame = "host_screen.frame" // HostScreenFrame
 	NotifyHostScreenState = "host_screen.state" // HostScreenState
@@ -22,7 +28,68 @@ const (
 // HostScreenMethods are served by the bridge itself.
 var HostScreenMethods = map[string]bool{
 	MethodHostScreenList: true, MethodHostScreenStart: true, MethodHostScreenAck: true, MethodHostScreenStop: true,
-	MethodHostScreenPause: true, MethodHostScreenResume: true, MethodHostScreenInput: true,
+	MethodHostScreenPause: true, MethodHostScreenResume: true, MethodHostScreenInput: true, MethodHostScreenChannel: true,
+	MethodHostScreenKeyframe: true,
+}
+
+// CapHostScreenBinary: frames may go over a binary frame channel instead
+// of host_screen.frame. stagent announces it in hello's capabilities, the
+// app in hello's params; both must for host_screen.channel to be served.
+const CapHostScreenBinary = "host_screen_binary"
+
+// CapHostScreenTiles: a picture may come as only the tiles changed since
+// the frame before it ("tiles" records on the binary frame channel, #1974).
+// stagent announces it in hello's capabilities, the app in hello's params;
+// stagent sends tiles only to an app that announced it, which then also
+// asks with host_screen.keyframe for a frame it could not apply.
+const CapHostScreenTiles = "host_screen_tiles"
+
+// HostScreenChannelResult is host_screen.channel's result: the token the
+// app writes, as one line, to the stdin of `stagent host-screen-channel`
+// (a second exec on the same SSH connection). Each call makes a new token,
+// good for one channel.
+type HostScreenChannelResult struct {
+	Token string `json:"token"`
+}
+
+// Kinds of HostScreenRecordHeader.
+const (
+	// HostScreenRecordFull: the payload is one JPEG, the whole picture.
+	HostScreenRecordFull = "full"
+	// HostScreenRecordTiles: the payload is the JPEGs of Tiles, one after
+	// the other; each goes at its place on the picture of frame Prev (the
+	// frame sent just before), which is ImageWidth×ImageHeight px.
+	HostScreenRecordTiles = "tiles"
+)
+
+// HostScreenRecordHeader is the JSON header of one record of the binary
+// frame channel. Seq, Width and Height are host_screen.frame's (the same
+// counter, acked with host_screen.ack). Kinds other than "full" add their
+// own fields; the app ignores a kind it does not know.
+type HostScreenRecordHeader struct {
+	Kind   string `json:"kind"`
+	Seq    int64  `json:"seq"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	// ImageWidth and ImageHeight are the picture's px: in a "tiles"
+	// record, and in a "full" one tiles may follow (the whole picture of a
+	// kind that has its pixels). Prev and Tiles: "tiles" only; Tiles is
+	// absent when no tile changed.
+	Prev        int64            `json:"prev,omitempty"`
+	ImageWidth  int              `json:"image_width,omitempty"`
+	ImageHeight int              `json:"image_height,omitempty"`
+	Tiles       []HostScreenTile `json:"tiles,omitempty"`
+}
+
+// HostScreenTile is one rectangle of a "tiles" record in the picture's px:
+// whole cells of 64 px side by side (cut at the picture's right and bottom
+// edges). Len is the length of its JPEG in the payload.
+type HostScreenTile struct {
+	X   int `json:"x"`
+	Y   int `json:"y"`
+	W   int `json:"w"`
+	H   int `json:"h"`
+	Len int `json:"len"`
 }
 
 // Target kinds of HostScreenTarget and keys of host_screen.list's result.

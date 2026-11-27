@@ -92,6 +92,9 @@ const (
 type HelloParams struct {
 	Protocol int    `json:"protocol"`
 	Client   string `json:"client"` // e.g. "ssh-term/2.38.0"
+	// Capabilities are what the app takes beyond protocol 1's base (e.g.
+	// CapHostScreenBinary); absent from older apps.
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 type HelloResult struct {

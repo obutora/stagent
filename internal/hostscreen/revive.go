@@ -29,8 +29,9 @@ type reviving struct {
 
 	mu   sync.Mutex // never held while calling a Stream or Events
 	ev   Events
-	cur  Stream // the stream started last; nil while none is open
-	gone bool   // cur reported gone (or there is none)
+	cur  Stream   // the stream started last; nil while none is open
+	gone bool     // cur reported gone (or there is none)
+	q    *Quality // asked last (SetQuality), for a stream reopened
 }
 
 // Reviving shows a target that may stop and start again (#633): first,
@@ -88,6 +89,16 @@ func (r *reviving) Resume() {
 	}
 }
 
+// SetQuality passes q to the live stream, and to the next one opened.
+func (r *reviving) SetQuality(q Quality, settle bool) {
+	r.mu.Lock()
+	r.q = &q
+	r.mu.Unlock()
+	if qs, ok := r.live().(QualitySetter); ok {
+		qs.SetQuality(q, settle)
+	}
+}
+
 func (r *reviving) Input(ctx context.Context, in wire.HostScreenInput) (wire.HostScreenInputResult, error) {
 	r.inputMu.Lock()
 	defer r.inputMu.Unlock()
@@ -139,7 +150,11 @@ func (r *reviving) watch() {
 		}
 		r.mu.Lock()
 		r.cur, r.gone = next, false
+		q := r.q
 		r.mu.Unlock()
+		if qs, ok := next.(QualitySetter); ok && q != nil {
+			qs.SetQuality(*q, false)
+		}
 		next.Start(revived{r, next})
 	}
 }
@@ -210,4 +225,7 @@ func (e revived) State(st wire.HostScreenState) {
 	ev.State(st)
 }
 
-var _ Inputter = (*reviving)(nil)
+var (
+	_ Inputter      = (*reviving)(nil)
+	_ QualitySetter = (*reviving)(nil)
+)

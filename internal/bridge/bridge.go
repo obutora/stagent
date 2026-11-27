@@ -17,7 +17,9 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/obutora/stagent/internal/daemonclient"
@@ -100,6 +102,10 @@ type Bridge struct {
 	liveDirs func(holders []int) []string // see github.LiveDirs
 	// hostScreen serves host_screen.* (one stream per connection).
 	hostScreen *hostscreen.Server
+	// appBinary: the app's hello announced wire.CapHostScreenBinary.
+	appBinary atomic.Bool
+	// hostChan is the binary frame channel's listener (hostchannel.go).
+	hostChan hostChannel
 	// goos is the host's operating system as hello announces what it
 	// serves (runtime.GOOS; tests change it).
 	goos string
@@ -169,6 +175,7 @@ func New(l *paths.Layout, w io.Writer) *Bridge {
 		github:         runtime.GOOS == "windows",
 		goos:           runtime.GOOS,
 		liveDirs:       liveDirs,
+		hostChan:       hostChannel{now: time.Now},
 	}
 	b.out = wire.NewCodec(nil, appWriter{w, b})
 	b.dialDaemon = func() (net.Conn, error) { return daemonclient.DialOrStart(l, daemonStartWait) }
@@ -353,6 +360,8 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	if err := rpc.Decode(m, &p); err != nil {
 		return nil, err
 	}
+	b.appBinary.Store(slices.Contains(p.Capabilities, wire.CapHostScreenBinary))
+	b.hostScreen.SetTiles(slices.Contains(p.Capabilities, wire.CapHostScreenTiles))
 	// A protocol mismatch is still answered with ours: the app decides
 	// whether to offer an update.
 	hostID, err := hostid.Ensure(b.l.HostID)
@@ -361,7 +370,7 @@ func (b *Bridge) hello(m *wire.Msg) (any, error) {
 	}
 	caps := []string{
 		wire.CapScreenMode, wire.CapSpawn, wire.CapHooks, wire.CapTranscript, wire.CapPush, wire.CapPushChat, wire.CapPersist,
-		wire.CapWorktrees, wire.CapRelay,
+		wire.CapWorktrees, wire.CapRelay, wire.CapHostScreenBinary, wire.CapHostScreenTiles,
 	}
 	if runtime.GOOS == "windows" {
 		caps = append(caps, wire.CapPersistShell)

@@ -34,6 +34,8 @@ const usage = `usage: stagent <command> [args]
                       attach this terminal to a session (Ctrl-] detaches)
   daemon              run the session registry / event daemon (auto-started)
   bridge              speak the app protocol on stdin/stdout
+  host-screen-channel internal (host_screen.channel): read a token on stdin,
+                      write the bridge's host screen frames to stdout
   follow [--session ID]
                       stream the transcript of the coding agent running in
                       this SSH connection's terminal, or of stagent session ID
@@ -92,6 +94,8 @@ func dispatch(args []string) int {
 		return daemon.Main(rest)
 	case "bridge":
 		return bridge.Main(rest)
+	case "host-screen-channel":
+		return bridge.ChannelMain(rest)
 	case "follow":
 		return follow.Main(rest)
 	case "hook":

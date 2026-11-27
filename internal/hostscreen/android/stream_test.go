@@ -3,7 +3,6 @@ package android
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"image/jpeg"
 	"net"
@@ -37,18 +36,35 @@ func rgb888(w, h int) []byte {
 	return pix
 }
 
-func TestEncodeRGB888(t *testing.T) {
-	var buf bytes.Buffer
-	rgba, err := encodeRGB888(&buf, nil, rgb888(32, 16), 32, 16)
+// A screenshot is the frame's picture as it is; at half scale every 2×2
+// pixels are averaged.
+func TestRasterOf(t *testing.T) {
+	pix := rgb888(32, 16)
+	r, err := rasterOf(pix, 32, 16, hostscreen.Normal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	img, err := jpeg.Decode(bytes.NewReader(buf.Bytes()))
+	if r.W != 32 || r.H != 16 || r.JPEG != 70 || !bytes.Equal(r.Pix, pix) {
+		t.Fatalf("raster %dx%d q%d, want the 32x16 screenshot at 70", r.W, r.H, r.JPEG)
+	}
+	// 4×2 px: a red and a blue column, then black and white.
+	small := []byte{
+		255, 0, 0, 255, 0, 0, 0, 0, 255, 0, 0, 255,
+		255, 0, 0, 255, 0, 0, 0, 0, 0, 255, 255, 255,
+	}
+	h, err := rasterOf(small, 4, 2, hostscreen.Quality{JPEG: 30, Scale: 0.5})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b := img.Bounds(); b.Dx() != 32 || b.Dy() != 16 {
-		t.Fatalf("JPEG is %v, want 32x16", b)
+	if want := []byte{255, 0, 0, 64, 64, 191}; h.W != 2 || h.H != 1 || h.JPEG != 30 || !bytes.Equal(h.Pix, want) {
+		t.Fatalf("half raster %dx%d q%d %v, want 2x1 q30 %v", h.W, h.H, h.JPEG, h.Pix, want)
+	}
+	if _, err := rasterOf(rgb888(32, 15), 32, 16, hostscreen.Normal); err == nil {
+		t.Fatal("a short image is refused")
+	}
+	img, err := jpeg.Decode(bytes.NewReader(whole(t, hostscreen.Frame{Raster: r})))
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, c := range []struct {
 		x       int
@@ -59,14 +75,19 @@ func TestEncodeRGB888(t *testing.T) {
 			t.Errorf("pixel (%d, 8) = %d,%d,%d, want about %d,%d,%d", c.x, r>>8, g>>8, b>>8, c.r, c.g, c.b)
 		}
 	}
-	// The next image of the same size reuses the buffer.
-	again, err := encodeRGB888(&buf, rgba, rgb888(32, 16), 32, 16)
-	if err != nil || again != rgba {
-		t.Fatalf("same size: reused %v, err %v", again == rgba, err)
+}
+
+// whole is the frame as the app gets it whole: one JPEG.
+func whole(t *testing.T, fr hostscreen.Frame) []byte {
+	t.Helper()
+	if fr.Raster == nil {
+		t.Fatal("an emulator's frame comes as pixels (tiles are made of them)")
 	}
-	if _, err := encodeRGB888(&buf, rgba, rgb888(32, 15), 32, 16); err == nil {
-		t.Fatal("a short image is refused")
+	b, err := fr.Whole()
+	if err != nil {
+		t.Fatal(err)
 	}
+	return b
 }
 
 func diff(a, b uint32) uint32 {
@@ -212,8 +233,7 @@ func TestStreamSendsHalfResolutionJPEGsAndEndsGone(t *testing.T) {
 	if fr.Width != 40 || fr.Height != 20 {
 		t.Fatalf("frame %dx%d, want the display's 40x20", fr.Width, fr.Height)
 	}
-	data, _ := base64.StdEncoding.DecodeString(fr.Data)
-	cfg, err := jpeg.DecodeConfig(bytes.NewReader(data))
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(whole(t, fr)))
 	if err != nil || cfg.Width != 20 || cfg.Height != 10 {
 		t.Fatalf("JPEG %+v, %v; want 20x10", cfg, err)
 	}
@@ -294,8 +314,7 @@ func TestStreamDropsAPictureLikeTheLast(t *testing.T) {
 		green.Image[i-1], green.Image[i], green.Image[i+1] = 0, 0xff, 0
 	}
 	f.images <- green
-	data, _ := base64.StdEncoding.DecodeString(ev.frame(t).Data)
-	img, err := jpeg.Decode(bytes.NewReader(data))
+	img, err := jpeg.Decode(bytes.NewReader(whole(t, ev.frame(t))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,5 +383,115 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 			t.Fatal(what)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// jpegOf decodes a frame's JPEG: its size and the first value of its
+// luminance quantization table, which tells the quality it was encoded
+// at (image/jpeg, from the standard table's 16: 10 at quality 70, 20 at
+// 40, 27 at 30).
+func jpegOf(t *testing.T, fr hostscreen.Frame) (w, h, quant int) {
+	t.Helper()
+	data := whole(t, fr)
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := bytes.Index(data, []byte{0xff, 0xdb})
+	if i < 0 || i+5 >= len(data) {
+		t.Fatal("JPEG without a quantization table")
+	}
+	return cfg.Width, cfg.Height, int(data[i+5])
+}
+
+// green is image888(w, h) all green: a picture unlike image888's.
+func green(w, h uint32) *emupb.Image {
+	img := image888(w, h)
+	for i := 0; i < len(img.Image); i += 3 {
+		img.Image[i], img.Image[i+1], img.Image[i+2] = 0, 0xff, 0
+	}
+	return img
+}
+
+// While operating the frames are encoded at the quality asked (half
+// resolution: the image's every other pixel each way); the settle
+// re-encodes the picture last sent at normal quality, though the emulator
+// sends nothing new.
+func TestStreamEncodesAtTheQualityAskedAndSettlesTheLastPicture(t *testing.T) {
+	f := &fakeEmulator{token: "tok", images: make(chan *emupb.Image, 4)}
+	port, _ := serve(t, f)
+	st, err := openStream(context.Background(), emulator{serialPort: 5554, grpcPort: port, token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ev := newEvents()
+	st.Start(ev)
+	ev.state(t)
+	f.images <- image888(20, 10)
+	if w, h, q := jpegOf(t, ev.frame(t)); w != 20 || h != 10 || q != 10 {
+		t.Fatalf("first frame %dx%d quant %d, want 20x10 at quality 70 (10)", w, h, q)
+	}
+	st.SetQuality(hostscreen.Quality{JPEG: 30, Scale: 0.5}, false)
+	f.images <- green(20, 10)
+	fr := ev.frame(t)
+	if w, h, q := jpegOf(t, fr); w != 10 || h != 5 || q != 27 {
+		t.Fatalf("operating frame %dx%d quant %d, want 10x5 at quality 30 (27)", w, h, q)
+	}
+	if fr.Width != 40 || fr.Height != 20 {
+		t.Fatalf("operating frame says %dx%d, want the display's 40x20", fr.Width, fr.Height)
+	}
+	st.SetQuality(hostscreen.Quality{JPEG: 40, Scale: 1}, false)
+	f.images <- green(20, 10) // the same picture: still dropped
+	select {
+	case <-ev.frames:
+		t.Fatal("sent a frame of the same picture")
+	case <-time.After(300 * time.Millisecond):
+	}
+	st.SetQuality(hostscreen.Normal, true)
+	settled := ev.frame(t)
+	if w, h, q := jpegOf(t, settled); w != 20 || h != 10 || q != 10 {
+		t.Fatalf("settle frame %dx%d quant %d, want 20x10 at quality 70 (10)", w, h, q)
+	}
+	img, _ := jpeg.Decode(bytes.NewReader(whole(t, settled)))
+	if r, g, _, _ := img.At(4, 5).RGBA(); g>>8 < 0xc0 || r>>8 > 0x40 {
+		t.Fatalf("the settle frame is not the last picture: pixel %d,%d", r>>8, g>>8)
+	}
+	// Once settled, the same picture is not sent again.
+	f.images <- green(20, 10)
+	select {
+	case <-ev.frames:
+		t.Fatal("sent the settled picture again")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// A settle while paused sends nothing: Resume's first image does.
+func TestStreamSettleWhilePausedSendsNothing(t *testing.T) {
+	f := &fakeEmulator{token: "tok", images: make(chan *emupb.Image, 4)}
+	port, _ := serve(t, f)
+	st, err := openStream(context.Background(), emulator{serialPort: 5554, grpcPort: port, token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ev := newEvents()
+	st.Start(ev)
+	ev.state(t)
+	st.SetQuality(hostscreen.Quality{JPEG: 30, Scale: 0.5}, false)
+	f.images <- image888(20, 10)
+	ev.frame(t)
+	st.Pause()
+	st.SetQuality(hostscreen.Normal, true)
+	select {
+	case <-ev.frames:
+		t.Fatal("sent a frame while paused")
+	case <-time.After(300 * time.Millisecond):
+	}
+	st.Resume()
+	waitFor(t, "Resume opened a screenshot stream", func() bool { return f.opened() == 1 })
+	f.images <- image888(20, 10)
+	if w, h, q := jpegOf(t, ev.frame(t)); w != 20 || h != 10 || q != 10 {
+		t.Fatalf("frame after resume %dx%d quant %d, want 20x10 at quality 70", w, h, q)
 	}
 }

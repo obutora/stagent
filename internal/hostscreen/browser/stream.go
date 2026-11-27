@@ -1,8 +1,10 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image/jpeg"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -13,8 +15,6 @@ import (
 )
 
 const (
-	// jpegQuality of screenshots and screencast frames (#624).
-	jpegQuality = 70
 	// callWait bounds one CDP call of the stream.
 	callWait = 10 * time.Second
 	// infoEvery bounds how often a screencast frame makes the stream ask
@@ -36,10 +36,12 @@ type stream struct {
 	closing atomic.Bool
 	gone    sync.Once
 
-	mu     sync.Mutex
-	paused bool
-	resume int      // count of Resume calls
-	geom   geometry // of the latest frame, for inputs
+	mu      sync.Mutex
+	paused  bool
+	resume  int                // count of Resume calls
+	geom    geometry           // of the latest frame, for inputs
+	q       hostscreen.Quality // of the frames (SetQuality)
+	settles int                // count of SetQuality settles not paused
 
 	kick chan struct{} // wakes run after Pause, Resume
 	info chan struct{} // asks run for the title and URL
@@ -52,7 +54,7 @@ type stream struct {
 // openStream connects to a page's WebSocket and enables the events the
 // stream follows.
 func openStream(ctx context.Context, wsURL string) (*stream, error) {
-	s := &stream{kick: make(chan struct{}, 1), info: make(chan struct{}, 1)}
+	s := &stream{kick: make(chan struct{}, 1), info: make(chan struct{}, 1), q: hostscreen.Normal}
 	c, err := dialCDP(ctx, wsURL, s.onEvent)
 	if err != nil {
 		return nil, err
@@ -98,6 +100,18 @@ func (s *stream) Resume() {
 	poke(s.kick)
 }
 
+// SetQuality restarts the screencast at q; a settle also takes a
+// screenshot at q (see run).
+func (s *stream) SetQuality(q hostscreen.Quality, settle bool) {
+	s.mu.Lock()
+	s.q = q
+	if settle && !s.paused {
+		s.settles++
+	}
+	s.mu.Unlock()
+	poke(s.kick)
+}
+
 func (s *stream) Close() {
 	s.closing.Store(true)
 	s.cancel()
@@ -128,24 +142,40 @@ func (s *stream) end() {
 
 // run captures: State live, a full frame, the screencast; after Pause it
 // stops the screencast and after Resume starts over with a full frame.
+// A new quality restarts the screencast at it (Chrome refuses
+// startScreencast while one runs: "Screencast is already active"); a
+// settle then takes a full frame at it, after the restart, so no frame of
+// the old quality follows it but one Chrome encoded already.
 func (s *stream) run() {
 	s.sendInfo(true)
 	running := false
-	seen := 0 // Resume calls handled
+	var cast hostscreen.Quality // of the running screencast
+	fullW, fullH := 0, 0        // the last screenshot's image, in px
+	seen, settled := 0, 0       // Resume calls and settles handled
 	for {
 		s.mu.Lock()
-		paused, resume := s.paused, s.resume
+		paused, resume, settles, q := s.paused, s.resume, s.settles, s.q
 		s.mu.Unlock()
 		switch {
 		case paused && running:
 			s.call("Page.stopScreencast", nil, nil)
 			running = false
-		case !paused && (!running || resume != seen):
-			seen = resume
-			s.capture()
+		case !paused:
+			shot := !running || resume != seen || settles != settled
+			seen, settled = resume, settles
+			if running && cast != q {
+				s.call("Page.stopScreencast", nil, nil)
+				s.startScreencast(q, fullW, fullH)
+				cast = q
+			}
+			if shot {
+				if w, h, ok := s.capture(q); ok {
+					fullW, fullH = w, h
+				}
+			}
 			if !running {
-				s.call("Page.startScreencast", map[string]any{"format": "jpeg", "quality": jpegQuality}, nil)
-				running = true
+				s.startScreencast(q, fullW, fullH)
+				cast, running = q, true
 			}
 		}
 		select {
@@ -164,8 +194,20 @@ func (s *stream) call(method string, params, result any) error {
 	return s.c.call(ctx, method, params, result)
 }
 
-// capture sends one screenshot of the viewport.
-func (s *stream) capture() {
+// startScreencast starts the screencast at q: a half scale bounds its
+// frames to half of w×h (the last screenshot's image), when known.
+func (s *stream) startScreencast(q hostscreen.Quality, w, h int) {
+	p := map[string]any{"format": "jpeg", "quality": q.JPEG}
+	if q.Scale < 1 && w > 0 && h > 0 {
+		p["maxWidth"], p["maxHeight"] = round(float64(w)*q.Scale), round(float64(h)*q.Scale)
+	}
+	s.call("Page.startScreencast", p, nil)
+}
+
+// capture sends one screenshot of the viewport at q's JPEG quality (in
+// full: Scale applies to the screencast) and returns its image's size in
+// px, when it has one.
+func (s *stream) capture(q hostscreen.Quality) (w, h int, ok bool) {
 	var m struct {
 		CSSVisualViewport, VisualViewport *struct {
 			ClientWidth  float64 `json:"clientWidth"`
@@ -174,20 +216,20 @@ func (s *stream) capture() {
 		}
 	}
 	if s.call("Page.getLayoutMetrics", nil, &m) != nil {
-		return
+		return 0, 0, false
 	}
 	vp := m.CSSVisualViewport
 	if vp == nil {
 		vp = m.VisualViewport
 	}
 	if vp == nil {
-		return
+		return 0, 0, false
 	}
 	var shot struct {
-		Data string `json:"data"`
+		Data []byte `json:"data"` // base64 in CDP's JSON
 	}
-	if s.call("Page.captureScreenshot", map[string]any{"format": "jpeg", "quality": jpegQuality}, &shot) != nil {
-		return
+	if s.call("Page.captureScreenshot", map[string]any{"format": "jpeg", "quality": q.JPEG}, &shot) != nil {
+		return 0, 0, false
 	}
 	// The visual viewport in CSS px: Scale DIP per px.
 	scale := vp.Scale
@@ -195,7 +237,9 @@ func (s *stream) capture() {
 		scale = 1
 	}
 	s.setGeometry(geometry{Width: vp.ClientWidth * scale, Height: vp.ClientHeight * scale, Scale: scale})
-	s.emit(hostscreen.Frame{Data: shot.Data, Width: round(vp.ClientWidth), Height: round(vp.ClientHeight)})
+	s.emit(hostscreen.Frame{JPEG: shot.Data, Width: round(vp.ClientWidth), Height: round(vp.ClientHeight)})
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(shot.Data))
+	return cfg.Width, cfg.Height, err == nil
 }
 
 // sendInfo sends State live with the page's title and URL when they
@@ -232,7 +276,7 @@ func (s *stream) onEvent(method string, params json.RawMessage) {
 	switch method {
 	case "Page.screencastFrame":
 		var p struct {
-			Data      string `json:"data"`
+			Data      []byte `json:"data"` // base64 in CDP's JSON
 			SessionID int64  `json:"sessionId"`
 			Metadata  struct {
 				DeviceWidth     float64 `json:"deviceWidth"`
@@ -249,7 +293,7 @@ func (s *stream) onEvent(method string, params json.RawMessage) {
 		cancel()
 		md := p.Metadata
 		s.setGeometry(geometry{Width: md.DeviceWidth, Height: md.DeviceHeight, OffsetTop: md.OffsetTop, Scale: md.PageScaleFactor})
-		s.emit(hostscreen.Frame{Data: p.Data, Width: round(md.DeviceWidth), Height: round(md.DeviceHeight)})
+		s.emit(hostscreen.Frame{JPEG: p.Data, Width: round(md.DeviceWidth), Height: round(md.DeviceHeight)})
 		if time.Since(s.lastInfo) >= infoEvery {
 			s.lastInfo = time.Now()
 			poke(s.info)

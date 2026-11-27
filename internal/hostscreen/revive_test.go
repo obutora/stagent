@@ -17,7 +17,7 @@ type recorder struct{ c chan string }
 
 func newRecorder() *recorder { return &recorder{c: make(chan string, 16)} }
 
-func (r *recorder) Frame(f Frame)                { r.c <- "frame:" + f.Data }
+func (r *recorder) Frame(f Frame)                { r.c <- "frame:" + string(f.JPEG) }
 func (r *recorder) State(s wire.HostScreenState) { r.c <- "state:" + s.State }
 
 func (r *recorder) next(t *testing.T) string {

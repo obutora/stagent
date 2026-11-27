@@ -3,6 +3,65 @@
 Each release's section is its GitHub release notes (`scripts/release.sh`
 publishes it with the binaries).
 
+## 0.28.0
+
+### Added
+
+- Host screen frames without base64 (#1974, capability
+  `host_screen_binary`, announced by stagent and by the app in `hello`'s
+  new `capabilities`): `host_screen.channel` hands out a one-use token,
+  valid for 10 s,
+  and `stagent host-screen-channel`, run by the app in a second exec
+  channel of the tab's SSH connection with the token on its stdin, reaches
+  the tab's bridge through a same-user socket (named pipe on Windows) and
+  streams the frames as length-prefixed records (`u32` length, `u16`
+  header length, a JSON header `{kind:"full", seq, width, height}`, the
+  raw JPEG) — a quarter fewer bytes than `host_screen.frame`'s base64.
+  Seq, acks, pacing, pause and stalls are unchanged. Until the channel is
+  up, and whenever it goes, frames are `host_screen.frame` again (the
+  frames it carried are no longer waited for), so an older app or a
+  channel that cannot open keeps the picture.
+- Host screen: only the parts of an Android emulator's picture that
+  changed (#1974, capability `host_screen_tiles`, announced by stagent
+  and by the app). Over the binary channel stagent compares each picture
+  with the one sent last in cells of 64 px and sends the changed cells as
+  a `tiles` record (`{kind:"tiles", seq, prev, width, height,
+  image_width, image_height, tiles:[{x, y, w, h, len}]}`, the tiles'
+  JPEGs as payload) that goes on frame `prev`. A full frame goes instead
+  first, after resume, a stall, a new channel, a `host_screen.frame`, the
+  target coming back, a new size or turn, a better quality (the settle
+  300 ms after input), every 10 s, and when more than 90% of the cells
+  or more than 16 rectangles changed. New `host_screen.keyframe` asks
+  for the next frame whole (the app could not apply tiles). The
+  emulator's frames are now encoded when sent, not when captured, so the
+  images dropped by the flow control are never encoded, and on a goroutine
+  of their own, so acks, pauses and inputs never wait for an encoding.
+  Browsers and iOS
+  simulators are unchanged. See PROTOCOL.md "Tiles".
+
+### Changed
+
+- Host screen: frames are smaller while the user operates the target
+  (#1974). From each `host_screen.input` until the screen rests after the
+  last one, the browser's screencast, the emulator's JPEGs and the
+  simulator's MJPEG drop to a lower quality picked from the link's
+  bandwidth, estimated from the acks (the difference of two frames' sizes
+  over the difference of their ack times, the round trip cancelling) as
+  the operation starts and kept until the screen rests: 50 on a fast link
+  (2 MB/s or more), 40, or 30 at half the resolution under 1 MB/s (#1974's
+  5 Mbit/s phone link), a level changing from one operation to the next
+  only a quarter above or a fifth below a boundary; the simulator is at
+  half the resolution at all three, since
+  Apple's encoder hardly shrinks a frame for a lower quality. The screen
+  rests once 300 ms pass with neither an input nor a changed frame — 300
+  ms after the input on a still screen, 300 ms after the last frame of a
+  scroll's momentum — and at the latest 5 s after the last input (a video
+  a tap started). Then one frame of the normal quality is captured afresh
+  (`Page.captureScreenshot`, the emulator's last image encoded again, a
+  new video stream), so a still screen is never left blurred. Seq, acks,
+  two frames in flight, 10 a second, stall and pause are as before;
+  nothing changes on the wire. See PROTOCOL.md "Quality while operating".
+
 ## 0.27.0
 
 ### Added

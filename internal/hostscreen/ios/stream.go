@@ -3,7 +3,7 @@ package ios
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
+	"errors"
 	"image/jpeg"
 	"sync"
 	"sync/atomic"
@@ -14,17 +14,28 @@ import (
 	"github.com/obutora/stagent/internal/wire"
 )
 
-// videoStart asks the companion for MJPEG at half the simulator's pixels
-// (as for Android) and quality 0.5 (ADR 0008 "通信量と電池", #634), fps 0:
-// a frame when the screen is redrawn only.
-func videoStart() *idbpb.VideoStreamRequest {
+// videoStart asks the companion for MJPEG at q, fps 0: a frame when the
+// screen is redrawn only. Normal is half the simulator's pixels (as for
+// Android) and quality 0.5 (ADR 0008 "通信量と電池", #634); another q is
+// in proportion (JPEG 35 of Normal's 70: 0.25). Any q below Normal is at
+// half Normal's scale or less: Apple's encoder moves in coarse steps
+// (0.36 and 0.5 give the same bytes, 0.29 only 9% fewer), so a lower
+// quality alone saves next to nothing (#1974).
+func videoStart(q hostscreen.Quality) *idbpb.VideoStreamRequest {
+	scale := q.Scale
+	if q.JPEG < hostscreen.Normal.JPEG {
+		scale = min(scale, 0.5)
+	}
 	return &idbpb.VideoStreamRequest{Control: &idbpb.VideoStreamRequest_Start_{Start: &idbpb.VideoStreamRequest_Start{
 		Format:             idbpb.VideoStreamRequest_MJPEG,
 		Fps:                0,
-		CompressionQuality: 0.5,
-		ScaleFactor:        0.5,
+		CompressionQuality: 0.5 * float64(q.JPEG) / float64(hostscreen.Normal.JPEG),
+		ScaleFactor:        0.5 * scale,
 	}}}
 }
+
+// errRequality ends a video stream SetQuality replaces.
+var errRequality = errors.New("quality changed")
 
 // stream shows one simulator through its companion's video_stream
 // (MJPEG, #630): every payload is one complete JPEG, sent as is. With fps
@@ -63,10 +74,11 @@ type stream struct {
 	// Guarded by mu, which is never held while calling Events: Pause and
 	// Resume are called under the flow's lock, which Events takes.
 	mu     sync.Mutex
-	stopVS context.CancelFunc // closes the open video stream
-	latest *hostscreen.Frame  // the newest frame received
-	fresh  bool               // latest was not sent yet
-	resend bool               // Resume asked for latest again
+	stopVS context.CancelCauseFunc // closes the open video stream
+	q      hostscreen.Quality      // of the video streams opened (SetQuality)
+	latest *hostscreen.Frame       // the newest frame received
+	fresh  bool                    // latest was not sent yet
+	resend bool                    // Resume asked for latest again
 	paused bool
 }
 
@@ -85,7 +97,7 @@ const keepAliveEvery = idleShutdown * time.Second / 3
 // openStream starts the companion's MJPEG video stream; frames wait until
 // Start.
 func openStream(comp *companion, name string, wPt, hPt int) (*stream, error) {
-	s := &stream{comp: comp, name: name, wPt: wPt, hPt: hPt, wake: make(chan struct{}, 1), kick: make(chan struct{}, 1)}
+	s := &stream{comp: comp, name: name, wPt: wPt, hPt: hPt, wake: make(chan struct{}, 1), kick: make(chan struct{}, 1), q: hostscreen.Normal}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	v, err := s.openVideo()
 	if err != nil {
@@ -96,23 +108,28 @@ func openStream(comp *companion, name string, wPt, hPt int) (*stream, error) {
 	return s, nil
 }
 
-// openVideo opens a video stream, which Pause closes; while paused, it
-// opens none (a zero video).
+// openVideo opens a video stream at the quality, which Pause and
+// SetQuality close; while paused, it opens none (a zero video). One that
+// SetQuality closed while opening fails with errRequality.
 func (s *stream) openVideo() (video, error) {
 	s.mu.Lock()
 	if s.paused {
 		s.mu.Unlock()
 		return video{}, nil
 	}
-	ctx, cancel := context.WithCancel(s.ctx)
+	ctx, cancel := context.WithCancelCause(s.ctx)
 	s.stopVS = cancel
+	q := s.q
 	s.mu.Unlock()
 	vs, err := s.comp.client.VideoStream(ctx)
 	if err == nil {
-		err = vs.Send(videoStart())
+		err = vs.Send(videoStart(q))
 	}
 	if err != nil {
-		cancel()
+		if context.Cause(ctx) == errRequality {
+			err = errRequality
+		}
+		cancel(nil)
 		return video{}, err
 	}
 	return video{vs, ctx}, nil
@@ -130,7 +147,22 @@ func (s *stream) Pause() {
 	stop := s.stopVS
 	s.mu.Unlock()
 	if stop != nil {
-		stop()
+		stop(nil)
+	}
+}
+
+// SetQuality reopens the video stream at q (the companion takes the
+// quality only as a stream starts): the new stream's first frame is the
+// screen at q, about 40 ms later, though it did not change, so a settle
+// needs nothing more. While paused it only keeps q for Resume.
+func (s *stream) SetQuality(q hostscreen.Quality, settle bool) {
+	s.mu.Lock()
+	reopen := (q != s.q || settle) && !s.paused
+	s.q = q
+	stop := s.stopVS
+	s.mu.Unlock()
+	if reopen && stop != nil {
+		stop(errRequality)
 	}
 }
 
@@ -197,13 +229,13 @@ func (s *stream) receive() {
 				return
 			}
 		}
-		// Pause closed it.
+		// Pause or SetQuality closed it.
 		if !s.waitResume() {
 			s.end()
 			return
 		}
 		var err error
-		if v, err = s.openVideo(); err != nil && !s.isPaused() {
+		if v, err = s.openVideo(); err != nil && err != errRequality && !s.isPaused() {
 			s.end()
 			return
 		}
@@ -323,5 +355,5 @@ func frameOf(jpg []byte, wPt, hPt int) (hostscreen.Frame, bool) {
 	if (cfg.Width > cfg.Height) != (w > h) {
 		w, h = h, w
 	}
-	return hostscreen.Frame{Data: base64.StdEncoding.EncodeToString(jpg), Width: w, Height: h}, true
+	return hostscreen.Frame{JPEG: jpg, Width: w, Height: h}, true
 }

@@ -1,9 +1,12 @@
 package hostscreen
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -11,6 +14,15 @@ import (
 
 	"github.com/obutora/stagent/internal/wire"
 )
+
+// unb64 is the JPEG a host_screen.frame's data carries.
+func unb64(data string) string {
+	b, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return "!" + data
+	}
+	return string(b)
+}
 
 // fakeStream records what the server asks of it; its Events are driven by
 // the test.
@@ -43,7 +55,7 @@ func (s *fakeStream) frameNow(data string) {
 	s.mu.Lock()
 	ev := s.ev
 	s.mu.Unlock()
-	ev.Frame(Frame{Data: data, Width: 800, Height: 600})
+	ev.Frame(Frame{JPEG: []byte(data), Width: 800, Height: 600})
 }
 func (s *fakeStream) callList() []string {
 	s.mu.Lock()
@@ -104,7 +116,7 @@ func (o *sent) notify(method string, params any) {
 	switch p := params.(type) {
 	case wire.HostScreenFrame:
 		b, _ := json.Marshal(p.Seq)
-		o.msgs = append(o.msgs, "frame:"+string(b)+":"+p.Data)
+		o.msgs = append(o.msgs, "frame:"+string(b)+":"+unb64(p.Data))
 	case wire.HostScreenState:
 		o.msgs = append(o.msgs, "state:"+p.State)
 	default:
@@ -212,9 +224,13 @@ func newTestServer(t *testing.T) (*Server, *fakeKind, *sent, *fakeClock) {
 	k := &fakeKind{clk: clk}
 	out := &sent{}
 	s := NewServer(out.notify, k)
-	s.now, s.afterFunc = clk.Now, clk.after
+	s.now, s.afterFunc, s.spawn = clk.Now, clk.after, inline
 	return s, k, out, clk
 }
+
+// inline runs a frame's sender at once, on the caller's goroutine (once
+// the flow is unlocked): the tests see each frame sent as it goes.
+func inline(f func()) { f() }
 
 func start(t *testing.T, s *Server, out *sent) {
 	t.Helper()
@@ -340,7 +356,7 @@ func TestStartReplacesTheStreamAndStopEndsIt(t *testing.T) {
 	if !k.streams[0].closed || k.streams[1].closed {
 		t.Fatal("a second start must close the first stream only")
 	}
-	k.streams[0].ev.Frame(Frame{Data: "old"})
+	k.streams[0].ev.Frame(Frame{JPEG: []byte("old")})
 	k.streams[1].frame("new")
 	if got, want := out.take(), []string{"reply", "reply", "frame:1:new"}; !slices.Equal(got, want) {
 		t.Fatalf("sent %q, want %q", got, want)
@@ -644,13 +660,13 @@ func TestFramesAreCappedAtTenASecondAndTheNewestIsSent(t *testing.T) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		if fr.Data != latest {
-			stale = append(stale, fr.Data)
+		if unb64(fr.Data) != latest {
+			stale = append(stale, unb64(fr.Data))
 		}
-		sentData = append(sentData, fr.Data)
+		sentData = append(sentData, unb64(fr.Data))
 		seqs = append(seqs, fr.Seq)
 	}, k)
-	s.now, s.afterFunc = clk.Now, clk.after
+	s.now, s.afterFunc, s.spawn = clk.Now, clk.after, inline
 	start(t, s, &sent{})
 	st := k.streams[0]
 	began := clk.Now()
@@ -689,5 +705,139 @@ func TestFramesAreCappedAtTenASecondAndTheNewestIsSent(t *testing.T) {
 	mu.Unlock()
 	if last != string(rune('A'+29)) {
 		t.Fatalf("last sent %q, want the newest %q", last, string(rune('A'+29)))
+	}
+}
+
+// fakeSink is a binary frame channel; while err is set, writes fail.
+type fakeSink struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	err    error
+	closed bool
+}
+
+func (k *fakeSink) Write(p []byte) (int, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.err != nil || k.closed {
+		return 0, errors.New("channel gone")
+	}
+	return k.buf.Write(p)
+}
+
+func (k *fakeSink) Close() error { k.mu.Lock(); k.closed = true; k.mu.Unlock(); return nil }
+
+// take returns the records written since the last take, as
+// "rec:<seq>:<payload>".
+func (k *fakeSink) take(t *testing.T) []string {
+	t.Helper()
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	var recs []string
+	for k.buf.Len() > 0 {
+		h, p, err := ReadRecord(&k.buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Kind != wire.HostScreenRecordFull || h.Width != 800 || h.Height != 600 {
+			t.Fatalf("record header %+v", h)
+		}
+		recs = append(recs, fmt.Sprintf("rec:%d:%s", h.Seq, p))
+	}
+	return recs
+}
+
+// Once a binary channel is attached the frames go over it, as records with
+// the same seq counter and the same acks; without one, as host_screen.frame.
+func TestFramesGoOverTheAttachedChannelWithTheSameSeqsAndAcks(t *testing.T) {
+	s, k, out, _ := newTestServer(t)
+	start(t, s, out)
+	st := k.streams[0]
+	st.frame("a")
+	if got, want := out.take(), []string{"reply", "frame:1:a"}; !slices.Equal(got, want) {
+		t.Fatalf("before the channel: %q, want %q", got, want)
+	}
+	sink := &fakeSink{}
+	s.Attach(sink)
+	st.frame("b")
+	st.frame("c") // held: 1 and 2 in flight
+	if got := out.take(); len(got) != 0 {
+		t.Fatalf("host_screen.frame %q with a channel attached", got)
+	}
+	if got, want := sink.take(t), []string{"rec:2:b"}; !slices.Equal(got, want) {
+		t.Fatalf("channel got %q, want %q", got, want)
+	}
+	s.Ack(1)
+	if got, want := sink.take(t), []string{"rec:3:c"}; !slices.Equal(got, want) {
+		t.Fatalf("after the ack: %q, want %q", got, want)
+	}
+}
+
+// A channel that goes away puts the frames back on host_screen.frame: what
+// it carried is forgotten (an ack of it changes nothing), so the stream is
+// never left waiting for acks that cannot come.
+func TestALostChannelFallsBackToJSONFrames(t *testing.T) {
+	s, k, out, tm := newTestServer(t)
+	start(t, s, out)
+	st := k.streams[0]
+	sink := &fakeSink{}
+	detach := s.Attach(sink)
+	st.frame("a")
+	st.frame("b")
+	st.frame("c") // held
+	if !tm.fire() {
+		t.Fatal("no stall timer with two frames in flight")
+	}
+	detach()
+	if !sink.closed {
+		t.Fatal("detach left the channel open")
+	}
+	if got, want := st.callList(), []string{"start", "pause", "resume"}; !slices.Equal(got, want) {
+		t.Fatalf("stream calls %q, want the stall ended", got)
+	}
+	// The held frame goes out at once, as host_screen.frame.
+	if got, want := out.take(), []string{"reply", "frame:3:c"}; !slices.Equal(got, want) {
+		t.Fatalf("after the channel went: %q, want %q", got, want)
+	}
+
+	// A write that fails sends that frame as host_screen.frame instead,
+	// and what the channel carried before is forgotten too.
+	sink2 := &fakeSink{}
+	s.Attach(sink2)
+	st.frame("d") // 3 and 4 in flight
+	if got, want := sink2.take(t), []string{"rec:4:d"}; !slices.Equal(got, want) {
+		t.Fatalf("second channel got %q, want %q", got, want)
+	}
+	sink2.mu.Lock()
+	sink2.err = errors.New("broken")
+	sink2.mu.Unlock()
+	s.Ack(3)
+	st.frame("e")
+	if got, want := out.take(), []string{"frame:5:e"}; !slices.Equal(got, want) {
+		t.Fatalf("after a failed write: %q, want %q", got, want)
+	}
+	if !sink2.closed {
+		t.Fatal("a channel whose write failed was kept")
+	}
+	st.frame("f")
+	if got, want := out.take(), []string{"frame:6:f"}; !slices.Equal(got, want) {
+		t.Fatalf("seq 4 should no longer hold a place: %q, want %q", got, want)
+	}
+}
+
+// Attaching a channel replaces (closes) the one before.
+func TestANewChannelReplacesTheOldOne(t *testing.T) {
+	s, k, out, _ := newTestServer(t)
+	start(t, s, out)
+	first, second := &fakeSink{}, &fakeSink{}
+	detachFirst := s.Attach(first)
+	s.Attach(second)
+	if !first.closed {
+		t.Fatal("the replaced channel is still open")
+	}
+	detachFirst() // too late: changes nothing
+	k.streams[0].frame("a")
+	if got, want := second.take(t), []string{"rec:1:a"}; !slices.Equal(got, want) {
+		t.Fatalf("new channel got %q, want %q", got, want)
 	}
 }

@@ -1,10 +1,14 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image/jpeg"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -48,7 +52,7 @@ type screenStream struct {
 func (s *screenStream) Start(ev hostscreen.Events) {
 	s.ev = ev
 	ev.State(wire.HostScreenState{State: wire.HostScreenLive, Title: "t"})
-	ev.Frame(hostscreen.Frame{Data: "anBn", Width: 2, Height: 1})
+	ev.Frame(hostscreen.Frame{JPEG: []byte("jpg"), Width: 2, Height: 1})
 }
 func (s *screenStream) Pause()  { s.note("pause") }
 func (s *screenStream) Resume() { s.note("resume") }
@@ -192,9 +196,9 @@ func TestHostScreenInputsKeepTheirOrderAndAcksPassASlowOne(t *testing.T) {
 	}
 	a.nextNotify(t, wire.NotifyHostScreenFrame) // seq 1
 	st := k.stream.Load()
-	st.ev.Frame(hostscreen.Frame{Data: "Mg==", Width: 2, Height: 1}) // seq 2: two in flight
+	st.ev.Frame(hostscreen.Frame{JPEG: []byte("2"), Width: 2, Height: 1}) // seq 2: two in flight
 	a.nextNotify(t, wire.NotifyHostScreenFrame)
-	st.ev.Frame(hostscreen.Frame{Data: "Mw==", Width: 2, Height: 1}) // held
+	st.ev.Frame(hostscreen.Frame{JPEG: []byte("3"), Width: 2, Height: 1}) // held
 
 	// A slow input (adb's BACK can take 0.43 s) holds the queue.
 	gate := make(chan struct{})
@@ -272,5 +276,135 @@ func TestHostScreenPauseAndResumePassASlowInput(t *testing.T) {
 	close(gate)
 	if m := <-input; m.Error != nil {
 		t.Fatal(m.Error)
+	}
+}
+
+// rasterKind opens rasterStreams: pictures as pixels (like the Android
+// emulator's), at the quality asked.
+type rasterKind struct{ stream atomic.Pointer[rasterStream] }
+
+func (k *rasterKind) Name() string { return wire.HostScreenBrowser }
+func (k *rasterKind) List(context.Context) (any, error) {
+	return wire.HostScreenSection[wire.HostScreenBrowserItem]{Items: []wire.HostScreenBrowserItem{}}, nil
+}
+func (k *rasterKind) Open(context.Context, wire.HostScreenTarget) (hostscreen.Stream, error) {
+	st := &rasterStream{q: hostscreen.Normal}
+	k.stream.Store(st)
+	return st, nil
+}
+
+// rasterStream sends a 64×32 picture at its quality (half the px at half
+// scale), and one afresh on a settle, from its own goroutine.
+type rasterStream struct {
+	ev hostscreen.Events
+	mu sync.Mutex
+	q  hostscreen.Quality
+}
+
+func (s *rasterStream) Start(ev hostscreen.Events) {
+	s.ev = ev
+	ev.State(wire.HostScreenState{State: wire.HostScreenLive})
+	s.frame()
+}
+func (*rasterStream) Pause()  {}
+func (*rasterStream) Resume() {}
+func (*rasterStream) Close()  {}
+func (*rasterStream) Input(context.Context, wire.HostScreenInput) (wire.HostScreenInputResult, error) {
+	return wire.HostScreenInputResult{}, nil
+}
+func (s *rasterStream) SetQuality(q hostscreen.Quality, settle bool) {
+	s.mu.Lock()
+	s.q = q
+	s.mu.Unlock()
+	if settle {
+		go s.frame()
+	}
+}
+
+func (s *rasterStream) frame() {
+	s.mu.Lock()
+	q := s.q
+	s.mu.Unlock()
+	w, h := int(64*q.Scale), int(32*q.Scale)
+	pix := make([]byte, w*h*3)
+	for i := range pix {
+		pix[i] = byte(i * 7)
+	}
+	s.ev.Frame(hostscreen.Frame{Raster: &hostscreen.Raster{Pix: pix, W: w, H: h, JPEG: q.JPEG}, Width: 64, Height: 32})
+}
+
+// shownFrame is a host_screen.frame's JPEG px and luma DC quantizer (the
+// higher, the coarser).
+type shownFrame struct {
+	seq       int64
+	w, h, dcQ int
+}
+
+func nextFrame(t *testing.T, a *app) shownFrame {
+	t.Helper()
+	m := a.nextNotify(t, wire.NotifyHostScreenFrame)
+	var fr wire.HostScreenFrame
+	if err := json.Unmarshal(m.Params, &fr); err != nil {
+		t.Fatal(err)
+	}
+	jpg, err := base64.StdEncoding.DecodeString(fr.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(jpg))
+	if err != nil {
+		t.Fatalf("frame %d is no JPEG: %v", fr.Seq, err)
+	}
+	i := bytes.Index(jpg, []byte{0xff, 0xdb})
+	if i < 0 || i+5 >= len(jpg) {
+		t.Fatalf("frame %d has no quantization table", fr.Seq)
+	}
+	return shownFrame{seq: fr.Seq, w: cfg.Width, h: cfg.Height, dcQ: int(jpg[i+5])}
+}
+
+// An app that announced no capability (an app before #1974) gets every
+// frame as host_screen.frame, those while operating too: smaller and
+// coarser (half the px on a slow link), then the normal one once the
+// screen rests.
+func TestAnAppWithoutCapabilitiesGetsJSONFramesOfEveryQuality(t *testing.T) {
+	k := &rasterKind{}
+	_, a := startBridge(t, func(b *Bridge) {
+		b.hostScreen = hostscreen.NewServer(func(method string, params any) { b.out.Notify(method, params) }, k)
+		b.agentRefusal = func() *wire.Error { return wire.Errorf(wire.ErrAgentRefused, "agent") }
+	})
+	helloAs(t, a)
+	target := wire.HostScreenStartParams{Target: wire.HostScreenTarget{Kind: wire.HostScreenBrowser, Port: 9222, TargetID: "P"}}
+	if e := a.call(t, wire.MethodHostScreenStart, target, nil); e != nil {
+		t.Fatal(e)
+	}
+	normal := nextFrame(t, a)
+	if normal.w != 64 || normal.h != 32 {
+		t.Fatalf("first frame %+v, want 64×32", normal)
+	}
+	// Acked slowly: a slow link.
+	time.Sleep(300 * time.Millisecond)
+	a.call(t, wire.MethodHostScreenAck, wire.HostScreenAckParams{Seq: normal.seq}, nil)
+
+	if e := a.call(t, wire.MethodHostScreenInput, wire.HostScreenInput{Type: wire.InputTap, X: 0.5, Y: 0.5}, nil); e != nil {
+		t.Fatal(e)
+	}
+	k.stream.Load().frame() // the tap changed the screen
+	low := nextFrame(t, a)
+	if low.w != 32 || low.h != 16 || low.dcQ <= normal.dcQ {
+		t.Fatalf("frame while operating %+v, want 32×16 and coarser than %+v", low, normal)
+	}
+	a.call(t, wire.MethodHostScreenAck, wire.HostScreenAckParams{Seq: low.seq}, nil)
+
+	settled := nextFrame(t, a)
+	if settled.w != 64 || settled.h != 32 || settled.dcQ != normal.dcQ || settled.seq != low.seq+1 {
+		t.Fatalf("frame once settled %+v, want 64×32 at %+v's quality", settled, normal)
+	}
+	a.mu.Lock()
+	log := slices.Clone(a.log)
+	a.mu.Unlock()
+	for _, l := range log {
+		if strings.HasPrefix(l, "notify:") && l != "notify:"+wire.NotifyHostScreenFrame && l != "notify:"+wire.NotifyHostScreenState {
+			t.Fatalf("notification %q to an app without capabilities", l)
+		}
 	}
 }

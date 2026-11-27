@@ -11,8 +11,8 @@ import (
 
 // Queue keys of the host_screen.* methods. start and stop (and input, which
 // must keep its order) share one queue; list has its own so probing CDP
-// ports never delays them. ack, pause and resume take no queue (see
-// dispatchHostScreen).
+// ports never delays them. ack, pause, resume and keyframe take no queue
+// (see dispatchHostScreen).
 const (
 	targetHostScreen     = "host_screen"
 	targetHostScreenList = "host_screen.list"
@@ -51,6 +51,11 @@ func (b *Bridge) dispatchHostScreen(m *wire.Msg) {
 		b.replyResult(m.ID, struct{}{}, b.hostScreen.Pause())
 	case wire.MethodHostScreenResume:
 		b.replyResult(m.ID, struct{}{}, b.hostScreen.Resume())
+	case wire.MethodHostScreenKeyframe:
+		// Like ack: the picture stays wrong until it is answered.
+		b.replyResult(m.ID, struct{}{}, b.hostScreen.Keyframe())
+	case wire.MethodHostScreenChannel:
+		b.hostScreenChannel(m)
 	case wire.MethodHostScreenList:
 		b.enqueue(targetHostScreenList, m, func(m *wire.Msg) {
 			var p wire.HostScreenListParams

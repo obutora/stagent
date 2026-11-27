@@ -52,8 +52,8 @@ func watchedKind(t *testing.T, mode string, tools *bootingTools) *Kind {
 func expect(t *testing.T, ev events, want any) {
 	t.Helper()
 	got := ev.next(t, 5*time.Second)
-	if _, frame := want.(hostscreen.Frame); frame {
-		if _, ok := got.(hostscreen.Frame); !ok {
+	if _, isFrame := want.(hostscreen.Frame); isFrame {
+		if _, ok := got.(frame); !ok {
 			t.Fatalf("got %#v, want a frame", got)
 		}
 		return
@@ -152,7 +152,7 @@ func TestStartWhileSimctlFailsIsGoneUntilItListsTheSimulator(t *testing.T) {
 }
 
 func TestVideoStreamIsHalfScaleHalfQualityMJPEGOnRedraw(t *testing.T) {
-	got := videoStart().GetStart()
+	got := videoStart(hostscreen.Normal).GetStart()
 	if got.GetFormat() != idbpb.VideoStreamRequest_MJPEG || got.GetScaleFactor() != 0.5 || got.GetCompressionQuality() != 0.5 || got.GetFps() != 0 {
 		t.Fatalf("video stream start %v, want MJPEG at scale 0.5, quality 0.5, fps 0", got)
 	}

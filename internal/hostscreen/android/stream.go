@@ -3,11 +3,8 @@ package android
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"image"
-	"image/jpeg"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -25,8 +22,6 @@ import (
 )
 
 const (
-	// jpegQuality of the frames (#624).
-	jpegQuality = 70
 	// callWait bounds one unary gRPC call to the emulator.
 	callWait = 5 * time.Second
 	// retryWait spaces reopening a screenshot stream the emulator ended
@@ -72,6 +67,10 @@ type stream struct {
 	// rot: how the last frame showed the display turned (inputs map
 	// through it).
 	rot emupb.Rotation_SkinRotation
+	// q is the quality frames are encoded at (SetQuality); settle asks
+	// encode for shown again at q.
+	q      hostscreen.Quality
+	settle bool
 
 	kick  chan struct{} // wakes capture after Resume
 	ready chan struct{} // wakes encode for latest
@@ -103,7 +102,7 @@ func openStream(ctx context.Context, e emulator) (*stream, error) {
 		if err != nil {
 			return nil, wire.Errorf(wire.ErrInternal, "host_screen.start: %v", err)
 		}
-		s := &stream{cc: cc, client: emupb.NewEmulatorControllerClient(cc), avd: e.avd}
+		s := &stream{cc: cc, client: emupb.NewEmulatorControllerClient(cc), avd: e.avd, q: hostscreen.Normal}
 		err = s.readSize(ctx)
 		if err == nil {
 			s.ctx, s.cancel = context.WithCancel(context.Background())
@@ -183,6 +182,22 @@ func (s *stream) Resume() {
 		stop()
 	}
 	poke(s.kick)
+}
+
+// SetQuality encodes the next images at q (half the resolution of the
+// screenshot stream again when q.Scale is below 1: the emulator's stream
+// is not reopened). A settle re-encodes the picture last sent at q.
+func (s *stream) SetQuality(q hostscreen.Quality, settle bool) {
+	s.mu.Lock()
+	s.q = q
+	settle = settle && !s.paused
+	if settle {
+		s.settle = true
+	}
+	s.mu.Unlock()
+	if settle {
+		poke(s.ready)
+	}
 }
 
 func (s *stream) Close() {
@@ -290,10 +305,10 @@ func (s *stream) alive() bool {
 	return err == nil
 }
 
-// encode turns the newest image into a frame whenever there is one.
+// encode turns the newest image into a frame whenever there is one: its
+// pixels, which the frame's sender encodes, whole or as the tiles changed
+// (hostscreen.Raster).
 func (s *stream) encode() {
-	var rgba *image.RGBA
-	var buf bytes.Buffer
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -301,15 +316,18 @@ func (s *stream) encode() {
 		case <-s.ready:
 		}
 		s.mu.Lock()
-		img, prev := s.latest, s.shown
-		s.latest = nil
+		img, prev, q, settle := s.latest, s.shown, s.q, s.settle
+		s.latest, s.settle = nil, false
+		if img == nil && settle {
+			img = prev
+		}
 		s.mu.Unlock()
-		if img == nil || samePicture(img, prev) {
+		if img == nil || !settle && samePicture(img, prev) {
 			continue
 		}
 		w, h := int(img.GetFormat().GetWidth()), int(img.GetFormat().GetHeight())
-		var err error
-		if rgba, err = encodeRGB888(&buf, rgba, img.GetImage(), w, h); err != nil {
+		r, err := rasterOf(img.GetImage(), w, h, q)
+		if err != nil {
 			continue
 		}
 		dw, dh := displaySize(s.lcdW, s.lcdH, w, h)
@@ -318,7 +336,7 @@ func (s *stream) encode() {
 		s.shown = img
 		s.mu.Unlock()
 		if ev := s.ev.Load(); ev != nil && s.ctx.Err() == nil {
-			(*ev).Frame(hostscreen.Frame{Data: base64.StdEncoding.EncodeToString(buf.Bytes()), Width: dw, Height: dh})
+			(*ev).Frame(hostscreen.Frame{Raster: r, Width: dw, Height: dh})
 		}
 	}
 }
@@ -333,22 +351,29 @@ func samePicture(a, b *emupb.Image) bool {
 		bytes.Equal(a.GetImage(), b.GetImage())
 }
 
-// encodeRGB888 writes pix (w×h, 3 bytes a pixel, rows top down) to buf as
-// a JPEG. rgba is reused when it has the size (else one is made), and
-// returned for the next image.
-func encodeRGB888(buf *bytes.Buffer, rgba *image.RGBA, pix []byte, w, h int) (*image.RGBA, error) {
+// rasterOf is pix (w×h, 3 bytes a pixel, rows top down) as a picture to
+// encode at quality q.JPEG; with q.Scale below 1, of half the size each
+// way (every 2×2 pixels averaged). At full size it is pix itself, which
+// nothing changes (each screenshot of the emulator is a message of its
+// own).
+func rasterOf(pix []byte, w, h int, q hostscreen.Quality) (*hostscreen.Raster, error) {
 	if w <= 0 || h <= 0 || len(pix) < w*h*3 {
-		return rgba, fmt.Errorf("RGB888 image of %d bytes is not %dx%d", len(pix), w, h)
+		return nil, fmt.Errorf("RGB888 image of %d bytes is not %dx%d", len(pix), w, h)
 	}
-	if rgba == nil || rgba.Rect.Dx() != w || rgba.Rect.Dy() != h {
-		rgba = image.NewRGBA(image.Rect(0, 0, w, h))
+	if q.Scale >= 1 || w < 2 || h < 2 {
+		return &hostscreen.Raster{Pix: pix[:w*h*3], W: w, H: h, JPEG: q.JPEG}, nil
 	}
-	dst := rgba.Pix
-	for i, j := 0, 0; j < w*h*3; i, j = i+4, j+3 {
-		dst[i], dst[i+1], dst[i+2], dst[i+3] = pix[j], pix[j+1], pix[j+2], 0xff
+	ow, oh := w/2, h/2
+	dst := make([]byte, ow*oh*3)
+	for y := range oh {
+		r0, r1 := pix[2*y*w*3:], pix[(2*y+1)*w*3:]
+		d := dst[y*ow*3:]
+		for i := range ow * 3 {
+			j := i/3*6 + i%3
+			d[i] = byte((int(r0[j]) + int(r0[j+3]) + int(r1[j]) + int(r1[j+3]) + 2) / 4)
+		}
 	}
-	buf.Reset()
-	return rgba, jpeg.Encode(buf, rgba, &jpeg.Options{Quality: jpegQuality})
+	return &hostscreen.Raster{Pix: dst, W: ow, H: oh, JPEG: q.JPEG}, nil
 }
 
 // displaySize is the display in px as the image shows it: the natural

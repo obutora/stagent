@@ -177,6 +177,16 @@ func (l *Layout) HolderAddr(sessionID string) string {
 	return filepath.Join(l.RunDir, "s", sessionID+".sock")
 }
 
+// ChannelAddr is the IPC address a bridge's binary frame channel
+// (host_screen.channel) is reached at; id is 16 lowercase hex chars, so
+// the socket path is no longer than a holder's.
+func (l *Layout) ChannelAddr(id string) string {
+	if runtime.GOOS == "windows" {
+		return l.pipePrefix + "-b-" + id
+	}
+	return filepath.Join(l.RunDir, "b-"+id+".sock")
+}
+
 // HolderSocketDir is the directory holding holder sockets on unix (empty on
 // Windows, where holders use named pipes). The daemon scans it on start.
 func (l *Layout) HolderSocketDir() string {

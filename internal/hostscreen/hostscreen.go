@@ -6,8 +6,12 @@
 package hostscreen
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"image"
+	"io"
 	"math"
 	"slices"
 	"sync"
@@ -30,8 +34,11 @@ const (
 
 // Frame is one picture of a target.
 type Frame struct {
-	Data          string // base64 of one JPEG
-	Width, Height int    // the target's size in its own coordinates
+	JPEG []byte // one JPEG, not changed once handed over
+	// Raster, when set instead of JPEG, is the picture as pixels: encoded
+	// only when sent, whole or as the tiles changed (tiles.go).
+	Raster        *Raster
+	Width, Height int // the target's size in its own coordinates
 }
 
 // Events receives what a Stream produces. A Stream calls it from its own
@@ -100,16 +107,27 @@ type Server struct {
 	kinds  []Kind
 	notify func(method string, params any)
 	// now and afterFunc (which runs f after d unless stopped) are the
-	// clock; replaceable in tests.
+	// clock, spawn runs a frame's sender on a goroutine of its own;
+	// replaceable in tests.
 	now       func() time.Time
 	afterFunc func(d time.Duration, f func()) (stop func() bool)
+	spawn     func(f func())
 
 	seq atomic.Int64 // last frame seq of this connection
 
 	runMu sync.Mutex // serializes Start and Stop
 	mu    sync.Mutex // guards cur, never held while waiting on a target
 	cur   *flow
+
+	sinkMu sync.Mutex
+	sink   io.WriteCloser // the binary frame channel, nil without one
+
+	tiles atomic.Bool // the app takes "tiles" records (SetTiles)
 }
+
+// SetTiles tells whether the app takes "tiles" records on the binary
+// channel (it announced wire.CapHostScreenTiles).
+func (s *Server) SetTiles(on bool) { s.tiles.Store(on) }
 
 // NewServer serves kinds, writing notifications with notify (safe for
 // concurrent use).
@@ -121,6 +139,7 @@ func NewServer(notify func(method string, params any), kinds ...Kind) *Server {
 		afterFunc: func(d time.Duration, f func()) func() bool {
 			return time.AfterFunc(d, f).Stop
 		},
+		spawn: func(f func()) { go f() },
 	}
 }
 
@@ -193,7 +212,7 @@ func (s *Server) Start(ctx context.Context, t wire.HostScreenTarget, started fun
 	st, err := kind.Open(ctx, t)
 	var f *flow
 	if err == nil {
-		f = &flow{s: s, st: st}
+		f = &flow{s: s, st: st, op: operation{quality: Normal}}
 	}
 	s.mu.Lock()
 	s.cur = f
@@ -240,6 +259,19 @@ func (s *Server) Resume() error {
 	return nil
 }
 
+// Keyframe answers host_screen.keyframe: the app could not apply a
+// "tiles" record, so the next frame goes whole; when none is captured, the
+// picture sent last goes again, whole. Like Ack, it never waits for the
+// target.
+func (s *Server) Keyframe() error {
+	f, err := s.current("host_screen.keyframe")
+	if err != nil {
+		return err
+	}
+	f.keyframe()
+	return nil
+}
+
 // current is the stream method's flow; bad_request without one.
 func (s *Server) current(method string) (*flow, error) {
 	s.mu.Lock()
@@ -283,7 +315,9 @@ func (s *Server) Input(ctx context.Context, in wire.HostScreenInput) (wire.HostS
 	if unresponsive {
 		return none, wire.Errorf(wire.ErrUnavailable, "host_screen.input: the target did not answer the previous input")
 	}
+	f.operate()
 	res, err := is.Input(ctx, in)
+	f.operated()
 	var we *wire.Error
 	if errors.As(err, &we) && we.Code == wire.ErrUnavailable {
 		f.mu.Lock()
@@ -385,9 +419,78 @@ func (s *Server) stopRunning() {
 	}
 }
 
+// Attach makes w, a binary frame channel, carry the frames from the next
+// one on as records (WriteRecord) instead of host_screen.frame, beginning
+// with a full one; a channel attached before is closed. detach (when w
+// goes away) closes w and puts the frames back on host_screen.frame, as a
+// write to w that fails does; the frames w carried are then no longer
+// waited for, since their acks may never come. detach after w was
+// replaced or failed does nothing.
+func (s *Server) Attach(w io.WriteCloser) (detach func()) {
+	s.sinkMu.Lock()
+	old := s.sink
+	s.sink = w
+	s.sinkMu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	if f := s.curFlow(); f != nil {
+		f.wantFull()
+	}
+	return func() {
+		if !s.dropSink(w) {
+			return
+		}
+		if f := s.curFlow(); f != nil {
+			f.channelLost()
+		}
+	}
+}
+
+// curFlow is the current stream's flow, nil without one.
+func (s *Server) curFlow() *flow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cur
+}
+
+// channel is the binary frame channel attached, nil without one.
+func (s *Server) channel() io.WriteCloser {
+	s.sinkMu.Lock()
+	defer s.sinkMu.Unlock()
+	return s.sink
+}
+
+// dropSink closes w and tells whether it was the channel attached.
+func (s *Server) dropSink(w io.WriteCloser) bool {
+	s.sinkMu.Lock()
+	cur := s.sink == w
+	if cur {
+		s.sink = nil
+	}
+	s.sinkMu.Unlock()
+	if cur {
+		w.Close()
+	}
+	return cur
+}
+
+// notifyFrame sends a frame, h (its seq and size) with jpg, as
+// host_screen.frame and returns the bytes that took on the way.
+func (s *Server) notifyFrame(h wire.HostScreenRecordHeader, jpg []byte) int {
+	data := base64.StdEncoding.EncodeToString(jpg)
+	s.notify(wire.NotifyHostScreenFrame, wire.HostScreenFrame{Seq: h.Seq, Data: data, Width: h.Width, Height: h.Height})
+	return len(data)
+}
+
 // flow paces one stream's frames: at most MaxInFlight wait for an ack and
 // they are sent at least FrameEvery apart; of the frames captured
 // meanwhile only the newest is kept, and sent as soon as both allow.
+//
+// A frame let go is encoded by a sender of its own (send), one at a time,
+// outside mu: encoding a raster takes milliseconds, which neither whoever
+// let it go (the bridge's reader with an ack or a keyframe, the stream
+// with a frame) nor the acks, pauses and inputs behind mu may wait for.
 type flow struct {
 	s  *Server
 	st Stream
@@ -406,12 +509,68 @@ type flow struct {
 	paused   bool
 	stopWait func() bool // the stall timer while MaxInFlight are out
 	stopPace func() bool // the timer sending held once FrameEvery passed
+	// sending: a sender has a frame (until it sent or dropped it); next is
+	// the frame let go, whose sender unlock starts.
+	sending bool
+	next    *Frame
+	// The quality asked of the stream while operating (quality.go), with
+	// the link's bandwidth estimated from the frames' acks.
+	op   operation
+	link linkRate
+	// What the app's picture is built on (tiles.go): base is the frame
+	// sent last, baseSeq its seq; full asks the next frame whole; lastFull
+	// is when one went last, baseJPEG the lowest quality the app's picture
+	// got since (a better one goes whole). enc and payload are the
+	// sender's, reused.
+	base     *Frame
+	baseSeq  int64
+	baseJPEG int
+	lastFull time.Time
+	full     bool
+	enc      encoder
+	payload  bytes.Buffer
+}
+
+// unlock releases f.mu and starts the sender of the frame flushLocked let
+// go, if any. Every method that may flush ends with it.
+func (f *flow) unlock() {
+	next := f.next
+	f.next = nil
+	f.mu.Unlock()
+	if next != nil {
+		f.s.spawn(func() { f.send(next) })
+	}
+}
+
+// wantFull has the next frame sent whole.
+func (f *flow) wantFull() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.full = true
+}
+
+// keyframe has the next frame sent whole, and the picture sent last sent
+// again when no frame is held or being sent (the target may not change by
+// itself).
+func (f *flow) keyframe() {
+	f.mu.Lock()
+	defer f.unlock()
+	if f.closed {
+		return
+	}
+	f.full = true
+	if f.held == nil && !f.sending && f.base != nil && !f.gone && !f.paused {
+		b := *f.base
+		f.held = &b
+	}
+	f.flushLocked()
 }
 
 func (f *flow) Frame(fr Frame) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	defer f.unlock()
 	f.unresponsive = false
+	f.op.lastFrame = f.s.now()
 	if f.closed || f.gone || f.paused {
 		return
 	}
@@ -436,8 +595,10 @@ func (f *flow) State(st wire.HostScreenState) {
 		// again while the app does not show it.
 		f.gone = false
 		f.inFlight = nil
+		f.link.forget()
 		f.stalled = false
 		f.unresponsive = false
+		f.full = true
 		if f.paused {
 			f.st.Pause()
 		}
@@ -447,10 +608,11 @@ func (f *flow) State(st wire.HostScreenState) {
 	f.s.notify(wire.NotifyHostScreenState, st)
 }
 
-// flushLocked sends the held frame once a place is free and FrameEvery
-// passed since the last one sent, waiting for the latter on a timer.
+// flushLocked lets the held frame go once a place is free, no frame is
+// being sent and FrameEvery passed since the last one sent, waiting for
+// the latter on a timer. Its sender starts at unlock.
 func (f *flow) flushLocked() {
-	if f.held == nil || f.closed || f.gone || f.paused || len(f.inFlight) >= MaxInFlight {
+	if f.held == nil || f.sending || f.closed || f.gone || f.paused || len(f.inFlight) >= MaxInFlight {
 		return
 	}
 	if wait := f.lastSent.Add(FrameEvery).Sub(f.s.now()); wait > 0 {
@@ -459,14 +621,12 @@ func (f *flow) flushLocked() {
 		}
 		return
 	}
-	fr := *f.held
-	f.held = nil
-	f.sendLocked(fr)
+	f.sending, f.next, f.held = true, f.held, nil
 }
 
 func (f *flow) pace() {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	defer f.unlock()
 	f.stopPace = nil
 	f.flushLocked()
 }
@@ -480,14 +640,180 @@ func (f *flow) dropLocked() {
 	}
 }
 
-func (f *flow) sendLocked(fr Frame) {
-	seq := f.s.seq.Add(1)
-	f.inFlight = append(f.inFlight, seq)
-	f.lastSent = f.s.now()
-	f.s.notify(wire.NotifyHostScreenFrame, wire.HostScreenFrame{Seq: seq, Data: fr.Data, Width: fr.Width, Height: fr.Height})
+// sendableLocked tells whether a frame may go out: as for a held frame,
+// one let go is dropped once the stream closed, went or was paused.
+func (f *flow) sendableLocked() bool { return !f.closed && !f.gone && !f.paused }
+
+// send is fr's sender: it encodes fr outside f.mu (the tiles changed
+// since the frame sent last, when the app can build on it, or the whole
+// picture), then sends it under f.mu, where its seq, its place in flight
+// and what tiles build on next change together.
+func (f *flow) send(fr *Frame) {
+	f.mu.Lock()
+	if !f.sendableLocked() {
+		f.sending = false
+		f.mu.Unlock()
+		return
+	}
+	w := f.s.channel()
+	var base *Raster
+	var baseSeq int64
+	if w != nil && f.s.tiles.Load() && fr.Raster != nil && f.tileableLocked(*fr, f.s.now()) {
+		base, baseSeq = f.base.Raster, f.baseSeq
+	}
+	// A full frame asked for is this one (tileableLocked said no); one
+	// asked while it is encoded is the next.
+	asked := f.full
+	f.full = false
+	f.mu.Unlock()
+
+	h := wire.HostScreenRecordHeader{Kind: wire.HostScreenRecordFull, Width: fr.Width, Height: fr.Height}
+	payload, err := f.encode(&h, fr, base, baseSeq)
+
+	f.mu.Lock()
+	defer f.unlock()
+	f.sending = false
+	switch {
+	case err != nil || !f.sendableLocked():
+		// Dropped: a picture that does not encode, or the stream stopped.
+		f.full = f.full || asked
+		f.flushLocked()
+		return
+	case h.Kind == wire.HostScreenRecordTiles && (f.full || f.s.channel() != w):
+		// Asked whole meanwhile (a keyframe, a new channel): the tiles may
+		// not build on the app's picture. It goes again, whole, unless a
+		// newer one came.
+		f.full = true
+		if f.held == nil {
+			f.held = fr
+		}
+		f.flushLocked()
+		return
+	}
+	now := f.s.now()
+	h.Seq = f.s.seq.Add(1)
+	f.lastSent = now
+	n, asJSON := 0, w == nil
+	if w != nil {
+		if n, err = WriteRecord(w, h, payload); err != nil {
+			// The channel failed: what it carried may never arrive.
+			f.s.dropSink(w)
+			f.forgetInFlightLocked()
+			asJSON = true
+		}
+	}
+	if asJSON {
+		jpg := payload
+		if h.Kind == wire.HostScreenRecordTiles {
+			// The tiles did not go: the whole picture does, encoded
+			// outside f.mu as well (nothing else is sent meanwhile).
+			f.sending = true
+			f.mu.Unlock()
+			f.payload.Reset()
+			err = f.enc.encode(&f.payload, fr.Raster, image.Rect(0, 0, fr.Raster.W, fr.Raster.H))
+			f.mu.Lock()
+			f.sending = false
+			if err != nil || !f.sendableLocked() {
+				f.full = true
+				return
+			}
+			jpg = f.payload.Bytes()
+		}
+		n = f.s.notifyFrame(h, jpg)
+	}
+	f.base, f.baseSeq = fr, h.Seq
+	switch {
+	case asJSON:
+		// It may overtake the records before it, or they it.
+		f.full = true
+	case h.Kind == wire.HostScreenRecordFull:
+		f.lastFull = now
+		if fr.Raster != nil {
+			f.baseJPEG = fr.Raster.JPEG
+		}
+	default:
+		f.baseJPEG = min(f.baseJPEG, fr.Raster.JPEG)
+	}
+	f.inFlight = append(f.inFlight, h.Seq)
+	f.link.sent(h.Seq, n, now)
 	if len(f.inFlight) >= MaxInFlight && f.stopWait == nil {
 		f.stopWait = f.s.afterFunc(StallAfter, f.stall)
 	}
+	f.flushLocked()
+}
+
+// encode returns the payload of fr's record and fills in h: the tiles
+// changed since base (the raster of frame baseSeq; nil: nothing to build
+// on) when they cost less than the whole (tilesUpTo, maxTileRects); else
+// the whole picture. Only a sender calls it: f.enc and f.payload are its.
+func (f *flow) encode(h *wire.HostScreenRecordHeader, fr *Frame, base *Raster, baseSeq int64) ([]byte, error) {
+	r := fr.Raster
+	if r == nil {
+		return fr.JPEG, nil
+	}
+	if err := r.check(); err != nil {
+		return nil, err
+	}
+	f.payload.Reset()
+	if base != nil {
+		rects, changed, cells := changedTiles(base, r)
+		if float64(changed) <= tilesUpTo*float64(cells) && len(rects) <= maxTileRects {
+			h.Kind, h.Prev, h.ImageWidth, h.ImageHeight = wire.HostScreenRecordTiles, baseSeq, r.W, r.H
+			for _, rc := range rects {
+				before := f.payload.Len()
+				if err := f.enc.encode(&f.payload, r, rc); err != nil {
+					return nil, err
+				}
+				h.Tiles = append(h.Tiles, wire.HostScreenTile{X: rc.Min.X, Y: rc.Min.Y, W: rc.Dx(), H: rc.Dy(), Len: f.payload.Len() - before})
+			}
+			return f.payload.Bytes(), nil
+		}
+	}
+	h.ImageWidth, h.ImageHeight = r.W, r.H
+	if err := f.enc.encode(&f.payload, r, image.Rect(0, 0, r.W, r.H)); err != nil {
+		return nil, err
+	}
+	return f.payload.Bytes(), nil
+}
+
+// tileableLocked tells whether fr may go as tiles on the frame sent last:
+// that frame is the picture the app has (nothing asked for a full one), of
+// the same size and turn, at no lower a quality than fr's anywhere, and a
+// full frame went less than FullEvery ago.
+func (f *flow) tileableLocked(fr Frame, now time.Time) bool {
+	b := f.base
+	return !f.full && b != nil && b.Raster != nil &&
+		b.Width == fr.Width && b.Height == fr.Height &&
+		b.Raster.W == fr.Raster.W && b.Raster.H == fr.Raster.H &&
+		fr.Raster.JPEG <= f.baseJPEG &&
+		now.Sub(f.lastFull) < FullEvery
+}
+
+// forgetInFlightLocked stops waiting for the frames sent so far (a lost
+// binary channel carried them): their acks, should they come, change
+// nothing.
+func (f *flow) forgetInFlightLocked() {
+	f.inFlight = nil
+	f.link.forget()
+	f.stopTimerLocked()
+}
+
+// channelLost: the binary channel went away with the frames it carried.
+// A stream stalled on them is resumed, the held frame sent (whole: the app
+// may have missed what it would build on).
+func (f *flow) channelLost() {
+	f.mu.Lock()
+	defer f.unlock()
+	if f.closed {
+		return
+	}
+	f.full = true
+	f.forgetInFlightLocked()
+	if f.stalled && !f.gone && !f.paused {
+		f.st.Resume()
+	}
+	f.stalled = false
+	f.flushLocked()
 }
 
 // stall pauses the stream while the app still holds MaxInFlight frames
@@ -517,13 +843,18 @@ func (f *flow) stopTimerLocked() {
 // changes nothing.
 func (f *flow) ack(seq int64) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	defer f.unlock()
 	i := slices.Index(f.inFlight, seq)
 	if i < 0 || f.closed {
 		return
 	}
 	f.inFlight = slices.Delete(f.inFlight, i, i+1)
+	f.link.acked(seq, f.s.now())
 	f.stopTimerLocked()
+	if f.stalled {
+		// Resumed with a full frame, like host_screen.resume.
+		f.full = true
+	}
 	f.flushLocked()
 	if f.stalled && !f.gone && !f.paused {
 		f.st.Resume()
@@ -545,7 +876,8 @@ func (f *flow) pause() {
 	}
 }
 
-// resume captures again unless stalled, which the next ack ends.
+// resume captures again unless stalled, which the next ack ends; the
+// next frame goes whole.
 func (f *flow) resume() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -553,6 +885,7 @@ func (f *flow) resume() {
 		return
 	}
 	f.paused = false
+	f.full = true
 	if !f.stalled && !f.gone {
 		f.st.Resume()
 	}
@@ -563,6 +896,7 @@ func (f *flow) close() {
 	f.closed = true
 	f.dropLocked()
 	f.stopTimerLocked()
+	f.stopSettleLocked()
 	f.mu.Unlock()
 	f.st.Close()
 }
